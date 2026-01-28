@@ -125,6 +125,7 @@ ftree [OPTIONS] [path]
 - `--include` promotes excluded dirs back to normal treatment
 - Multiple `--ignore` flags accumulate (v1.0.1+): `-I 'docs' -I '*.md'` excludes both
 - Three output formats: `pretty` (default), `paths` (flat file list), `json`
+- Snapshot mode (`--snapshot`): combined recon + tree in one command (v1.2.0+)
 - Truncation with overflow count and drill-down suggestion
 - Clear error messages when flags are missing their required values
 
@@ -151,6 +152,12 @@ ftree --include .git /project
 
 # Stack multiple ignore patterns (each -I adds to the list)
 ftree -I 'docs' -I '*.md' /project
+
+# Snapshot: recon + tree in one shot
+ftree --snapshot /project
+
+# Snapshot JSON for agents
+ftree --snapshot -o json /project
 
 # Recon without excluded-dir summaries
 ftree --recon --hide-excluded /project
@@ -213,7 +220,7 @@ All three tools support three output modes via `--output` / `-o`:
 ```json
 {
   "tool": "ftree",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "mode": "tree",
   "backend": "tree",
   "path": "/project",
@@ -234,7 +241,7 @@ All three tools support three output modes via `--output` / `-o`:
 ```json
 {
   "tool": "ftree",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "mode": "recon",
   "backend": "find/du/stat",
   "path": "/project",
@@ -340,6 +347,8 @@ Copy-paste ready. Every command runs headless (no prompts, no TTY needed) unless
 | `ftree -o json /project` | Structured JSON tree with metadata envelope |
 | `ftree -o paths /project` | Flat file list, one per line |
 | `ftree --recon -o json /project` | Recon JSON: agent-parseable per-dir inventory |
+| `ftree --snapshot /project` | Snapshot: recon inventory + tree excerpt in one output |
+| `ftree --snapshot -o json /project` | Snapshot JSON: combined recon + tree for agents |
 | `ftree --recon --hide-excluded /project` | Clean recon, no excluded-dir summaries |
 | `ftree --include .git /project` | Show `.git` even though it's in the default ignore list |
 | `ftree -I 'docs\|*.md' /project` | Exclude additional patterns (appended to defaults) |
@@ -375,6 +384,7 @@ These are designed for AI agents, CI pipelines, cron jobs, and automation script
 
 | Workflow | Commands | Why |
 |----------|----------|-----|
+| **One-shot context** | `ftree --snapshot -o json /project` | Agent gets recon + tree in one call (v1.2.0+) |
 | **Scout a project** | `ftree --recon -o json /project` | Agent gets per-dir item counts, sizes, and exclusion tags |
 | **Structure overview** | `ftree -o json /project` | Agent gets depth-3 tree with truncation metadata |
 | **Drill into subdirectory** | `ftree -L 5 -o json /project/src` | Agent zooms into a specific subtree |
@@ -442,7 +452,8 @@ These are designed for AI agents, CI pipelines, cron jobs, and automation script
 | `--no-default-ignore` | — | — | off |
 | `--include` | — | pattern (repeatable) | — |
 | `--recon` | `-r` | — | off |
-| `--recon-depth` | — | any integer | `1` |
+| `--snapshot` | — | — | off |
+| `--recon-depth` | — | any integer | `1` (`2` in snapshot) |
 | `--hide-excluded` | — | — | off |
 | `--dirs-only` | `-d` | — | off |
 | `--sizes` | `-s` | — | off |
@@ -499,6 +510,18 @@ sudo ln -s "$(pwd)/ftree" /usr/local/bin/ftree
 ---
 
 ## Changelog
+
+### ftree v1.2.0
+
+New mode: `--snapshot` — combined recon + tree in one invocation.
+
+- `--snapshot` produces a single artifact with both inventory (recon) and structure (tree)
+- Pretty output: sectioned `== Recon ==` and `== Tree ==` blocks
+- JSON output: envelope with embedded recon and tree objects (plus `lines` array on tree)
+- Default recon depth in snapshot: 2 (standalone recon stays 1)
+- Mutually exclusive with `--recon` and `-o paths`
+
+See [docs/ftree.md](docs/ftree.md) for full JSON schema and snapshot mode details.
 
 ### ftree v1.1.0
 

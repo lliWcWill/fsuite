@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 
 # -------------------------
 # Defaults (override via flags)
@@ -175,7 +175,11 @@ OPTIONS
       Does not use tree(1) — uses find/du/stat directly.
 
   --recon-depth N
-      How deep recon scans. Default: 1. Deeper is expensive.
+      How deep recon scans. Default: 1 (2 in snapshot mode). Deeper is expensive.
+
+  --snapshot
+      Snapshot mode: combines recon inventory and tree excerpt in one output.
+      Default recon depth: 2. Not compatible with --recon or -o paths.
 
   --hide-excluded
       Suppress excluded-directory summaries from recon output.
@@ -228,10 +232,11 @@ RECON MODE
 AGENT / HEADLESS USAGE
   ftree -o json /project             # structured tree JSON
   ftree --recon -o json /project     # per-dir inventory JSON
+  ftree --snapshot -o json /project  # combined recon + tree in one call
   ftree -o paths /project            # flat file list for piping
 
   Agent drill-down workflow:
-    1. ftree --recon /project            # inventory: what's here?
+    1. ftree --snapshot /project         # one-shot: recon + tree
     2. ftree -L 5 /project/src           # zoom: deeper into src/
 
 EOF
@@ -267,8 +272,10 @@ DIRS_ONLY=0
 SIZES=0
 GITIGNORE=0
 FULL_PATHS=0
+SNAPSHOT=0
 SELF_CHECK=0
 INSTALL_HINTS=0
+RECON_DEPTH_SET=0
 
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
@@ -293,9 +300,10 @@ while [[ $# -gt 0 ]]; do
       shift; [[ $# -gt 0 ]] || die "Missing value for --include"
       INCLUDES+=("$1"); shift ;;
     -r|--recon)        RECON=1; shift ;;
+    --snapshot)        SNAPSHOT=1; shift ;;
     --recon-depth)
       shift; [[ $# -gt 0 ]] || die "Missing value for --recon-depth"
-      RECON_DEPTH="$1"; shift ;;
+      RECON_DEPTH="$1"; RECON_DEPTH_SET=1; shift ;;
     --hide-excluded)   HIDE_EXCLUDED=1; shift ;;
     -d|--dirs-only)    DIRS_ONLY=1; shift ;;
     -s|--sizes)        SIZES=1; shift ;;
@@ -358,6 +366,9 @@ case "$OUTPUT" in pretty|paths|json) ;; *) die "Invalid --output: $OUTPUT" ;; es
 [[ "$FILELIMIT" =~ ^[0-9]+$ ]]  || die "--filelimit must be an integer"
 [[ "$RECON_DEPTH" =~ ^[0-9]+$ ]] || die "--recon-depth must be an integer"
 
+(( SNAPSHOT == 1 && RECON == 1 )) && die "--snapshot and --recon are mutually exclusive"
+(( SNAPSHOT == 1 )) && [[ "$OUTPUT" == "paths" ]] && die "--snapshot is not compatible with -o paths"
+
 [[ -e "$TARGET" ]] || die "Path does not exist: $TARGET"
 
 # Always resolve absolute path for metadata (headers, JSON path, drill-down).
@@ -368,6 +379,11 @@ ABS_TARGET="$(cd "$TARGET" 2>/dev/null && pwd)" || ABS_TARGET="$(readlink -f "$T
 # If --full-paths, also use absolute path for tree invocation
 if (( FULL_PATHS == 1 )); then
   TARGET="$ABS_TARGET"
+fi
+
+# Snapshot mode: default recon depth is 2 (deeper context capture)
+if (( SNAPSHOT == 1 && RECON_DEPTH_SET == 0 )); then
+  RECON_DEPTH=2
 fi
 
 # -------------------------
@@ -733,6 +749,68 @@ tree_capture_body_and_counts() {
   fi
 }
 
+# Runs tree -J using TREE_ARGS (requires tree_build_args() already called).
+# Outputs JSON string to stdout, or "[]" on failure.
+tree_native_json() {
+  local output
+  output=$(tree "$TARGET" -J "${TREE_ARGS[@]}" 2>/dev/null) || output="[]"
+  printf "%s" "$output"
+}
+
+# Builds JSON array from TREE_BODY_LINES, bounded by $1 = line limit.
+# Requires tree_capture_body_and_counts() already called.
+tree_lines_json() {
+  local line_limit="$1"
+  local total=${#TREE_BODY_LINES[@]}
+  if (( line_limit > total )); then line_limit=$total; fi
+  local result="["
+  local li first=1
+  for (( li = 0; li < line_limit; li++ )); do
+    (( first )) || result+=","
+    first=0
+    result+="\"$(printf "%s" "${TREE_BODY_LINES[li]}" | json_escape)\""
+  done
+  result+="]"
+  printf "%s" "$result"
+}
+
+# Emits the tree JSON object to stdout (no trailing newline).
+# Requires tree_build_args() + tree_capture_body_and_counts() already called.
+# $1: include_lines (0 or 1). When 1, appends "lines" field.
+emit_tree_json_object() {
+  local include_lines="${1:-0}"
+  local total_lines=${#TREE_BODY_LINES[@]}
+  local shown_lines="$total_lines"
+  local truncated="false"
+  if (( MAX_LINES > 0 )) && (( total_lines > MAX_LINES )); then
+    shown_lines="$MAX_LINES"
+    truncated="true"
+  fi
+
+  local native_json
+  native_json="$(tree_native_json)"
+
+  echo -n "{"
+  echo -n "\"tool\":\"ftree\","
+  echo -n "\"version\":\"$VERSION\","
+  echo -n "\"mode\":\"tree\","
+  echo -n "\"backend\":\"tree\","
+  echo -n "\"path\":\"$(printf "%s" "$ABS_TARGET" | json_escape)\","
+  echo -n "\"depth\":$DEPTH,"
+  echo -n "\"filelimit\":$FILELIMIT,"
+  echo -n "\"ignored\":\"$(printf "%s" "$IGNORE_PATTERN" | json_escape)\","
+  echo -n "\"total_dirs\":$TREE_DIRS,"
+  echo -n "\"total_files\":$TREE_FILES,"
+  echo -n "\"total_lines\":$total_lines,"
+  echo -n "\"shown_lines\":$shown_lines,"
+  echo -n "\"truncated\":$truncated,"
+  echo -n "\"tree_json\":$native_json"
+  if (( include_lines == 1 )); then
+    echo -n ",\"lines\":$(tree_lines_json "$shown_lines")"
+  fi
+  echo -n "}"
+}
+
 run_tree_pretty() {
   tree_build_args
   tree_capture_body_and_counts
@@ -795,50 +873,60 @@ run_tree_paths() {
 run_tree_json() {
   tree_build_args
   tree_capture_body_and_counts
+  emit_tree_json_object 0
+  echo
+}
 
-  # Line counts from captured body
-  local total_lines=${#TREE_BODY_LINES[@]}
-  local shown_lines="$total_lines"
-  local truncated="false"
-  if (( MAX_LINES > 0 )) && (( total_lines > MAX_LINES )); then
-    shown_lines="$MAX_LINES"
-    truncated="true"
-  fi
+# -------------------------
+# Snapshot mode
+# -------------------------
+run_snapshot_pretty() {
+  echo "Snapshot($ABS_TARGET)"
+  echo ""
+  echo "== Recon =="
+  run_recon
+  echo ""
+  echo "== Tree =="
+  run_tree_pretty
+}
 
-  # tree -J: one more invocation (was 2 extra before, now 1 extra)
-  local -a json_args=(tree "$TARGET" -J -L "$DEPTH" --dirsfirst --filelimit "$FILELIMIT" -n)
-  if [[ -n "$IGNORE_PATTERN" ]]; then json_args+=(-I "$IGNORE_PATTERN"); fi
-  if (( DIRS_ONLY == 1 )); then json_args+=(-d); fi
-  if (( FULL_PATHS == 1 )); then json_args+=(-f); fi
-  if (( SIZES == 1 )); then json_args+=(-s -h); fi
-  if (( GITIGNORE == 1 )) && tree_supports_gitignore; then json_args+=(--gitignore); fi
+run_snapshot_json() {
+  # Capture recon JSON (run_recon outputs JSON when OUTPUT=json)
+  local recon_json_str
+  recon_json_str="$(run_recon)"
 
-  local tree_json
-  tree_json=$("${json_args[@]}" 2>/dev/null) || tree_json="[]"
+  # Tree setup
+  tree_build_args
+  tree_capture_body_and_counts
 
+  # Emit snapshot JSON envelope with tree object embedded
   echo -n "{"
   echo -n "\"tool\":\"ftree\","
   echo -n "\"version\":\"$VERSION\","
-  echo -n "\"mode\":\"tree\","
-  echo -n "\"backend\":\"tree\","
+  echo -n "\"mode\":\"snapshot\","
   echo -n "\"path\":\"$(printf "%s" "$ABS_TARGET" | json_escape)\","
-  echo -n "\"depth\":$DEPTH,"
-  echo -n "\"filelimit\":$FILELIMIT,"
-  echo -n "\"ignored\":\"$(printf "%s" "$IGNORE_PATTERN" | json_escape)\","
-  echo -n "\"total_dirs\":$TREE_DIRS,"
-  echo -n "\"total_files\":$TREE_FILES,"
-  echo -n "\"total_lines\":$total_lines,"
-  echo -n "\"shown_lines\":$shown_lines,"
-  echo -n "\"truncated\":$truncated,"
-  echo -n "\"tree_json\":$tree_json"
-  echo -n "}"
+  echo -n "\"snapshot\":{"
+  echo -n "\"recon\":$recon_json_str,"
+  echo -n "\"tree\":"
+  emit_tree_json_object 1
+  echo -n "}}"
   echo
 }
 
 # -------------------------
 # Main
 # -------------------------
-if (( RECON == 1 )); then
+if (( SNAPSHOT == 1 )); then
+  has tree || die 3 "tree is required. Run: ftree --install-hints"
+  [[ -d "$TARGET" ]] || die "Not a directory: $TARGET"
+  if (( GITIGNORE == 1 )) && ! tree_supports_gitignore; then
+    echo "ftree: warning: tree does not support --gitignore (need >= 1.8.0), ignoring flag." >&2
+  fi
+  case "$OUTPUT" in
+    pretty) run_snapshot_pretty ;;
+    json)   run_snapshot_json ;;
+  esac
+elif (( RECON == 1 )); then
   run_recon
 else
   has tree || die 3 "tree is required. Run: ftree --install-hints"

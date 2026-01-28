@@ -1,6 +1,6 @@
 # ftree — Directory Structure and Recon Tool
 
-**Version:** 1.1.0
+**Version:** 1.2.0
 **Part of:** [fsuite](../README.md)
 **Requires:** `tree` (for tree mode), `find`/`du`/`stat` (for recon mode)
 
@@ -19,7 +19,7 @@ It speaks two dialects:
 
 ## Architecture
 
-ftree has two modes:
+ftree has three modes:
 
 ```
 ftree
@@ -30,12 +30,17 @@ ftree
   |     +-- json                 metadata envelope + tree -J output
   |
   +-- recon mode (--recon)       uses find/du/stat directly
-        +-- pretty               header + sorted inventory table
-        +-- paths                flat entry list
-        +-- json                 metadata envelope + entries array
+  |     +-- pretty               header + sorted inventory table
+  |     +-- paths                flat entry list
+  |     +-- json                 metadata envelope + entries array
+  |
+  +-- snapshot mode (--snapshot) combines recon + tree in one pass
+        +-- pretty               recon section + tree section
+        +-- json                 envelope with embedded recon + tree objects
+        (no paths — incompatible with --snapshot)
 ```
 
-### Internal structure (v1.1.0)
+### Internal structure (v1.2.0)
 
 The script is organized into:
 
@@ -45,6 +50,7 @@ The script is organized into:
 4. **Ignore pattern builder** — `build_ignore()` combines defaults + user patterns, removes `--include` entries
 5. **Recon mode** — `run_recon()` with `render_recon_pretty()`, `render_recon_json()`, `render_recon_paths()`
 6. **Tree mode** (v1.0.1 refactor) — `tree_build_args()`, `tree_capture_body_and_counts()`, `run_tree_pretty()`, `run_tree_paths()`, `run_tree_json()`
+7. **Snapshot mode** (v1.2.0) — `run_snapshot_pretty()`, `run_snapshot_json()` — composes recon + tree
 
 ---
 
@@ -73,6 +79,18 @@ Does **not** use `tree(1)`. Scans the target directory with `find`/`du`/`stat`:
 
 Recon is the "scout" step: cheap, fast, tells you where the mass is before you commit context to a full tree.
 
+### Snapshot mode (`--snapshot`)
+
+Combines **recon + tree** in a single invocation. Produces one coherent artifact with both the inventory (sizes, counts) and the structural view (tree excerpt).
+
+- Runs recon first, then tree — both against the same resolved target
+- Default recon depth: **2** (deeper than standalone recon's default of 1)
+- `--recon-depth N` overrides the default in either mode
+- Incompatible with `--recon` (mutually exclusive) and `-o paths` (no sensible flat format for composed output)
+- Supports `-o json` (embedded recon + tree JSON objects) and pretty output (sectioned)
+
+Snapshot is the "one-shot project context capture": one command gives agents everything they need to understand a project.
+
 ---
 
 ## Cheat Sheet
@@ -87,6 +105,8 @@ Every command runs headless (no prompts, no TTY needed).
 | `ftree --recon /project` | Recon: per-dir item counts and sizes |
 | `ftree -L 5 /project/src` | Deeper tree (depth 5) into a subdirectory |
 | `ftree -L 1 /project` | Shallow tree (depth 1) — just top-level entries |
+| `ftree --snapshot /project` | Snapshot: recon inventory + tree excerpt in one output |
+| `ftree --snapshot -o json /project` | Snapshot JSON: combined recon + tree for agents |
 
 ### Output formats
 
@@ -135,7 +155,7 @@ Every command runs headless (no prompts, no TTY needed).
 |---------|-------------|
 | `ftree --self-check` | Verify tree is installed, check `--gitignore` support |
 | `ftree --install-hints` | Print install command for tree |
-| `ftree --version` | Print version (`ftree 1.1.0`) |
+| `ftree --version` | Print version (`ftree 1.2.0`) |
 
 ---
 
@@ -148,9 +168,9 @@ ftree is designed for AI agents, CI pipelines, and automation scripts. No TTY, n
 This is the recommended pattern for an agent exploring an unknown project:
 
 ```bash
-# Step 1: Inventory — what's in this project?
-ftree --recon -o json /project
-# Agent reads: per-dir sizes, counts, exclusions
+# Step 1: One-shot context capture — inventory + structure
+ftree --snapshot -o json /project
+# Agent reads: recon (sizes, counts, exclusions) + tree (depth-3 structure)
 # Decision: where should I drill deeper?
 
 # Step 2: Zoom — expand an interesting subtree
@@ -178,6 +198,7 @@ ftree -o json /project
 
 | Pattern | Command | Why |
 |---------|---------|-----|
+| **One-shot context** | `ftree --snapshot -o json /project` | Recon + tree in one call (v1.2.0+) |
 | **Project triage** | `ftree --recon -o json /project` | Size + counts tell agent where mass is |
 | **Structure overview** | `ftree -o json /project` | Agent gets tree + truncation metadata |
 | **Deep dive** | `ftree -L 6 -o json /project/src` | Agent zooms into heavy subtree |
@@ -195,7 +216,7 @@ Tree mode JSON:
 ```json
 {
   "tool": "ftree",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "mode": "tree",
   "backend": "tree",
   "path": "/project",
@@ -216,7 +237,7 @@ Recon mode JSON:
 ```json
 {
   "tool": "ftree",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "mode": "recon",
   "backend": "find/du/stat",
   "path": "/project",
@@ -252,6 +273,53 @@ Recon mode JSON:
 }
 ```
 
+Snapshot mode JSON (v1.2.0+):
+
+```json
+{
+  "tool": "ftree",
+  "version": "1.2.0",
+  "mode": "snapshot",
+  "path": "/project",
+  "snapshot": {
+    "recon": {
+      "tool": "ftree",
+      "version": "1.2.0",
+      "mode": "recon",
+      "backend": "find/du/stat",
+      "path": "/project",
+      "recon_depth": 2,
+      "total_entries": 8,
+      "visible": 5,
+      "excluded": 3,
+      "entries": [ "... same as standalone recon JSON ..." ]
+    },
+    "tree": {
+      "tool": "ftree",
+      "version": "1.2.0",
+      "mode": "tree",
+      "backend": "tree",
+      "path": "/project",
+      "depth": 3,
+      "filelimit": 80,
+      "ignored": "node_modules|.git|venv|...",
+      "total_dirs": 12,
+      "total_files": 47,
+      "total_lines": 89,
+      "shown_lines": 89,
+      "truncated": false,
+      "tree_json": [ "... native tree -J output ..." ],
+      "lines": [ "/project", "├── src", "│   ├── main.ts", "..." ]
+    }
+  }
+}
+```
+
+Notes:
+- `snapshot.recon` is the **exact same object** as standalone `ftree --recon -o json`. Agents can reuse existing parsers.
+- `snapshot.tree` is the standalone tree JSON object **plus** a `lines` array (text excerpt for LLM context / re-rendering).
+- Default `recon_depth` is 2 in snapshot mode (vs 1 in standalone recon).
+
 ### Key JSON fields for agents
 
 | Field | Type | Meaning |
@@ -279,6 +347,9 @@ ftree
 
 # What's in this project? (scout first)
 ftree --recon
+
+# One-shot: inventory + structure
+ftree --snapshot
 
 # How deep is src/?
 ftree -L 6 src
@@ -404,6 +475,26 @@ target        .gradle    .idea        .vscode     *.egg-info
 ---
 
 ## Version History
+
+### v1.2.0
+
+**New mode: `--snapshot` — combined recon + tree in one invocation.**
+
+New feature:
+- `--snapshot` mode produces a single artifact containing both a recon inventory (sizes, counts, exclusions) and a tree excerpt (structural view)
+- Pretty output shows sectioned `== Recon ==` and `== Tree ==` blocks under a `Snapshot(...)` header
+- JSON output wraps embedded recon and tree objects in a `snapshot` envelope, with a bonus `lines` array on the tree object for LLM context rendering
+- Default recon depth in snapshot mode is **2** (standalone recon remains **1**); `--recon-depth N` overrides in either mode
+
+CLI contract:
+- `--snapshot` is mutually exclusive with `--recon` and `-o paths`
+- Exact error: `ftree: --snapshot is not compatible with -o paths`
+- Exact error: `ftree: --snapshot and --recon are mutually exclusive`
+
+JSON schema:
+- New top-level `"mode": "snapshot"` value
+- New `snapshot` object containing `recon` (embedded as-is) and `tree` (embedded as-is + `lines` array)
+- Standalone recon and tree JSON schemas are **unchanged**
 
 ### v1.1.0
 
