@@ -1,0 +1,368 @@
+#!/usr/bin/env bash
+# fsearch — filename/path search helper (glob-aware) with agent-friendly output.
+# Public-repo-ready: no user-specific paths or secrets.
+
+set -euo pipefail
+
+VERSION="1.0.0"
+
+# -------------------------
+# Defaults (override via flags)
+# -------------------------
+DEFAULT_PATH="."
+DEFAULT_MAX=50
+DEFAULT_BACKEND="auto"   # auto|find|fd
+DEFAULT_OUTPUT="pretty"  # pretty|json|paths
+
+# -------------------------
+# Helpers
+# -------------------------
+die() { echo "Error: $*" >&2; exit 1; }
+
+has() { command -v "$1" >/dev/null 2>&1; }
+
+usage() {
+  cat <<'EOF'
+fsearch — fast filename/path search (glob patterns, extensions, agent-friendly)
+
+USAGE
+  fsearch [OPTIONS] <pattern_or_ext> [path]
+
+QUICK EXAMPLES
+  # Starts-with (glob)
+  fsearch 'upscale*' /home/USER
+
+  # Contains substring anywhere (use * on both sides)
+  fsearch '*progress*' /var/log
+
+  # Extension search (user can pass "log" or ".log")
+  fsearch log /home/USER
+  fsearch .log /home/USER
+
+  # End-of-name (suffix)
+  fsearch '*error' /var/log
+
+  # Headless / agent-friendly output (paths only)
+  fsearch --output paths '*.log' /var/log
+
+  # JSON output (good for AI agents)
+  fsearch --output json '*progress*' /home/USER
+
+  # Prefer fd backend if available (faster than find)
+  fsearch --backend fd '*.log' /
+
+OPTIONS
+  -p, --path PATH
+      Search root. If omitted, uses current directory.
+
+  -m, --max N
+      Max number of results to print in pretty output. Default: 50
+      (JSON output always includes the total count; still prints only up to --max results.)
+
+  -b, --backend auto|find|fd
+      Choose search backend.
+        auto: use fd if installed, else find
+        fd:   use fd (fast). Requires fd to be installed
+        find: use POSIX find
+
+  -o, --output pretty|paths|json
+      pretty: human-friendly header + list (default)
+      paths:  print only matching paths, one per line (best for piping/headless use)
+      json:   print a compact JSON object (best for AI agents/tools)
+
+  -i, --interactive
+      Force interactive prompts even if args were provided.
+
+  --install-hints
+      Print suggestions to install optional tools (fd, rg) and exit.
+      (Does not install automatically; avoids storing credentials.)
+
+  --self-check
+      Checks availability of optional tools and prints guidance.
+      If you intend to let the script invoke sudo-driven installs, authenticate first:
+        sudo -v
+      Then re-run with your preferred package installs manually.
+
+  -h, --help
+      Show help and exit.
+
+NOTES ON PATTERNS (GLOBS)
+  This tool searches FILE NAMES/PATHS (not file contents).
+  Wildcards:
+    *  matches any characters (including none)
+    ?  matches exactly one character
+  Common patterns:
+    upscale*        "starts with upscale"
+    *progress*      "contains progress anywhere"
+    *.log           "ends with .log"
+    *error          "ends with error"
+
+  IMPORTANT: Quote patterns containing '*' or '?' so your shell doesn't expand them early:
+    fsearch '*progress*' /some/path
+
+EXTENSIONS
+  If you pass:
+    log   -> treated as *.log
+    .log  -> treated as *.log
+  If you pass wildcards yourself (like *progress* or upscale*), they are used as-is.
+
+HEADLESS / AI AGENT USAGE
+  This script is designed to be easy for an agent to call in "headless" mode:
+    fsearch --output json '*token*' /path
+  The agent can parse:
+    - "total_found"
+    - "shown"
+    - "results" (array of file paths)
+    - "backend" used
+    - "pattern" and "name_glob" resolved
+    - "path" searched
+
+  For simple piping (no JSON parsing), use:
+    fsearch --output paths '*.log' /var/log | head
+
+SECURITY / SUDO
+  This script DOES NOT store passwords. Do not embed admin passwords in scripts.
+  If you need privileged scanning or installs:
+    1) Authenticate once for your session:
+         sudo -v
+    2) Run commands with sudo as needed (recommended):
+         sudo fsearch '*.log' /var/log
+  Or configure tightly scoped sudoers rules (advanced; do carefully).
+
+OPTIONAL TOOLS
+  - fd: faster filename search backend than find
+  - rg (ripgrep): searches INSIDE file contents (different problem)
+  To get install hints:
+    fsearch --install-hints
+
+EOF
+}
+
+print_install_hints() {
+  cat <<'EOF'
+Optional tools you may want:
+
+1) fd (recommended)
+   Debian/Ubuntu:
+     sudo apt update && sudo apt install -y fd-find
+   Note: On Debian, the binary may be named "fdfind".
+         You can create an alias or symlink if desired:
+           sudo ln -s "$(command -v fdfind)" /usr/local/bin/fd
+
+2) ripgrep (rg) — for searching inside file contents
+   Debian/Ubuntu:
+     sudo apt update && sudo apt install -y ripgrep
+
+If you want this script to benefit from newly installed tools,
+re-run it after installation.
+
+Tip: authenticate once first (helps if you're doing multiple installs):
+  sudo -v
+EOF
+}
+
+# Normalize user pattern:
+# - If user provides wildcards '*' or '?', respect as-is.
+# - Else if pattern begins with '.', treat as extension: "*.ext"
+# - Else if pattern contains '.', treat as literal name (or suffix) the user gave.
+# - Else treat as extension: "*.pattern"
+normalize_pattern() {
+  local p="$1"
+  local out="$p"
+
+  if [[ "$p" == *'*'* || "$p" == *'?'* ]]; then
+    out="$p"
+  else
+    if [[ "$p" == .* ]]; then
+      out="*${p}"
+    elif [[ "$p" == *.* ]]; then
+      out="$p"
+    else
+      out="*.${p}"
+    fi
+  fi
+
+  printf "%s" "$out"
+}
+
+# Choose backend
+choose_backend() {
+  local requested="$1"
+  if [[ "$requested" == "find" ]]; then
+    echo "find"
+  elif [[ "$requested" == "fd" ]]; then
+    # Debian often has fdfind instead of fd; treat both.
+    if has fd; then echo "fd"
+    elif has fdfind; then echo "fdfind"
+    else die "Backend 'fd' requested but 'fd'/'fdfind' not installed. Run: fsearch --install-hints"
+    fi
+  else
+    # auto
+    if has fd; then echo "fd"
+    elif has fdfind; then echo "fdfind"
+    else echo "find"
+    fi
+  fi
+}
+
+# Find results with find
+run_find() {
+  local path="$1"
+  local glob="$2"
+  # 2>/dev/null to avoid permission noise in normal use; agent can rerun with sudo if needed.
+  find "$path" -type f -name "$glob" 2>/dev/null
+}
+
+# Find results with fd/fdfind
+run_fd() {
+  local bin="$1"   # fd or fdfind
+  local path="$2"
+  local glob="$3"
+  # fd uses pattern matching; for glob, use --glob
+  # We search files only (-t f). Quiet permission errors by default.
+  "$bin" -t f --glob "$glob" "$path" 2>/dev/null
+}
+
+# JSON escape minimal
+json_escape() {
+  # Escapes backslashes and double quotes, and newlines.
+  sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e ':a;N;$!ba;s/\n/\\n/g'
+}
+
+# -------------------------
+# Parse args
+# -------------------------
+PATTERN=""
+SEARCH_PATH=""
+MAX="$DEFAULT_MAX"
+BACKEND="$DEFAULT_BACKEND"
+OUTPUT="$DEFAULT_OUTPUT"
+FORCE_INTERACTIVE=0
+INSTALL_HINTS=0
+SELF_CHECK=0
+
+# Manual parsing to support both flags and positionals
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -p|--path) SEARCH_PATH="${2:-}"; shift 2 ;;
+    -m|--max) MAX="${2:-}"; shift 2 ;;
+    -b|--backend) BACKEND="${2:-}"; shift 2 ;;
+    -o|--output) OUTPUT="${2:-}"; shift 2 ;;
+    -i|--interactive) FORCE_INTERACTIVE=1; shift ;;
+    --install-hints) INSTALL_HINTS=1; shift ;;
+    --self-check) SELF_CHECK=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --version) echo "fsearch $VERSION"; exit 0 ;;
+    --) shift; break ;;
+    -*) die "Unknown option: $1 (try --help)" ;;
+    *) POSITIONAL+=("$1"); shift ;;
+  esac
+done
+
+# Append any remaining args after --
+while [[ $# -gt 0 ]]; do POSITIONAL+=("$1"); shift; done
+
+PATTERN="${POSITIONAL[0]:-}"
+SEARCH_PATH="${POSITIONAL[1]:-$SEARCH_PATH}"
+SEARCH_PATH="${SEARCH_PATH:-$DEFAULT_PATH}"
+
+# Install hints mode
+if (( INSTALL_HINTS == 1 )); then
+  print_install_hints
+  exit 0
+fi
+
+# Self-check mode
+if (( SELF_CHECK == 1 )); then
+  echo "Self-check:"
+  if has fd || has fdfind; then
+    echo "  ✓ fd backend available ($(command -v fd 2>/dev/null || command -v fdfind))"
+  else
+    echo "  ✗ fd not found (recommended). Run: fsearch --install-hints"
+  fi
+  if has rg; then
+    echo "  ✓ rg (ripgrep) available ($(command -v rg))"
+  else
+    echo "  ✗ rg not found (optional). Run: fsearch --install-hints"
+  fi
+  echo ""
+  echo "If you plan to install packages and want fewer sudo prompts:"
+  echo "  sudo -v"
+  exit 0
+fi
+
+# Validate output/backend
+case "$OUTPUT" in pretty|paths|json) ;; *) die "Invalid --output: $OUTPUT" ;; esac
+case "$BACKEND" in auto|find|fd) ;; *) die "Invalid --backend: $BACKEND" ;; esac
+[[ "$MAX" =~ ^[0-9]+$ ]] || die "--max must be an integer"
+
+# Interactive prompt if requested or missing pattern
+if (( FORCE_INTERACTIVE == 1 )) || [[ -z "$PATTERN" ]]; then
+  echo "Interactive mode."
+  read -r -p "Enter pattern or extension (e.g. upscale* or log): " PATTERN
+  read -r -p "Enter search path (default: $SEARCH_PATH): " INPUT_PATH
+  if [[ -n "${INPUT_PATH:-}" ]]; then SEARCH_PATH="$INPUT_PATH"; fi
+fi
+
+[[ -n "$PATTERN" ]] || die "Missing pattern. Try: fsearch --help"
+
+NAME_GLOB="$(normalize_pattern "$PATTERN")"
+BACKEND_BIN="$(choose_backend "$BACKEND")"
+
+# -------------------------
+# Execute search
+# -------------------------
+if [[ "$BACKEND_BIN" == "find" ]]; then
+  mapfile -t RESULTS < <(run_find "$SEARCH_PATH" "$NAME_GLOB")
+else
+  mapfile -t RESULTS < <(run_fd "$BACKEND_BIN" "$SEARCH_PATH" "$NAME_GLOB")
+fi
+
+TOTAL_FOUND="${#RESULTS[@]}"
+SHOWN="$TOTAL_FOUND"
+if (( SHOWN > MAX )); then SHOWN="$MAX"; fi
+
+# -------------------------
+# Output
+# -------------------------
+if [[ "$OUTPUT" == "paths" ]]; then
+  for ((i=0; i<SHOWN; i++)); do
+    printf "%s\n" "${RESULTS[i]}"
+  done
+  exit 0
+fi
+
+if [[ "$OUTPUT" == "json" ]]; then
+  # Minimal JSON (no jq dependency).
+  # Note: paths are escaped.
+  echo -n "{"
+  echo -n "\"tool\":\"fsearch\","
+  echo -n "\"version\":\"$VERSION\","
+  echo -n "\"pattern\":\"$(printf "%s" "$PATTERN" | json_escape)\","
+  echo -n "\"name_glob\":\"$(printf "%s" "$NAME_GLOB" | json_escape)\","
+  echo -n "\"path\":\"$(printf "%s" "$SEARCH_PATH" | json_escape)\","
+  echo -n "\"backend\":\"$BACKEND_BIN\","
+  echo -n "\"total_found\":$TOTAL_FOUND,"
+  echo -n "\"shown\":$SHOWN,"
+  echo -n "\"results\":["
+  for ((i=0; i<SHOWN; i++)); do
+    p="$(printf "%s" "${RESULTS[i]}" | json_escape)"
+    if (( i > 0 )); then echo -n ","; fi
+    echo -n "\"$p\""
+  done
+  echo -n "]}"
+  echo
+  exit 0
+fi
+
+# pretty output
+echo "Search(pattern: \"$PATTERN\" -> name \"$NAME_GLOB\", path: \"$SEARCH_PATH\")"
+echo "  ⎿ Found $TOTAL_FOUND files (backend: $BACKEND_BIN)"
+if (( TOTAL_FOUND == 0 )); then exit 0; fi
+for ((i=0; i<SHOWN; i++)); do
+  echo "     ${RESULTS[i]}"
+done
+if (( TOTAL_FOUND > MAX )); then
+  echo "     … (showing first $MAX)"
+fi
