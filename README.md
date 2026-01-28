@@ -12,6 +12,25 @@
 
 Each tool does one thing. They work independently or together for a complete **scout-then-search** workflow with zero glue code.
 
+## Contents
+
+- [Why This Exists](#why-this-exists-the-lightbulb-moment)
+- [Quick Start](#quick-start)
+- [Fast Paths](#fast-paths-copypaste)
+- [Tools](#tools)
+  - [fsearch](#fsearch--filename--path-search)
+  - [fcontent](#fcontent--file-content-search)
+  - [ftree](#ftree--directory-structure-visualization)
+- [Output Formats](#output-formats)
+- [Agent / Headless Usage](#agent--headless-usage)
+- [Cheat Sheet](#cheat-sheet)
+- [Quick Reference — Flags](#quick-reference--flags)
+- [Optional Dependencies](#optional-dependencies)
+- [Security Notes](#security-notes)
+- [Installation](#installation)
+- [Changelog](#changelog)
+- [License](#license)
+
 ---
 
 ## Why This Exists: The Lightbulb Moment
@@ -76,6 +95,29 @@ chmod +x fsearch fcontent ftree
 # Combine: find logs, then grep inside them
 ./fsearch --output paths '*.log' /var/log | ./fcontent "ERROR"
 ```
+
+---
+
+## Fast Paths (copy/paste)
+
+Three pipelines that cover 80% of what you'll ever need. Copy, paste, go.
+
+### 1) New repo — instant context (best default)
+```bash
+ftree --snapshot -o json /project | jq .
+```
+
+### 2) Find candidates — search inside them (pipeline power)
+```bash
+fsearch -o paths '*.ts' /project/src | fcontent -o json "Auth" | jq .
+```
+
+### 3) Triage a big project safely (no floods)
+```bash
+ftree --recon -o json /project | jq '.entries | sort_by(-.size_bytes) | .[:10]'
+```
+
+> **Note:** `jq` is optional — used only in these examples for pretty-printing JSON. All tools output valid JSON natively with `-o json`.
 
 ---
 
