@@ -14,6 +14,45 @@ Each tool does one thing. They work independently or together for a complete **s
 
 ---
 
+## Why This Exists: The Lightbulb Moment
+
+We shipped fsuite and thought it was done. Then we pointed Claude Code at the repo, told it to clone, study, and live-test the tools — and asked it to do a *Tony Stark autopsy*: compare fsuite against its own built-in toolkit and tell us honestly what it would change.
+
+It didn't just say "nice tools." It wrote a full self-assessment. Unprompted conclusions. No instructions on what to find.
+
+**The headline finding:**
+
+> *"The gap isn't in any single tool. It's in the reconnaissance layer. I have no native way to answer the question: 'What is this project, how big is it, and where should I look first?'"*
+>
+> *"fsuite doesn't make any of my tools obsolete, but it fills the reconnaissance gap that is genuinely my weakest phase of operation. I'm good at reading code, editing code, and running commands. I'm bad at efficiently finding what to read in the first place. fsuite is built specifically for that phase, and built specifically for how I operate."*
+>
+> — Claude Code (Opus 4.5), self-assessment, January 2026
+
+**What the agent said it would do:**
+
+| Tool | Agent's Verdict |
+|------|----------------|
+| **ftree** | *"Net new capability. Nothing I have comes close."* — Replaces the Explore agent for structural recon. |
+| **fsearch** | *"Augment. Use alongside Glob for discovery and pipeline scenarios."* — Pattern normalization + pipeline composability. |
+| **fcontent** | *"Augment. Use for pipeline searches and scoped discovery."* — Piped mode + match caps designed for LLM context windows. |
+
+**The workflow shift — before and after:**
+
+```
+BEFORE fsuite:
+  Spawn Explore agent -> 10-15 internal tool calls -> still blind on structure
+
+AFTER fsuite:
+  ftree --snapshot -o json  ->  fsearch -o paths  ->  fcontent -o json
+  3-4 calls. Full understanding. ~70% fewer tool invocations.
+```
+
+The full unedited analysis is in **[AGENT-ANALYSIS.md](AGENT-ANALYSIS.md)** — the raw self-assessment, exactly as Claude Code wrote it after studying and testing every tool in this repo.
+
+That document is the pitch. Not because we wrote it, but because the agent did.
+
+---
+
 ## Quick Start
 
 ```bash
