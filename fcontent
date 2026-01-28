@@ -160,16 +160,23 @@ has rg || die "rg (ripgrep) is required. Run: fcontent --install-hints"
 # -------------------------
 # Determine input: stdin file list vs directory mode
 # -------------------------
+# If the user explicitly gave a path (positional or --path that isn't the
+# default "."), always use directory mode.  Only treat a non-terminal stdin
+# as a piped file list when no explicit path was provided.
+EXPLICIT_PATH=0
+if [[ -n "${POSITIONAL[1]:-}" ]] || [[ "$SEARCH_PATH" != "$DEFAULT_PATH" ]]; then
+  EXPLICIT_PATH=1
+fi
+
 FILES_FROM_STDIN=0
-if ! [ -t 0 ]; then
-  # stdin is not a terminal -> something is being piped in
+if (( EXPLICIT_PATH == 0 )) && ! [ -t 0 ]; then
   FILES_FROM_STDIN=1
 fi
 
 # Build file list if using stdin
 TMP_LIST=""
 cleanup() {
-  [[ -n "$TMP_LIST" && -f "$TMP_LIST" ]] && rm -f "$TMP_LIST"
+  [[ -n "$TMP_LIST" && -f "$TMP_LIST" ]] && rm -f "$TMP_LIST" || true
 }
 trap cleanup EXIT
 
@@ -201,26 +208,26 @@ EXTRA_RG=($RG_ARGS)
 
 if [[ "$OUTPUT" == "paths" ]]; then
   if (( FILES_FROM_STDIN == 1 )); then
-    # Search each file listed; -l prints only matching file paths
-    "${BASE_RG[@]}" "${EXTRA_RG[@]}" -l --files-from "$TMP_LIST" -- "$QUERY" 2>/dev/null | sort -u
+    xargs -d '\n' -a "$TMP_LIST" "${BASE_RG[@]}" "${EXTRA_RG[@]}" -l -- "$QUERY" 2>/dev/null | sort -u || true
   else
-    "${BASE_RG[@]}" "${EXTRA_RG[@]}" -l -- "$QUERY" "$SEARCH_PATH" 2>/dev/null | sort -u
+    "${BASE_RG[@]}" "${EXTRA_RG[@]}" -l -- "$QUERY" "$SEARCH_PATH" 2>/dev/null | sort -u || true
   fi
   exit 0
 fi
 
 # For pretty/json, we want match lines
+# || true: rg returns 1 on no matches; head can cause SIGPIPE under pipefail
 if (( FILES_FROM_STDIN == 1 )); then
-  mapfile -t MATCH_LINES < <("${BASE_RG[@]}" "${EXTRA_RG[@]}" --files-from "$TMP_LIST" -- "$QUERY" 2>/dev/null | head -n "$MAX_MATCHES")
+  mapfile -t MATCH_LINES < <(xargs -d '\n' -a "$TMP_LIST" "${BASE_RG[@]}" "${EXTRA_RG[@]}" -- "$QUERY" 2>/dev/null | head -n "$MAX_MATCHES" || true)
 else
-  mapfile -t MATCH_LINES < <("${BASE_RG[@]}" "${EXTRA_RG[@]}" -- "$QUERY" "$SEARCH_PATH" 2>/dev/null | head -n "$MAX_MATCHES")
+  mapfile -t MATCH_LINES < <("${BASE_RG[@]}" "${EXTRA_RG[@]}" -- "$QUERY" "$SEARCH_PATH" 2>/dev/null | head -n "$MAX_MATCHES" || true)
 fi
 
 # Count total matched files
 if (( FILES_FROM_STDIN == 1 )); then
-  mapfile -t MATCH_FILES < <("${BASE_RG[@]}" "${EXTRA_RG[@]}" -l --files-from "$TMP_LIST" -- "$QUERY" 2>/dev/null | sort -u)
+  mapfile -t MATCH_FILES < <(xargs -d '\n' -a "$TMP_LIST" "${BASE_RG[@]}" "${EXTRA_RG[@]}" -l -- "$QUERY" 2>/dev/null | sort -u || true)
 else
-  mapfile -t MATCH_FILES < <("${BASE_RG[@]}" "${EXTRA_RG[@]}" -l -- "$QUERY" "$SEARCH_PATH" 2>/dev/null | sort -u)
+  mapfile -t MATCH_FILES < <("${BASE_RG[@]}" "${EXTRA_RG[@]}" -l -- "$QUERY" "$SEARCH_PATH" 2>/dev/null | sort -u || true)
 fi
 
 TOTAL_FILES="${#MATCH_FILES[@]}"
