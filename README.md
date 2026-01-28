@@ -1,15 +1,16 @@
 # fsuite
 
-**A two-tool filesystem reconnaissance kit for humans and AI agents.**
+**A three-tool filesystem reconnaissance kit for humans and AI agents.**
 
-`fsuite` provides two composable CLI utilities that turn filesystem search into a clean, scriptable, agent-friendly pipeline:
+`fsuite` provides three composable CLI utilities that turn filesystem exploration into a clean, scriptable, agent-friendly pipeline:
 
 | Tool | Purpose |
 |------|---------|
 | **`fsearch`** | Find files by name, extension, or glob pattern |
 | **`fcontent`** | Search _inside_ files for text (powered by ripgrep) |
+| **`ftree`** | Visualize directory structure with smart defaults and recon mode |
 
-They work independently or together. Pipe the output of one into the other for a full **find-then-grep** workflow with zero glue code.
+Each tool does one thing. They work independently or together for a complete **scout-then-search** workflow with zero glue code.
 
 ---
 
@@ -19,13 +20,19 @@ They work independently or together. Pipe the output of one into the other for a
 # Clone and make executable
 git clone https://github.com/lliWcWill/fsuite.git
 cd fsuite
-chmod +x fsearch fcontent
+chmod +x fsearch fcontent ftree
 
 # Find all .log files under /var/log
 ./fsearch '*.log' /var/log
 
 # Search inside files for "ERROR"
 ./fcontent "ERROR" /var/log
+
+# Scout a project: what's here?
+./ftree --recon /project
+
+# Show the directory tree (depth 3, smart defaults)
+./ftree /project
 
 # Combine: find logs, then grep inside them
 ./fsearch --output paths '*.log' /var/log | ./fcontent "ERROR"
@@ -102,11 +109,66 @@ fcontent --output json "api_key" /home/user/project
 fcontent --rg-args "-i --hidden" "secret" /home/user
 ```
 
+### `ftree` &mdash; directory structure visualization
+
+Wraps `tree` with smart defaults, context-budget awareness, and a **recon mode** for scouting directories before committing context window to a full tree dump.
+
+```
+ftree [OPTIONS] [path]
+```
+
+**Key features:**
+
+- Smart defaults: depth 3, 200-line cap, noise directories excluded (node_modules, .git, venv, etc.)
+- Recon mode: per-directory item counts and sizes without full tree expansion
+- Excluded-dir summaries in recon show what's hidden and how big it is
+- `--include` promotes excluded dirs back to normal treatment
+- Multiple `--ignore` flags accumulate (v1.0.1+): `-I 'docs' -I '*.md'` excludes both
+- Three output formats: `pretty` (default), `paths` (flat file list), `json`
+- Truncation with overflow count and drill-down suggestion
+- Clear error messages when flags are missing their required values
+
+**Examples:**
+
+```bash
+# Default tree (depth 3, smart excludes, 200-line cap)
+ftree /project
+
+# Recon: scout per-directory sizes before committing context
+ftree --recon /project
+
+# JSON for agent consumption
+ftree -o json /project
+
+# Flat file list for piping
+ftree -o paths /project
+
+# Drill into a subdirectory
+ftree -L 5 /project/src
+
+# Include a normally-excluded directory
+ftree --include .git /project
+
+# Stack multiple ignore patterns (each -I adds to the list)
+ftree -I 'docs' -I '*.md' /project
+
+# Recon without excluded-dir summaries
+ftree --recon --hide-excluded /project
+
+# Show sizes in tree output
+ftree -s /project
+
+# Directories only
+ftree -d /project
+```
+
+See **[docs/ftree.md](docs/ftree.md)** for the full deep-dive: architecture, all flags, headless agent workflows, interactive human usage, and tandem usage with `fsearch`/`fcontent`.
+
 ---
 
 ## Output Formats
 
-Both tools support three output modes via `--output` / `-o`:
+All three tools support three output modes via `--output` / `-o`:
 
 | Mode | Description | Best for |
 |------|-------------|----------|
@@ -146,19 +208,73 @@ Both tools support three output modes via `--output` / `-o`:
 }
 ```
 
+### JSON schema (`ftree` — tree mode)
+
+```json
+{
+  "tool": "ftree",
+  "version": "1.0.1",
+  "mode": "tree",
+  "backend": "tree",
+  "path": "/project",
+  "depth": 3,
+  "filelimit": 80,
+  "ignored": "node_modules|.git|venv|...",
+  "total_dirs": 12,
+  "total_files": 47,
+  "total_lines": 89,
+  "shown_lines": 89,
+  "truncated": false,
+  "tree_json": [ "... native tree -J output ..." ]
+}
+```
+
+### JSON schema (`ftree` — recon mode)
+
+```json
+{
+  "tool": "ftree",
+  "version": "1.0.1",
+  "mode": "recon",
+  "backend": "find/du/stat",
+  "path": "/project",
+  "recon_depth": 1,
+  "total_entries": 8,
+  "visible": 5,
+  "excluded": 3,
+  "entries": [
+    {"name": "src", "type": "directory", "items_total": 234, "size_bytes": 1258291, "size_human": "1.2M", "excluded": false},
+    {"name": "package.json", "type": "file", "size_bytes": 2355, "size_human": "2.3K", "excluded": false},
+    {"name": "node_modules", "type": "directory", "items_total": 1847, "size_bytes": 207618048, "size_human": "198M", "excluded": true}
+  ]
+}
+```
+
 ---
 
 ## Agent / Headless Usage
 
 These tools are designed to be called programmatically by AI agents, automation scripts, or CI pipelines.
 
-**Recommended workflow for agents:**
+**Recommended drill-down workflow for agents:**
 
 ```bash
-# Step 1: Find candidate files (deterministic, structured)
+# Step 1: Scout — what's in this project?
+ftree --recon -o json /project
+# → per-dir item counts and sizes, agent picks targets programmatically
+
+# Step 2: Structure — show me the tree
+ftree /project
+# → depth-3 tree, 200-line cap, noise excluded
+
+# Step 3: Zoom — drill into interesting part
+ftree -L 5 /project/src
+# → deeper view of just src/
+
+# Step 4: Find candidate files (deterministic, structured)
 fsearch --output json '*.py' /project
 
-# Step 2: Search inside candidates (structured results)
+# Step 5: Search inside candidates (structured results)
 fsearch --output paths '*.py' /project | fcontent --output json "import torch"
 ```
 
@@ -167,7 +283,7 @@ fsearch --output paths '*.py' /project | fcontent --output json "import torch"
 - `--output json` gives structured data an agent can parse without regex
 - `--output paths` produces clean line-delimited output for piping
 - No interactive prompts in headless mode (prompts only trigger when pattern is missing)
-- Exit codes follow convention: `0` = success, `1` = error
+- Exit codes follow convention: `0` = success, `2` = usage error, `3` = missing dependency
 - Errors go to stderr, results go to stdout
 
 ---
@@ -214,6 +330,31 @@ Copy-paste ready. Every command runs headless (no prompts, no TTY needed) unless
 | `fcontent --install-hints` | Print install command for `rg` |
 | `fcontent --version` | Print version |
 
+### `ftree` — Visualize Directory Structure
+
+| Command | What it does |
+|---------|-------------|
+| `ftree /project` | Tree view, depth 3, default excludes, 200-line cap |
+| `ftree --recon /project` | Recon: per-dir item counts and sizes |
+| `ftree -L 5 /project/src` | Deeper tree (depth 5) of a subdirectory |
+| `ftree -o json /project` | Structured JSON tree with metadata envelope |
+| `ftree -o paths /project` | Flat file list, one per line |
+| `ftree --recon -o json /project` | Recon JSON: agent-parseable per-dir inventory |
+| `ftree --recon --hide-excluded /project` | Clean recon, no excluded-dir summaries |
+| `ftree --include .git /project` | Show `.git` even though it's in the default ignore list |
+| `ftree -I 'docs\|*.md' /project` | Exclude additional patterns (appended to defaults) |
+| `ftree -I 'docs' -I '*.md' /project` | Same — multiple `-I` flags accumulate (v1.0.1+) |
+| `ftree --no-default-ignore /project` | Disable built-in ignore list entirely |
+| `ftree -d /project` | Directories only |
+| `ftree -s /project` | Show file/dir sizes |
+| `ftree -f /project` | Full absolute paths |
+| `ftree -m 50 /project` | Cap pretty output at 50 lines |
+| `ftree -m 0 /project` | Unlimited lines (may be large!) |
+| `ftree --gitignore /project` | Also honor `.gitignore` rules (if tree supports it) |
+| `ftree --self-check` | Verify tree is installed, check `--gitignore` support |
+| `ftree --install-hints` | Print install command for tree |
+| `ftree --version` | Print version |
+
 ### Pipeline — Find Then Grep (the power move)
 
 | Command | What it does |
@@ -234,6 +375,9 @@ These are designed for AI agents, CI pipelines, cron jobs, and automation script
 
 | Workflow | Commands | Why |
 |----------|----------|-----|
+| **Scout a project** | `ftree --recon -o json /project` | Agent gets per-dir item counts, sizes, and exclusion tags |
+| **Structure overview** | `ftree -o json /project` | Agent gets depth-3 tree with truncation metadata |
+| **Drill into subdirectory** | `ftree -L 5 -o json /project/src` | Agent zooms into a specific subtree |
 | **Inventory a project** | `fsearch -o json '*.py' /project` | Agent gets structured file list with count |
 | **Find + grep in one shot** | `fsearch -o paths '*.py' /project \| fcontent -o json "import"` | Agent gets structured match data in one pipeline |
 | **Count log files** | `fsearch -o json '*.log' /var/log \| jq .total_found` | Pull a single integer from JSON |
@@ -286,30 +430,54 @@ These are designed for AI agents, CI pipelines, cron jobs, and automation script
 | `--self-check` | — | — | — |
 | `--install-hints` | — | — | — |
 
+**`ftree`**
+
+| Flag | Short | Values | Default |
+|------|-------|--------|---------|
+| `--output` | `-o` | `pretty`, `paths`, `json` | `pretty` |
+| `--depth` | `-L` | any integer | `3` |
+| `--max-lines` | `-m` | any integer (0 = unlimited) | `200` |
+| `--filelimit` | `-F` | any integer | `80` |
+| `--ignore` | `-I` | pipe-separated pattern | built-in list |
+| `--no-default-ignore` | — | — | off |
+| `--include` | — | pattern (repeatable) | — |
+| `--recon` | `-r` | — | off |
+| `--recon-depth` | — | any integer | `1` |
+| `--hide-excluded` | — | — | off |
+| `--dirs-only` | `-d` | — | off |
+| `--sizes` | `-s` | — | off |
+| `--gitignore` | — | — | off |
+| `--full-paths` | `-f` | — | off |
+| `--self-check` | — | — | — |
+| `--install-hints` | — | — | — |
+
 ---
 
 ## Optional Dependencies
 
 | Tool | Purpose | Install (Debian/Ubuntu) |
 |------|---------|------------------------|
+| `tree` | **Required** by `ftree` (tree mode) | `sudo apt install tree` |
 | `fd` / `fdfind` | Faster filename search backend | `sudo apt install fd-find` |
 | `rg` (ripgrep) | **Required** by `fcontent` | `sudo apt install ripgrep` |
 
-Both tools include built-in guidance:
+All tools include built-in guidance:
 
 ```bash
 fsearch --self-check       # Check what's available
 fsearch --install-hints    # Print install commands
 fcontent --self-check
 fcontent --install-hints
+ftree --self-check         # Verify tree + gitignore support
+ftree --install-hints      # Print install command for tree
 ```
 
 ---
 
 ## Security Notes
 
-- Neither tool stores passwords or credentials
-- Neither tool writes to the filesystem or modifies files
+- No tool stores passwords or credentials
+- No tool writes to the filesystem or modifies files
 - For scanning protected directories, authenticate first with `sudo -v` then run with `sudo`
 - No auto-install behavior; `--install-hints` only _prints_ commands for you to run manually
 
@@ -320,11 +488,12 @@ fcontent --install-hints
 ```bash
 git clone https://github.com/lliWcWill/fsuite.git
 cd fsuite
-chmod +x fsearch fcontent
+chmod +x fsearch fcontent ftree
 
 # Optional: symlink into your PATH
 sudo ln -s "$(pwd)/fsearch" /usr/local/bin/fsearch
 sudo ln -s "$(pwd)/fcontent" /usr/local/bin/fcontent
+sudo ln -s "$(pwd)/ftree" /usr/local/bin/ftree
 ```
 
 ---

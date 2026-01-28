@@ -1,0 +1,834 @@
+#!/usr/bin/env bash
+# ftree — smart directory snapshot with recon mode, agent-friendly output.
+# Part of fsuite. Wraps tree(1) + find/du/stat for context-budget-aware directory views.
+
+set -euo pipefail
+
+VERSION="1.0.1"
+
+# -------------------------
+# Defaults (override via flags)
+# -------------------------
+DEFAULT_IGNORE="node_modules|.git|venv|.venv|__pycache__|dist|build|.next|.cache|vendor|target|.gradle|.idea|.vscode|*.egg-info|.tox|.mypy_cache|.pytest_cache|.DS_Store|.terraform"
+DEFAULT_DEPTH=3
+DEFAULT_MAX_LINES=200
+DEFAULT_FILELIMIT=80
+DEFAULT_OUTPUT="pretty"   # pretty|paths|json
+DEFAULT_RECON_DEPTH=1
+
+# -------------------------
+# Helpers
+# -------------------------
+die() {
+  local code=2
+  if [[ "${1:-}" =~ ^[0-9]+$ ]]; then code="$1"; shift; fi
+  echo "Error: $*" >&2
+  exit "$code"
+}
+
+has() { command -v "$1" >/dev/null 2>&1; }
+
+json_escape() {
+  sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e ':a;N;$!ba;s/\n/\\n/g'
+}
+
+tree_supports_gitignore() {
+  tree --help 2>&1 | grep -q '\-\-gitignore'
+}
+
+du_bytes() {
+  local p="$1" out
+  out=$(du -sb "$p" 2>/dev/null | cut -f1)
+  if [[ -n "$out" && "$out" =~ ^[0-9]+$ ]]; then printf "%s" "$out"; return; fi
+  out=$(du -sk "$p" 2>/dev/null | cut -f1)
+  if [[ -n "$out" && "$out" =~ ^[0-9]+$ ]]; then printf "%s" "$(( out * 1024 ))"; return; fi
+  printf "%s" "-1"
+}
+
+count_items_total() {
+  # Exact v1.0.0 logic: find|wc failure → -1, non-numeric → -1.
+  local p="$1"
+  local n
+  n=$(find "$p" -mindepth 1 2>/dev/null | wc -l) || n="-1"
+  if [[ "$n" == "" ]] || ! [[ "$n" =~ ^[0-9]+$ ]]; then n="-1"; fi
+  printf "%s" "$n"
+}
+
+stat_bytes() {
+  local p="$1" out
+  out=$(stat --format='%s' "$p" 2>/dev/null)
+  if [[ -n "$out" && "$out" =~ ^[0-9]+$ ]]; then printf "%s" "$out"; return; fi
+  out=$(stat -f '%z' "$p" 2>/dev/null)
+  if [[ -n "$out" && "$out" =~ ^[0-9]+$ ]]; then printf "%s" "$out"; return; fi
+  printf "%s" "-1"
+}
+
+# bytes → human-readable (K/M/G) using pure bash arithmetic + printf
+human_size() {
+  local bytes="$1"
+  if (( bytes < 0 )); then
+    printf "?"
+    return
+  fi
+  if (( bytes < 1024 )); then
+    printf "%d" "$bytes"
+  elif (( bytes < 1048576 )); then
+    # K — one decimal
+    local whole=$(( bytes / 1024 ))
+    local frac=$(( (bytes % 1024) * 10 / 1024 ))
+    if (( frac == 0 )); then
+      printf "%dK" "$whole"
+    else
+      printf "%d.%dK" "$whole" "$frac"
+    fi
+  elif (( bytes < 1073741824 )); then
+    # M — one decimal
+    local whole=$(( bytes / 1048576 ))
+    local frac=$(( (bytes % 1048576) * 10 / 1048576 ))
+    if (( frac == 0 )); then
+      printf "%dM" "$whole"
+    else
+      printf "%d.%dM" "$whole" "$frac"
+    fi
+  else
+    # G — one decimal
+    local whole=$(( bytes / 1073741824 ))
+    local frac=$(( (bytes % 1073741824) * 10 / 1073741824 ))
+    if (( frac == 0 )); then
+      printf "%dG" "$whole"
+    else
+      printf "%d.%dG" "$whole" "$frac"
+    fi
+  fi
+}
+
+# Check if a basename matches the pipe-separated ignore pattern.
+# Returns 0 (match) or 1 (no match).
+name_matches_ignore() {
+  local name="$1"
+  local pattern="$2"
+  [[ -z "$pattern" ]] && return 1
+
+  local IFS='|'
+  local tok
+  for tok in $pattern; do
+    [[ -z "$tok" ]] && continue
+    # Support glob wildcards in tokens (e.g. *.egg-info)
+    # shellcheck disable=SC2254
+    case "$name" in
+      $tok) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+usage() {
+  cat <<'EOF'
+ftree — smart directory snapshot with recon mode (agent-friendly)
+
+USAGE
+  ftree [OPTIONS] [path]
+
+QUICK EXAMPLES
+  # Show tree of current directory (depth 3, default excludes)
+  ftree
+
+  # Recon: per-directory item counts and sizes
+  ftree --recon /project
+
+  # JSON output for agents
+  ftree -o json /project
+
+  # Flat file list (pipe-friendly)
+  ftree -o paths /project
+
+  # Drill into a subdirectory with deeper view
+  ftree -L 5 /project/src
+
+  # Include a normally-excluded directory
+  ftree --include .git /project
+
+  # Recon without excluded-directory summaries
+  ftree --recon --hide-excluded /project
+
+OPTIONS
+  -o, --output pretty|paths|json
+      pretty: human-friendly tree with header + truncation (default)
+      paths:  flat file list, one per line (best for piping)
+      json:   structured JSON (best for AI agents)
+
+  -L, --depth N
+      Max tree depth. Default: 3
+
+  -m, --max-lines N
+      Truncate pretty output at N lines (0 = unlimited). Default: 200
+      Does not apply to paths or json output.
+
+  -F, --filelimit N
+      Limit entries listed per directory. Default: 80
+      tree may annotate directories when entries exceed this limit.
+
+  -I, --ignore 'PATTERN'
+      Additional pipe-separated patterns to exclude (appended to defaults).
+      Always quote the value: ftree -I 'docs|*.md' /project
+
+  --no-default-ignore
+      Disable the built-in ignore list (node_modules, .git, venv, etc.).
+
+  --include PATTERN
+      Promote an excluded dir back to normal treatment (repeatable).
+      Exact basename match: --include node_modules (not partial regex).
+
+  -r, --recon
+      Recon mode: shallow scan with per-directory item counts and sizes.
+      Does not use tree(1) — uses find/du/stat directly.
+
+  --recon-depth N
+      How deep recon scans. Default: 1. Deeper is expensive.
+
+  --hide-excluded
+      Suppress excluded-directory summaries from recon output.
+
+  -d, --dirs-only
+      Show only directories (applies to both tree and recon modes).
+
+  -s, --sizes
+      Show file/directory sizes in tree output.
+
+  --gitignore
+      Also honor .gitignore rules. Guarded: warns if tree version lacks support.
+
+  -f, --full-paths
+      Print full path prefix for each entry.
+
+  --self-check
+      Verify tree is installed and check --gitignore support.
+
+  --install-hints
+      Print install commands for tree.
+
+  -h, --help
+      Show this help and exit.
+
+  --version
+      Print version and exit.
+
+DEFAULT IGNORE LIST
+  node_modules|.git|venv|.venv|__pycache__|dist|build|.next|.cache|
+  vendor|target|.gradle|.idea|.vscode|*.egg-info|.tox|.mypy_cache|
+  .pytest_cache|.DS_Store|.terraform
+
+  --ignore appends to defaults. --no-default-ignore disables them.
+  --include removes exact tokens from the list.
+
+EXIT CODES
+  0  Success (even if empty tree / no results)
+  2  Usage error (bad flags, missing args)
+  3  Missing dependency (tree not installed)
+
+RECON MODE
+  Recon scans the target directory with find/du/stat instead of tree.
+  For each entry: directories get an item count and size; files get size.
+  Excluded directories (matching the ignore list) are shown separately,
+  tagged [default-excluded], unless --hide-excluded is used.
+
+  items_total: count of all entries (files + dirs) under a directory.
+
+AGENT / HEADLESS USAGE
+  ftree -o json /project           # structured tree JSON
+  ftree --recon -o json /project   # per-dir inventory JSON
+  ftree -o paths /project          # flat file list for piping
+
+  Agent drill-down workflow:
+    1. ftree --recon /project          # scout: what's here?
+    2. ftree /project                  # structure: depth-3 overview
+    3. ftree -L 5 /project/src         # zoom: deeper into src/
+
+EOF
+}
+
+print_install_hints() {
+  cat <<'EOF'
+Install tree:
+
+Debian/Ubuntu:
+  sudo apt update && sudo apt install -y tree
+
+Tip: authenticate once first (helps if doing multiple installs):
+  sudo -v
+EOF
+}
+
+# -------------------------
+# Parse args
+# -------------------------
+TARGET=""
+OUTPUT="$DEFAULT_OUTPUT"
+DEPTH="$DEFAULT_DEPTH"
+MAX_LINES="$DEFAULT_MAX_LINES"
+FILELIMIT="$DEFAULT_FILELIMIT"
+USER_IGNORE=""
+NO_DEFAULT_IGNORE=0
+INCLUDES=()
+RECON=0
+RECON_DEPTH="$DEFAULT_RECON_DEPTH"
+HIDE_EXCLUDED=0
+DIRS_ONLY=0
+SIZES=0
+GITIGNORE=0
+FULL_PATHS=0
+SELF_CHECK=0
+INSTALL_HINTS=0
+
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o|--output)
+      shift; [[ $# -gt 0 ]] || die "Missing value for --output"
+      OUTPUT="$1"; shift ;;
+    -L|--depth)
+      shift; [[ $# -gt 0 ]] || die "Missing value for --depth"
+      DEPTH="$1"; shift ;;
+    -m|--max-lines)
+      shift; [[ $# -gt 0 ]] || die "Missing value for --max-lines"
+      MAX_LINES="$1"; shift ;;
+    -F|--filelimit)
+      shift; [[ $# -gt 0 ]] || die "Missing value for --filelimit"
+      FILELIMIT="$1"; shift ;;
+    -I|--ignore)
+      shift; [[ $# -gt 0 ]] || die "Missing value for --ignore"
+      USER_IGNORE="${USER_IGNORE:+$USER_IGNORE|}$1"; shift ;;
+    --no-default-ignore) NO_DEFAULT_IGNORE=1; shift ;;
+    --include)
+      shift; [[ $# -gt 0 ]] || die "Missing value for --include"
+      INCLUDES+=("$1"); shift ;;
+    -r|--recon)        RECON=1; shift ;;
+    --recon-depth)
+      shift; [[ $# -gt 0 ]] || die "Missing value for --recon-depth"
+      RECON_DEPTH="$1"; shift ;;
+    --hide-excluded)   HIDE_EXCLUDED=1; shift ;;
+    -d|--dirs-only)    DIRS_ONLY=1; shift ;;
+    -s|--sizes)        SIZES=1; shift ;;
+    --gitignore)       GITIGNORE=1; shift ;;
+    -f|--full-paths)   FULL_PATHS=1; shift ;;
+    --self-check)      SELF_CHECK=1; shift ;;
+    --install-hints)   INSTALL_HINTS=1; shift ;;
+    -h|--help)         usage; exit 0 ;;
+    --version)         echo "ftree $VERSION"; exit 0 ;;
+    --)                shift; break ;;
+    -*)                die "Unknown option: $1 (try --help)" ;;
+    *)                 POSITIONAL+=("$1"); shift ;;
+  esac
+done
+
+# Append remaining args after --
+while [[ $# -gt 0 ]]; do POSITIONAL+=("$1"); shift; done
+
+TARGET="${POSITIONAL[0]:-}"
+TARGET="${TARGET:-.}"
+
+# -------------------------
+# Special modes
+# -------------------------
+if (( INSTALL_HINTS == 1 )); then
+  print_install_hints
+  exit 0
+fi
+
+if (( SELF_CHECK == 1 )); then
+  echo "Self-check:"
+  echo "  Requires: tree. Uses: find, du, stat."
+  if has tree; then
+    echo "  ✓ tree available ($(command -v tree))"
+    # Check --gitignore support
+    if tree_supports_gitignore; then
+      echo "  ✓ tree supports --gitignore"
+    else
+      echo "  ✗ tree does not support --gitignore (need tree >= 1.8.0)"
+    fi
+  else
+    echo "  ✗ tree not found. Run: ftree --install-hints"
+  fi
+  echo ""
+  echo "If installing packages and you want fewer sudo prompts:"
+  echo "  sudo -v"
+  exit 0
+fi
+
+# -------------------------
+# Validation
+# -------------------------
+case "$OUTPUT" in pretty|paths|json) ;; *) die "Invalid --output: $OUTPUT" ;; esac
+[[ "$DEPTH" =~ ^[0-9]+$ ]]      || die "--depth must be an integer"
+[[ "$MAX_LINES" =~ ^[0-9]+$ ]]  || die "--max-lines must be an integer"
+[[ "$FILELIMIT" =~ ^[0-9]+$ ]]  || die "--filelimit must be an integer"
+[[ "$RECON_DEPTH" =~ ^[0-9]+$ ]] || die "--recon-depth must be an integer"
+
+[[ -e "$TARGET" ]] || die "Path does not exist: $TARGET"
+
+# Resolve to absolute path if --full-paths
+if (( FULL_PATHS == 1 )); then
+  TARGET="$(cd "$TARGET" 2>/dev/null && pwd)" || TARGET="$(readlink -f "$TARGET" 2>/dev/null || echo "$TARGET")"
+fi
+
+# -------------------------
+# Build ignore pattern
+# -------------------------
+build_ignore() {
+  local combined=""
+  if (( NO_DEFAULT_IGNORE == 0 )); then
+    combined="$DEFAULT_IGNORE"
+  fi
+  if [[ -n "$USER_IGNORE" ]]; then
+    combined="${combined:+$combined|}$USER_IGNORE"
+  fi
+  [[ -z "$combined" ]] && { printf ""; return 0; }
+
+  IFS='|' read -r -a toks <<< "$combined"
+  local -a out=()
+  local tok inc keep
+  for tok in "${toks[@]}"; do
+    [[ -z "$tok" ]] && continue
+    keep=1
+    for inc in "${INCLUDES[@]+"${INCLUDES[@]}"}"; do
+      [[ -z "$inc" ]] && continue
+      [[ "$tok" == "$inc" ]] && { keep=0; break; }
+    done
+    (( keep )) && out+=("$tok")
+  done
+
+  local joined=""
+  for tok in "${out[@]+"${out[@]}"}"; do
+    joined="${joined:+$joined|}$tok"
+  done
+  printf "%s" "$joined"
+}
+
+IGNORE_PATTERN="$(build_ignore)"
+
+# -------------------------
+# Recon mode
+# -------------------------
+run_recon() {
+  [[ -d "$TARGET" ]] || die "Not a directory: $TARGET"
+
+  local entries=()
+  local entry name type items_total size_bytes excluded
+
+  # Collect entries at target, up to recon_depth
+  # For depth 1, just ls the target directory
+  if (( RECON_DEPTH == 1 )); then
+    # List immediate children
+    while IFS= read -r -d '' entry; do
+      entries+=("$entry")
+    done < <(find "$TARGET" -mindepth 1 -maxdepth 1 -print0 2>/dev/null | sort -z)
+  else
+    # Deeper recon: list entries up to recon_depth
+    while IFS= read -r -d '' entry; do
+      entries+=("$entry")
+    done < <(find "$TARGET" -mindepth 1 -maxdepth "$RECON_DEPTH" -print0 2>/dev/null | sort -z)
+  fi
+
+  # For each entry, gather metadata
+  local visible_dirs=()
+  local visible_files=()
+  local excluded_entries=()
+
+  for entry in "${entries[@]+"${entries[@]}"}"; do
+    name="$(basename "$entry")"
+    excluded=false
+    items_total=0
+    size_bytes=-1
+
+    # Check against ignore pattern
+    if [[ -n "$IGNORE_PATTERN" ]] && name_matches_ignore "$name" "$IGNORE_PATTERN"; then
+      excluded=true
+    fi
+
+    if [[ -d "$entry" ]]; then
+      type="directory"
+      items_total="$(count_items_total "$entry")"
+      size_bytes="$(du_bytes "$entry")"
+    elif [[ -f "$entry" ]]; then
+      type="file"
+      items_total=0
+      size_bytes="$(stat_bytes "$entry")"
+    else
+      type="other"
+      items_total=0
+      size_bytes=-1
+    fi
+
+    # Skip files in dirs-only mode
+    if (( DIRS_ONLY == 1 )) && [[ "$type" != "directory" ]]; then
+      continue
+    fi
+
+    # Store as: name|type|items_total|size_bytes|excluded
+    local record="${name}|${type}|${items_total}|${size_bytes}|${excluded}"
+
+    if [[ "$excluded" == "true" ]]; then
+      excluded_entries+=("$record")
+    elif [[ "$type" == "directory" ]]; then
+      visible_dirs+=("$record")
+    else
+      visible_files+=("$record")
+    fi
+  done
+
+  # Sort by size descending (within each group)
+  # Use a simple bubble approach via sort on the size field
+  sort_records_by_size() {
+    local arr=("$@")
+    local i rec size_val
+    # Print records with sortable size prefix, then strip prefix
+    for rec in "${arr[@]+"${arr[@]}"}"; do
+      size_val="$(cut -d'|' -f4 <<<"$rec")"
+      # Unreadable entries sort after readable: use -1 → maps to very low
+      if (( size_val < 0 )); then
+        printf "%020d|%s\n" "0" "$rec"
+      else
+        printf "%020d|%s\n" "$size_val" "$rec"
+      fi
+    done | sort -t'|' -k1,1 -rn | cut -d'|' -f2-
+  }
+
+  local sorted_vis_dirs=() sorted_vis_files=() sorted_excluded=()
+  if (( ${#visible_dirs[@]} > 0 )); then
+    mapfile -t sorted_vis_dirs < <(sort_records_by_size "${visible_dirs[@]}")
+  fi
+  if (( ${#visible_files[@]} > 0 )); then
+    mapfile -t sorted_vis_files < <(sort_records_by_size "${visible_files[@]}")
+  fi
+  if (( ${#excluded_entries[@]} > 0 )); then
+    mapfile -t sorted_excluded < <(sort_records_by_size "${excluded_entries[@]}")
+  fi
+
+  local total_visible=$(( ${#sorted_vis_dirs[@]} + ${#sorted_vis_files[@]} ))
+  local total_excluded=${#sorted_excluded[@]}
+  local total_entries=$(( total_visible + total_excluded ))
+
+  # --- Output ---
+  if [[ "$OUTPUT" == "json" ]]; then
+    render_recon_json "$total_entries" "$total_visible" "$total_excluded"
+    return
+  fi
+
+  if [[ "$OUTPUT" == "paths" ]]; then
+    render_recon_paths
+    return
+  fi
+
+  # Pretty output
+  render_recon_pretty "$total_entries" "$total_visible" "$total_excluded"
+}
+
+render_recon_pretty() {
+  local total_entries="$1" total_visible="$2" total_excluded="$3"
+
+  echo "Recon($TARGET, depth=$RECON_DEPTH)"
+  if (( HIDE_EXCLUDED == 1 )); then
+    echo "  ⎿ $total_entries entries ($total_visible visible, $total_excluded default-excluded, hidden)"
+  else
+    echo "  ⎿ $total_entries entries ($total_visible visible, $total_excluded default-excluded)"
+  fi
+  echo ""
+
+  local rec name type items size_bytes size_human
+  # Visible dirs
+  for rec in "${sorted_vis_dirs[@]+"${sorted_vis_dirs[@]}"}"; do
+    IFS='|' read -r name type items size_bytes _ <<< "$rec"
+    if (( items < 0 )); then
+      items="?"
+    fi
+    size_human="$(human_size "$size_bytes")"
+    printf "  %-24s %6s items  %8s\n" "${name}/" "$items" "$size_human"
+  done
+  # Visible files
+  for rec in "${sorted_vis_files[@]+"${sorted_vis_files[@]}"}"; do
+    IFS='|' read -r name type items size_bytes _ <<< "$rec"
+    size_human="$(human_size "$size_bytes")"
+    printf "  %-24s %6s        %8s\n" "$name" "—" "$size_human"
+  done
+
+  # Excluded entries
+  if (( HIDE_EXCLUDED == 0 )) && (( total_excluded > 0 )); then
+    echo ""
+    echo "  [default-excluded]"
+    for rec in "${sorted_excluded[@]+"${sorted_excluded[@]}"}"; do
+      IFS='|' read -r name type items size_bytes _ <<< "$rec"
+      if [[ "$type" == "directory" ]]; then
+        if (( items < 0 )); then
+          items="?"
+        fi
+        size_human="$(human_size "$size_bytes")"
+        printf "  %-24s %6s items  %8s\n" "${name}/" "$items" "$size_human"
+      else
+        size_human="$(human_size "$size_bytes")"
+        printf "  %-24s %6s        %8s\n" "$name" "—" "$size_human"
+      fi
+    done
+  fi
+}
+
+render_recon_json() {
+  local total_entries="$1" total_visible="$2" total_excluded="$3"
+
+  echo -n "{"
+  echo -n "\"tool\":\"ftree\","
+  echo -n "\"version\":\"$VERSION\","
+  echo -n "\"mode\":\"recon\","
+  echo -n "\"backend\":\"find/du/stat\","
+  echo -n "\"path\":\"$(printf "%s" "$TARGET" | json_escape)\","
+  echo -n "\"recon_depth\":$RECON_DEPTH,"
+  echo -n "\"total_entries\":$total_entries,"
+  echo -n "\"visible\":$total_visible,"
+  echo -n "\"excluded\":$total_excluded,"
+  echo -n "\"entries\":["
+
+  local first=1
+  local rec name type items size_bytes excluded size_human
+
+  # All visible entries
+  for rec in "${sorted_vis_dirs[@]+"${sorted_vis_dirs[@]}"}"; do
+    IFS='|' read -r name type items size_bytes excluded <<< "$rec"
+    size_human="$(human_size "$size_bytes")"
+    (( first )) || echo -n ","
+    first=0
+    echo -n "{\"name\":\"$(printf "%s" "$name" | json_escape)\","
+    echo -n "\"type\":\"directory\","
+    echo -n "\"items_total\":$items,"
+    echo -n "\"size_bytes\":$size_bytes,"
+    echo -n "\"size_human\":\"$size_human\","
+    echo -n "\"excluded\":false}"
+  done
+
+  for rec in "${sorted_vis_files[@]+"${sorted_vis_files[@]}"}"; do
+    IFS='|' read -r name type items size_bytes excluded <<< "$rec"
+    size_human="$(human_size "$size_bytes")"
+    (( first )) || echo -n ","
+    first=0
+    echo -n "{\"name\":\"$(printf "%s" "$name" | json_escape)\","
+    echo -n "\"type\":\"file\","
+    echo -n "\"size_bytes\":$size_bytes,"
+    echo -n "\"size_human\":\"$size_human\","
+    echo -n "\"excluded\":false}"
+  done
+
+  # Excluded entries
+  if (( HIDE_EXCLUDED == 0 )); then
+    for rec in "${sorted_excluded[@]+"${sorted_excluded[@]}"}"; do
+      IFS='|' read -r name type items size_bytes excluded <<< "$rec"
+      size_human="$(human_size "$size_bytes")"
+      (( first )) || echo -n ","
+      first=0
+      echo -n "{\"name\":\"$(printf "%s" "$name" | json_escape)\","
+      echo -n "\"type\":\"$type\","
+      if [[ "$type" == "directory" ]]; then
+        echo -n "\"items_total\":$items,"
+      fi
+      echo -n "\"size_bytes\":$size_bytes,"
+      echo -n "\"size_human\":\"$size_human\","
+      echo -n "\"excluded\":true}"
+    done
+  fi
+
+  echo -n "]}"
+  echo
+}
+
+render_recon_paths() {
+  local rec name type excluded
+  for rec in "${sorted_vis_dirs[@]+"${sorted_vis_dirs[@]}"}"; do
+    IFS='|' read -r name type _ _ excluded <<< "$rec"
+    if (( FULL_PATHS == 1 )); then
+      echo "${TARGET%/}/${name}"
+    else
+      echo "$name"
+    fi
+  done
+  for rec in "${sorted_vis_files[@]+"${sorted_vis_files[@]}"}"; do
+    IFS='|' read -r name type _ _ excluded <<< "$rec"
+    if (( FULL_PATHS == 1 )); then
+      echo "${TARGET%/}/${name}"
+    else
+      echo "$name"
+    fi
+  done
+  if (( HIDE_EXCLUDED == 0 )); then
+    for rec in "${sorted_excluded[@]+"${sorted_excluded[@]}"}"; do
+      IFS='|' read -r name type _ _ excluded <<< "$rec"
+      if (( FULL_PATHS == 1 )); then
+        echo "${TARGET%/}/${name}"
+      else
+        echo "$name"
+      fi
+    done
+  fi
+}
+
+# -------------------------
+# Tree mode
+# -------------------------
+tree_build_args() {
+  # Populates TREE_ARGS array with common tree flags.
+  # Flag ordering mirrors v1.0.0's run_tree() exactly.
+  TREE_ARGS=(-L "$DEPTH" --dirsfirst --filelimit "$FILELIMIT" -n)
+  if [[ -n "$IGNORE_PATTERN" ]]; then
+    TREE_ARGS+=(-I "$IGNORE_PATTERN")
+  fi
+  if (( GITIGNORE == 1 )) && tree_supports_gitignore; then
+    TREE_ARGS+=(--gitignore)
+  fi
+  if (( DIRS_ONLY == 1 )); then
+    TREE_ARGS+=(-d)
+  fi
+  if (( FULL_PATHS == 1 )); then
+    TREE_ARGS+=(-f)
+  fi
+  if (( SIZES == 1 )); then
+    TREE_ARGS+=(-s -h)
+  fi
+}
+
+tree_capture_body_and_counts() {
+  TREE_BODY_LINES=()
+  TREE_REPORT_LINE=""
+  TREE_DIRS=0
+  TREE_FILES=0
+
+  local -a lines=()
+  mapfile -t lines < <(tree "$TARGET" "${TREE_ARGS[@]}" 2>/dev/null || true)
+
+  local total=${#lines[@]}
+  if (( total > 0 )); then
+    TREE_REPORT_LINE="${lines[$(( total - 1 ))]}"
+    TREE_BODY_LINES=("${lines[@]:0:$(( total - 1 ))}")
+  fi
+
+  # Parse counts (best-effort) — same logic as v1.0.0
+  if [[ "$TREE_REPORT_LINE" =~ ([0-9]+)\ director ]]; then
+    TREE_DIRS="${BASH_REMATCH[1]}"
+  fi
+  if [[ "$TREE_REPORT_LINE" =~ ([0-9]+)\ file ]]; then
+    TREE_FILES="${BASH_REMATCH[1]}"
+  fi
+}
+
+run_tree_pretty() {
+  tree_build_args
+  tree_capture_body_and_counts
+
+  local total_content=${#TREE_BODY_LINES[@]}
+  local shown_lines="$total_content"
+  local truncated=0
+  if (( MAX_LINES > 0 )) && (( total_content > MAX_LINES )); then
+    shown_lines="$MAX_LINES"
+    truncated=1
+  fi
+
+  echo "Tree($TARGET, depth=$DEPTH, filelimit=$FILELIMIT)"
+  if (( truncated == 1 )); then
+    echo "  ⎿ $TREE_DIRS directories, $TREE_FILES files (showing $shown_lines of $total_content lines, truncated)"
+  else
+    echo "  ⎿ $TREE_DIRS directories, $TREE_FILES files (showing $shown_lines of $total_content lines)"
+  fi
+  echo ""
+
+  local i
+  for (( i = 0; i < shown_lines && i < total_content; i++ )); do
+    echo "${TREE_BODY_LINES[i]}"
+  done
+
+  if (( truncated == 1 )); then
+    local overflow=$(( total_content - shown_lines ))
+    echo ""
+    echo "     … $overflow more lines not shown"
+    echo "     Drill deeper: ftree -L $(( DEPTH + 2 )) $TARGET"
+  fi
+}
+
+run_tree_paths() {
+  # Paths mode: exact copy of v1.0.0 paths block, just wrapped in a function.
+  # Note: -fi already includes -f, but v1.0.0 also appended -f when --full-paths is set.
+  # We keep it for exact parity (duplicate -f is harmless).
+  local -a paths_args=(tree "$TARGET" -fi --noreport -n -L "$DEPTH")
+  if [[ -n "$IGNORE_PATTERN" ]]; then
+    paths_args+=(-I "$IGNORE_PATTERN")
+  fi
+  if (( DIRS_ONLY == 1 )); then
+    paths_args+=(-d)
+  fi
+  if (( FULL_PATHS == 1 )); then
+    paths_args+=(-f)
+  fi
+  if (( GITIGNORE == 1 )) && tree_supports_gitignore; then
+    paths_args+=(--gitignore)
+  fi
+  "${paths_args[@]}" 2>/dev/null || true
+}
+
+run_tree_json() {
+  tree_build_args
+  tree_capture_body_and_counts
+
+  # Line counts from captured body
+  local total_lines=${#TREE_BODY_LINES[@]}
+  local shown_lines="$total_lines"
+  local truncated="false"
+  if (( MAX_LINES > 0 )) && (( total_lines > MAX_LINES )); then
+    shown_lines="$MAX_LINES"
+    truncated="true"
+  fi
+
+  # tree -J: one more invocation (was 2 extra before, now 1 extra)
+  local -a json_args=(tree "$TARGET" -J -L "$DEPTH" --dirsfirst --filelimit "$FILELIMIT" -n)
+  if [[ -n "$IGNORE_PATTERN" ]]; then json_args+=(-I "$IGNORE_PATTERN"); fi
+  if (( DIRS_ONLY == 1 )); then json_args+=(-d); fi
+  if (( FULL_PATHS == 1 )); then json_args+=(-f); fi
+  if (( SIZES == 1 )); then json_args+=(-s -h); fi
+  if (( GITIGNORE == 1 )) && tree_supports_gitignore; then json_args+=(--gitignore); fi
+
+  local tree_json
+  tree_json=$("${json_args[@]}" 2>/dev/null) || tree_json="[]"
+
+  echo -n "{"
+  echo -n "\"tool\":\"ftree\","
+  echo -n "\"version\":\"$VERSION\","
+  echo -n "\"mode\":\"tree\","
+  echo -n "\"backend\":\"tree\","
+  echo -n "\"path\":\"$(printf "%s" "$TARGET" | json_escape)\","
+  echo -n "\"depth\":$DEPTH,"
+  echo -n "\"filelimit\":$FILELIMIT,"
+  echo -n "\"ignored\":\"$(printf "%s" "$IGNORE_PATTERN" | json_escape)\","
+  echo -n "\"total_dirs\":$TREE_DIRS,"
+  echo -n "\"total_files\":$TREE_FILES,"
+  echo -n "\"total_lines\":$total_lines,"
+  echo -n "\"shown_lines\":$shown_lines,"
+  echo -n "\"truncated\":$truncated,"
+  echo -n "\"tree_json\":$tree_json"
+  echo -n "}"
+  echo
+}
+
+# -------------------------
+# Main
+# -------------------------
+if (( RECON == 1 )); then
+  run_recon
+else
+  has tree || die 3 "tree is required. Run: ftree --install-hints"
+
+  # Emit gitignore warning once if needed
+  if (( GITIGNORE == 1 )) && ! tree_supports_gitignore; then
+    echo "Warning: tree does not support --gitignore (need >= 1.8.0), ignoring flag." >&2
+  fi
+
+  case "$OUTPUT" in
+    pretty) run_tree_pretty ;;
+    paths)  run_tree_paths ;;
+    json)   run_tree_json ;;
+  esac
+fi
+
+exit 0
