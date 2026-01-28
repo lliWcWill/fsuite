@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="1.0.1"
+VERSION="1.1.0"
 
 # -------------------------
 # Defaults (override via flags)
@@ -22,7 +22,7 @@ DEFAULT_RECON_DEPTH=1
 die() {
   local code=2
   if [[ "${1:-}" =~ ^[0-9]+$ ]]; then code="$1"; shift; fi
-  echo "Error: $*" >&2
+  echo "ftree: $*" >&2
   exit "$code"
 }
 
@@ -46,10 +46,10 @@ du_bytes() {
 }
 
 count_items_total() {
-  # Exact v1.0.0 logic: find|wc failure → -1, non-numeric → -1.
   local p="$1"
   local n
   n=$(find "$p" -mindepth 1 2>/dev/null | wc -l) || n="-1"
+  n="${n//[[:space:]]/}"
   if [[ "$n" == "" ]] || ! [[ "$n" =~ ^[0-9]+$ ]]; then n="-1"; fi
   printf "%s" "$n"
 }
@@ -73,32 +73,23 @@ human_size() {
   if (( bytes < 1024 )); then
     printf "%d" "$bytes"
   elif (( bytes < 1048576 )); then
-    # K — one decimal
     local whole=$(( bytes / 1024 ))
-    local frac=$(( (bytes % 1024) * 10 / 1024 ))
-    if (( frac == 0 )); then
-      printf "%dK" "$whole"
-    else
-      printf "%d.%dK" "$whole" "$frac"
-    fi
+    local frac=$(( ((bytes % 1024) * 10 + 512) / 1024 ))
+    if (( frac >= 10 )); then whole=$(( whole + 1 )); frac=0; fi
+    if (( frac == 0 )); then printf "%dK" "$whole"
+    else printf "%d.%dK" "$whole" "$frac"; fi
   elif (( bytes < 1073741824 )); then
-    # M — one decimal
     local whole=$(( bytes / 1048576 ))
-    local frac=$(( (bytes % 1048576) * 10 / 1048576 ))
-    if (( frac == 0 )); then
-      printf "%dM" "$whole"
-    else
-      printf "%d.%dM" "$whole" "$frac"
-    fi
+    local frac=$(( ((bytes % 1048576) * 10 + 524288) / 1048576 ))
+    if (( frac >= 10 )); then whole=$(( whole + 1 )); frac=0; fi
+    if (( frac == 0 )); then printf "%dM" "$whole"
+    else printf "%d.%dM" "$whole" "$frac"; fi
   else
-    # G — one decimal
     local whole=$(( bytes / 1073741824 ))
-    local frac=$(( (bytes % 1073741824) * 10 / 1073741824 ))
-    if (( frac == 0 )); then
-      printf "%dG" "$whole"
-    else
-      printf "%d.%dG" "$whole" "$frac"
-    fi
+    local frac=$(( ((bytes % 1073741824) * 10 + 536870912) / 1073741824 ))
+    if (( frac >= 10 )); then whole=$(( whole + 1 )); frac=0; fi
+    if (( frac == 0 )); then printf "%dG" "$whole"
+    else printf "%d.%dG" "$whole" "$frac"; fi
   fi
 }
 
@@ -235,14 +226,13 @@ RECON MODE
   items_total: count of all entries (files + dirs) under a directory.
 
 AGENT / HEADLESS USAGE
-  ftree -o json /project           # structured tree JSON
-  ftree --recon -o json /project   # per-dir inventory JSON
-  ftree -o paths /project          # flat file list for piping
+  ftree -o json /project             # structured tree JSON
+  ftree --recon -o json /project     # per-dir inventory JSON
+  ftree -o paths /project            # flat file list for piping
 
   Agent drill-down workflow:
-    1. ftree --recon /project          # scout: what's here?
-    2. ftree /project                  # structure: depth-3 overview
-    3. ftree -L 5 /project/src         # zoom: deeper into src/
+    1. ftree --recon /project            # inventory: what's here?
+    2. ftree -L 5 /project/src           # zoom: deeper into src/
 
 EOF
 }
@@ -338,9 +328,9 @@ fi
 if (( SELF_CHECK == 1 )); then
   echo "Self-check:"
   echo "  Requires: tree. Uses: find, du, stat."
+  _SELF_CHECK_OK=1
   if has tree; then
     echo "  ✓ tree available ($(command -v tree))"
-    # Check --gitignore support
     if tree_supports_gitignore; then
       echo "  ✓ tree supports --gitignore"
     else
@@ -348,10 +338,14 @@ if (( SELF_CHECK == 1 )); then
     fi
   else
     echo "  ✗ tree not found. Run: ftree --install-hints"
+    _SELF_CHECK_OK=0
   fi
   echo ""
   echo "If installing packages and you want fewer sudo prompts:"
   echo "  sudo -v"
+  if (( _SELF_CHECK_OK == 0 )); then
+    exit 3
+  fi
   exit 0
 fi
 
@@ -366,9 +360,14 @@ case "$OUTPUT" in pretty|paths|json) ;; *) die "Invalid --output: $OUTPUT" ;; es
 
 [[ -e "$TARGET" ]] || die "Path does not exist: $TARGET"
 
-# Resolve to absolute path if --full-paths
+# Always resolve absolute path for metadata (headers, JSON path, drill-down).
+# Uses logical pwd (preserves symlinks) — not pwd -P (canonical).
+# Keep original TARGET for tree(1) invocation (controls path display in tree body).
+ABS_TARGET="$(cd "$TARGET" 2>/dev/null && pwd)" || ABS_TARGET="$(readlink -f "$TARGET" 2>/dev/null || echo "$TARGET")"
+
+# If --full-paths, also use absolute path for tree invocation
 if (( FULL_PATHS == 1 )); then
-  TARGET="$(cd "$TARGET" 2>/dev/null && pwd)" || TARGET="$(readlink -f "$TARGET" 2>/dev/null || echo "$TARGET")"
+  TARGET="$ABS_TARGET"
 fi
 
 # -------------------------
@@ -421,12 +420,12 @@ run_recon() {
     # List immediate children
     while IFS= read -r -d '' entry; do
       entries+=("$entry")
-    done < <(find "$TARGET" -mindepth 1 -maxdepth 1 -print0 2>/dev/null | sort -z)
+    done < <(find "$TARGET" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
   else
     # Deeper recon: list entries up to recon_depth
     while IFS= read -r -d '' entry; do
       entries+=("$entry")
-    done < <(find "$TARGET" -mindepth 1 -maxdepth "$RECON_DEPTH" -print0 2>/dev/null | sort -z)
+    done < <(find "$TARGET" -mindepth 1 -maxdepth "$RECON_DEPTH" -print0 2>/dev/null)
   fi
 
   # For each entry, gather metadata
@@ -490,7 +489,7 @@ run_recon() {
       else
         printf "%020d|%s\n" "$size_val" "$rec"
       fi
-    done | sort -t'|' -k1,1 -rn | cut -d'|' -f2-
+    done | sort -t'|' -k1,1rn -k2,2 | cut -d'|' -f2-
   }
 
   local sorted_vis_dirs=() sorted_vis_files=() sorted_excluded=()
@@ -526,7 +525,7 @@ run_recon() {
 render_recon_pretty() {
   local total_entries="$1" total_visible="$2" total_excluded="$3"
 
-  echo "Recon($TARGET, depth=$RECON_DEPTH)"
+  echo "Recon($ABS_TARGET, depth=$RECON_DEPTH)"
   if (( HIDE_EXCLUDED == 1 )); then
     echo "  ⎿ $total_entries entries ($total_visible visible, $total_excluded default-excluded, hidden)"
   else
@@ -579,7 +578,7 @@ render_recon_json() {
   echo -n "\"version\":\"$VERSION\","
   echo -n "\"mode\":\"recon\","
   echo -n "\"backend\":\"find/du/stat\","
-  echo -n "\"path\":\"$(printf "%s" "$TARGET" | json_escape)\","
+  echo -n "\"path\":\"$(printf "%s" "$ABS_TARGET" | json_escape)\","
   echo -n "\"recon_depth\":$RECON_DEPTH,"
   echo -n "\"total_entries\":$total_entries,"
   echo -n "\"visible\":$total_visible,"
@@ -696,21 +695,40 @@ tree_capture_body_and_counts() {
   TREE_REPORT_LINE=""
   TREE_DIRS=0
   TREE_FILES=0
+  TREE_COUNTS_VALID=0
 
   local -a lines=()
   mapfile -t lines < <(tree "$TARGET" "${TREE_ARGS[@]}" 2>/dev/null || true)
 
   local total=${#lines[@]}
-  if (( total > 0 )); then
-    TREE_REPORT_LINE="${lines[$(( total - 1 ))]}"
-    TREE_BODY_LINES=("${lines[@]:0:$(( total - 1 ))}")
+  if (( total == 0 )); then return; fi
+
+  # Scan backward for the report line.
+  # tree's summary always looks like: "12 directories, 47 files"
+  # We require BOTH "director" and "file" on the same line, anchored to
+  # start-of-line digit, to prevent filename spoofing.
+  local i report_idx=-1
+  for (( i = total - 1; i >= 0; i-- )); do
+    if [[ "${lines[i]}" =~ ^[0-9]+[[:space:]]+director ]] && \
+       [[ "${lines[i]}" =~ [0-9]+[[:space:]]+file ]]; then
+      report_idx=$i
+      break
+    fi
+  done
+
+  if (( report_idx >= 0 )); then
+    TREE_REPORT_LINE="${lines[$report_idx]}"
+    TREE_BODY_LINES=("${lines[@]:0:$report_idx}")
+    TREE_COUNTS_VALID=1
+  else
+    # No report line found: treat entire output as body
+    TREE_BODY_LINES=("${lines[@]}")
   fi
 
-  # Parse counts (best-effort) — same logic as v1.0.0
-  if [[ "$TREE_REPORT_LINE" =~ ([0-9]+)\ director ]]; then
+  if [[ "$TREE_REPORT_LINE" =~ ([0-9]+)[[:space:]]+director ]]; then
     TREE_DIRS="${BASH_REMATCH[1]}"
   fi
-  if [[ "$TREE_REPORT_LINE" =~ ([0-9]+)\ file ]]; then
+  if [[ "$TREE_REPORT_LINE" =~ ([0-9]+)[[:space:]]+file ]]; then
     TREE_FILES="${BASH_REMATCH[1]}"
   fi
 }
@@ -727,11 +745,17 @@ run_tree_pretty() {
     truncated=1
   fi
 
-  echo "Tree($TARGET, depth=$DEPTH, filelimit=$FILELIMIT)"
-  if (( truncated == 1 )); then
-    echo "  ⎿ $TREE_DIRS directories, $TREE_FILES files (showing $shown_lines of $total_content lines, truncated)"
+  echo "Tree($ABS_TARGET, depth=$DEPTH, filelimit=$FILELIMIT)"
+  local count_label
+  if (( TREE_COUNTS_VALID == 1 )); then
+    count_label="$TREE_DIRS directories, $TREE_FILES files"
   else
-    echo "  ⎿ $TREE_DIRS directories, $TREE_FILES files (showing $shown_lines of $total_content lines)"
+    count_label="? directories, ? files"
+  fi
+  if (( truncated == 1 )); then
+    echo "  ⎿ $count_label (showing $shown_lines of $total_content lines, truncated)"
+  else
+    echo "  ⎿ $count_label (showing $shown_lines of $total_content lines)"
   fi
   echo ""
 
@@ -744,7 +768,7 @@ run_tree_pretty() {
     local overflow=$(( total_content - shown_lines ))
     echo ""
     echo "     … $overflow more lines not shown"
-    echo "     Drill deeper: ftree -L $(( DEPTH + 2 )) $TARGET"
+    printf "     Drill deeper: ftree -L %d %q\n" "$(( DEPTH + 2 ))" "$ABS_TARGET"
   fi
 }
 
@@ -797,7 +821,7 @@ run_tree_json() {
   echo -n "\"version\":\"$VERSION\","
   echo -n "\"mode\":\"tree\","
   echo -n "\"backend\":\"tree\","
-  echo -n "\"path\":\"$(printf "%s" "$TARGET" | json_escape)\","
+  echo -n "\"path\":\"$(printf "%s" "$ABS_TARGET" | json_escape)\","
   echo -n "\"depth\":$DEPTH,"
   echo -n "\"filelimit\":$FILELIMIT,"
   echo -n "\"ignored\":\"$(printf "%s" "$IGNORE_PATTERN" | json_escape)\","
@@ -818,10 +842,11 @@ if (( RECON == 1 )); then
   run_recon
 else
   has tree || die 3 "tree is required. Run: ftree --install-hints"
+  [[ -d "$TARGET" ]] || die "Not a directory: $TARGET"
 
   # Emit gitignore warning once if needed
   if (( GITIGNORE == 1 )) && ! tree_supports_gitignore; then
-    echo "Warning: tree does not support --gitignore (need >= 1.8.0), ignoring flag." >&2
+    echo "ftree: warning: tree does not support --gitignore (need >= 1.8.0), ignoring flag." >&2
   fi
 
   case "$OUTPUT" in

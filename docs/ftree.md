@@ -1,6 +1,6 @@
 # ftree — Directory Structure and Recon Tool
 
-**Version:** 1.0.1
+**Version:** 1.1.0
 **Part of:** [fsuite](../README.md)
 **Requires:** `tree` (for tree mode), `find`/`du`/`stat` (for recon mode)
 
@@ -19,23 +19,23 @@ It speaks two dialects:
 
 ## Architecture
 
-ftree has two independent modes, each with three output formats:
+ftree has two modes:
 
 ```
 ftree
   |
-  +-- tree mode (default)     wraps tree(1)
-  |     +-- pretty            header + tree body + truncation footer
-  |     +-- paths             flat file list via tree -fi
-  |     +-- json              metadata envelope + tree -J output
+  +-- tree mode (default)        wraps tree(1)
+  |     +-- pretty               header + tree body + truncation footer
+  |     +-- paths                flat file list via tree -fi
+  |     +-- json                 metadata envelope + tree -J output
   |
-  +-- recon mode (--recon)    uses find/du/stat directly
-        +-- pretty            header + sorted inventory table
-        +-- paths             flat entry list
-        +-- json              metadata envelope + entries array
+  +-- recon mode (--recon)       uses find/du/stat directly
+        +-- pretty               header + sorted inventory table
+        +-- paths                flat entry list
+        +-- json                 metadata envelope + entries array
 ```
 
-### Internal structure (v1.0.1)
+### Internal structure (v1.1.0)
 
 The script is organized into:
 
@@ -135,7 +135,7 @@ Every command runs headless (no prompts, no TTY needed).
 |---------|-------------|
 | `ftree --self-check` | Verify tree is installed, check `--gitignore` support |
 | `ftree --install-hints` | Print install command for tree |
-| `ftree --version` | Print version (`ftree 1.0.1`) |
+| `ftree --version` | Print version (`ftree 1.1.0`) |
 
 ---
 
@@ -148,25 +148,30 @@ ftree is designed for AI agents, CI pipelines, and automation scripts. No TTY, n
 This is the recommended pattern for an agent exploring an unknown project:
 
 ```bash
-# Step 1: Scout — what's here, how big is it?
+# Step 1: Inventory — what's in this project?
 ftree --recon -o json /project
-# Agent reads: per-dir item counts, sizes, exclusion tags
-# Decision: which dirs are worth expanding?
-
-# Step 2: Structure — show me the shape
-ftree -o json /project
-# Agent reads: depth-3 tree, dir/file counts, truncation status
+# Agent reads: per-dir sizes, counts, exclusions
 # Decision: where should I drill deeper?
 
-# Step 3: Zoom — expand an interesting subtree
+# Step 2: Zoom — expand an interesting subtree
 ftree -L 5 -o json /project/src
 # Agent reads: deeper view of just src/
 
-# Step 4: Find specific files
+# Step 3: Find specific files
 fsearch -o json '*.py' /project/src
 
-# Step 5: Search inside those files
+# Step 4: Search inside those files
 fsearch -o paths '*.py' /project/src | fcontent -o json "def main"
+```
+
+For agents that prefer separate calls (or need only one mode):
+
+```bash
+# Recon only (depth 1 default)
+ftree --recon -o json /project
+
+# Tree only
+ftree -o json /project
 ```
 
 ### Agent-specific patterns
@@ -190,7 +195,7 @@ Tree mode JSON:
 ```json
 {
   "tool": "ftree",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "mode": "tree",
   "backend": "tree",
   "path": "/project",
@@ -211,7 +216,7 @@ Recon mode JSON:
 ```json
 {
   "tool": "ftree",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "mode": "recon",
   "backend": "find/du/stat",
   "path": "/project",
@@ -299,11 +304,11 @@ Tells you: path, depth, filelimit, dir/file counts, and how many lines are shown
 **Truncation footer** (when output exceeds `--max-lines`):
 
 ```
-     ... 34 more lines not shown
+     … 34 more lines not shown
      Drill deeper: ftree -L 5 /project
 ```
 
-Copy-paste the suggested command to see more.
+Copy-paste the suggested command to see more. Paths with spaces or special characters are automatically shell-escaped (v1.1.0+).
 
 **Recon mode header:**
 
@@ -399,6 +404,37 @@ target        .gradle    .idea        .vscode     *.egg-info
 ---
 
 ## Version History
+
+### v1.1.0
+
+**Clear all deferred items. Intentional observable output changes — no new JSON fields.**
+
+Consistency:
+- All `die()` error messages now prefixed `ftree:` (was `Error:`) — stderr only
+- Gitignore warning now prefixed `ftree: warning:` (was `Warning:`)
+
+Bug fixes:
+- `count_items_total()` strips `wc -l` whitespace (portability fix for platforms where `wc` pads output)
+- `human_size()` now rounds to nearest instead of truncating (e.g. 1536 bytes → `1.5K`, was `1.4K`)
+
+Correctness:
+- Report line detection uses backward scan with dual-anchor regex — requires both directory and file counts on the same line, preventing filename spoofing
+- Graceful `? directories, ? files` in pretty header when tree's report line can't be parsed
+
+Validation:
+- Tree mode now requires TARGET to be a directory (was: degenerate tree output for file targets)
+- `--self-check` exits code 3 when tree is missing (was: always exit 0)
+
+UX:
+- Drill-down path in truncation footer is shell-quoted via `printf %q` (handles spaces and special chars)
+- Headers and JSON `path` field always use absolute path (logical `pwd`, preserves symlinks)
+
+Portability / determinism:
+- Removed `sort -z` from recon find pipeline (not available on all platforms)
+- Recon sort uses alphabetical name tiebreak for entries with identical sizes
+
+JSON schema note:
+- **No new fields added** to standalone recon/tree schemas. The JSON schema is unchanged from v1.0.1 except for field _values_: `version`, `path` (always absolute), and `size_human` (rounding). A `counts_valid` field is deferred to a future release.
 
 ### v1.0.1
 

@@ -213,7 +213,7 @@ All three tools support three output modes via `--output` / `-o`:
 ```json
 {
   "tool": "ftree",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "mode": "tree",
   "backend": "tree",
   "path": "/project",
@@ -234,7 +234,7 @@ All three tools support three output modes via `--output` / `-o`:
 ```json
 {
   "tool": "ftree",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "mode": "recon",
   "backend": "find/du/stat",
   "path": "/project",
@@ -495,6 +495,33 @@ sudo ln -s "$(pwd)/fsearch" /usr/local/bin/fsearch
 sudo ln -s "$(pwd)/fcontent" /usr/local/bin/fcontent
 sudo ln -s "$(pwd)/ftree" /usr/local/bin/ftree
 ```
+
+---
+
+## Changelog
+
+### ftree v1.1.0
+
+Clear all deferred items from v1.0.1. Intentional observable output changes; JSON schema unchanged (no new fields, only value changes).
+
+- Error/warning messages now prefixed `ftree:` (was `Error:` / `Warning:`)
+- `human_size()` rounds to nearest instead of truncating (e.g. 1536 bytes → `1.5K`)
+- Pretty headers and JSON `path` always use absolute path (logical, preserves symlinks)
+- Drill-down path is shell-quoted (`printf %q`) for copy-paste safety
+- Robust report line detection (backward scan, dual-anchor regex)
+- Graceful `? directories, ? files` when count parsing fails
+- Tree mode requires directory target (was: degenerate output for files)
+- `--self-check` exits 3 when tree is missing (was: always 0)
+- `count_items_total()` strips `wc -l` whitespace (portability)
+- Removed `sort -z` from recon find pipeline (portability)
+- Recon sort uses alphabetical name tiebreak for size ties (determinism)
+
+See [docs/ftree.md](docs/ftree.md) for the full version history and JSON schema notes.
+
+### ftree v1.0.1
+
+Internal refactor + correctness fixes. No observable output changes except version field.
+See [docs/ftree.md](docs/ftree.md) for details.
 
 ---
 
