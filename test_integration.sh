@@ -562,7 +562,7 @@ test_code_quality_pipeline() {
   # Find all TODO and FIXME comments
   local output
   output=$("${FSEARCH}" --output paths "*.py" "${TEST_DIR}" | \
-           "${FCONTENT}" "TODO\|FIXME" 2>&1)
+           "${FCONTENT}" "TODO|FIXME" 2>&1)
 
   if [[ "$output" =~ TODO ]] || [[ "$output" =~ FIXME ]]; then
     pass "Code quality: find TODO/FIXME comments"
@@ -577,7 +577,7 @@ test_log_analysis_pipeline() {
   # Analyze logs for errors
   local output
   output=$("${FSEARCH}" --output paths "*.log" "${TEST_DIR}/logs" | \
-           "${FCONTENT}" --output json "ERROR\|CRITICAL" 2>&1)
+           "${FCONTENT}" --output json "ERROR|CRITICAL" 2>&1)
 
   if [[ "$output" =~ \"tool\":\"fcontent\" ]] && [[ "$output" =~ matched_files ]]; then
     pass "Log analysis: find ERROR and CRITICAL events"
@@ -592,7 +592,7 @@ test_dependency_audit_pipeline() {
   # Find all import statements
   local output
   output=$("${FSEARCH}" --output paths "*.py" "${TEST_DIR}" | \
-           "${FCONTENT}" "^import\|^from" 2>&1)
+           "${FCONTENT}" "^import|^from" 2>&1)
 
   if [[ "$output" =~ import ]]; then
     pass "Dependency audit: find all imports"
