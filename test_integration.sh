@@ -485,15 +485,16 @@ test_pipeline_with_permission_errors() {
   command -v rg >/dev/null 2>&1 || return
 
   # Try to search in a protected directory (likely /root)
-  local output
-  output=$("${FSEARCH}" --output paths "*.log" "/root" 2>&1 | "${FCONTENT}" "ERROR" 2>&1) || true
+  local output rc=0
+  output=$("${FSEARCH}" --output paths "*.log" "/root" 2>&1 | "${FCONTENT}" "ERROR" 2>&1) || rc=$?
 
   # Should handle gracefully without crashing
-  if [[ $? -eq 0 ]] || [[ "$output" =~ "No file paths" ]]; then
+  if [[ $rc -eq 0 ]] || [[ "$output" =~ "No file paths" ]]; then
     pass "Pipeline handles permission errors gracefully"
   else
     pass "Permission error handling varies by system"
   fi
+}
 }
 
 # ============================================================================
