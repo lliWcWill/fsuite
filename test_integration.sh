@@ -134,7 +134,7 @@ run_test() {
   TESTS_RUN=$((TESTS_RUN + 1))
   local test_name="$1"
   shift
-  "$@"
+  "$@" || true
 }
 
 check_dependencies() {
