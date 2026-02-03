@@ -15,7 +15,7 @@ Comprehensive test suite for the fsuite CLI tools (fsearch, fcontent, ftree).
      - Edge cases and boundary conditions
      - Path handling and integration
 
-2. **test_fcontent.sh** - Tests for fcontent (content search tool)
+1. **test_fcontent.sh** - Tests for fcontent (content search tool)
    - 47 test cases covering:
      - Basic functionality and error handling
      - Directory mode vs stdin mode
@@ -25,7 +25,7 @@ Comprehensive test suite for the fsuite CLI tools (fsearch, fcontent, ftree).
      - Max matches/files limits
      - Edge cases (empty files, binary files, deep structures)
 
-3. **test_ftree.sh** - Tests for ftree (directory tree tool)
+1. **test_ftree.sh** - Tests for ftree (directory tree tool)
    - 54 test cases covering:
      - Basic tree mode functionality
      - Recon mode (directory scanning with sizes)
@@ -38,7 +38,7 @@ Comprehensive test suite for the fsuite CLI tools (fsearch, fcontent, ftree).
 
 ### Integration Tests
 
-4. **test_integration.sh** - Integration tests for tool pipelines
+1. **test_integration.sh** - Integration tests for tool pipelines
    - 33 test cases covering:
      - fsearch → fcontent pipelines
      - Multi-stage pipelines with shell tools
@@ -54,11 +54,10 @@ Comprehensive test suite for the fsuite CLI tools (fsearch, fcontent, ftree).
 
 ### Master Test Runner
 
-5. **run_all_tests.sh** - Master script that runs all test suites
+1. **run_all_tests.sh** - Master script that runs all test suites
    - Runs all four test suites in sequence
    - Provides unified summary
    - Returns appropriate exit codes
-
 ## Running the Tests
 
 ### Run All Tests
