@@ -1,5 +1,15 @@
 # fsuite
 
+<p align="center">
+  <img src="docs/fsuite-hero.jpeg" alt="fsuite - Filesystem Reconnaissance Drones" width="800">
+</p>
+
+<p align="center">
+  <em>Deploy the drones. Map the terrain. Return with intel.</em>
+</p>
+
+---
+
 **A three-tool filesystem reconnaissance kit for humans and AI agents.**
 
 `fsuite` provides three composable CLI utilities that turn filesystem exploration into a clean, scriptable, agent-friendly pipeline:
