@@ -64,6 +64,20 @@ def euclidean_distance(a: List[float], b: List[float]) -> float:
     return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
 
 
+def filter_outliers_iqr(data: List[dict], factor: float = 1.5) -> List[dict]:
+    """Remove duration outliers using IQR method."""
+    if len(data) < 4:
+        return data
+    durations = sorted(d["duration_ms"] for d in data)
+    n = len(durations)
+    q1 = durations[n // 4]
+    q3 = durations[3 * n // 4]
+    iqr = q3 - q1
+    lower = q1 - factor * iqr
+    upper = q3 + factor * iqr
+    return [d for d in data if lower <= d["duration_ms"] <= upper]
+
+
 def predict_for_tool(
     data: List[dict],
     target_items: int,
@@ -77,6 +91,11 @@ def predict_for_tool(
     Features: items_scanned, bytes_scanned, depth
     Target: duration_ms
     """
+    if len(data) < MIN_SAMPLES:
+        return None
+
+    # Remove outliers before prediction
+    data = filter_outliers_iqr(data)
     if len(data) < MIN_SAMPLES:
         return None
 
@@ -120,15 +139,11 @@ def predict_for_tool(
     neighbor_durations = [d for _, d in neighbors]
     neighbor_distances = [dist for dist, _ in neighbors]
 
-    # If any neighbor has distance 0, use its value directly
-    zero_dist = [d for dist, d in neighbors if dist == 0]
-    if zero_dist:
-        predicted_ms = sum(zero_dist) / len(zero_dist)
-    else:
-        # Inverse distance weighting
-        weights = [1.0 / d for d in neighbor_distances]
-        total_weight = sum(weights)
-        predicted_ms = sum(w * d for w, d in zip(weights, neighbor_durations)) / total_weight
+    # Inverse distance weighting with epsilon to prevent division by zero
+    EPSILON = 1e-9
+    weights = [1.0 / (d + EPSILON) for d in neighbor_distances]
+    total_weight = sum(weights)
+    predicted_ms = sum(w * d for w, d in zip(weights, neighbor_durations)) / total_weight
 
     # Confidence based on std dev of neighbors and distance spread
     pred_mean, pred_std = compute_stats(neighbor_durations)

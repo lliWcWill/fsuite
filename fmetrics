@@ -140,7 +140,7 @@ cmd_import() {
     [[ -z "$line" ]] && continue
     (( total++ )) || true
 
-    # Parse JSON fields using parameter expansion (no jq dependency)
+    # Parse JSON fields using grep -oP (no jq dependency)
     local ts tool ver mode ph pn dur ec dep items bytes flags backend
     ts=$(echo "$line" | grep -oP '"timestamp":"\K[^"]+' 2>/dev/null) || { (( errors++ )); continue; }
     tool=$(echo "$line" | grep -oP '"tool":"\K[^"]+' 2>/dev/null) || { (( errors++ )); continue; }
@@ -156,7 +156,17 @@ cmd_import() {
     flags=$(echo "$line" | grep -oP '"flags":"\K[^"]+' 2>/dev/null) || flags=""
     backend=$(echo "$line" | grep -oP '"backend":"\K[^"]+' 2>/dev/null) || backend=""
 
-    # Escape single quotes for SQL
+    # Sanitize string fields: strip non-safe characters to prevent SQL injection
+    ts=$(echo "$ts" | tr -cd '[:alnum:].:T Z+-')
+    tool=$(echo "$tool" | tr -cd '[:alnum:]._-')
+    ver=$(echo "$ver" | tr -cd '[:alnum:]._-')
+    mode=$(echo "$mode" | tr -cd '[:alnum:]._-')
+    ph=$(echo "$ph" | tr -cd '[:alnum:]')
+    pn=$(echo "$pn" | tr -cd '[:alnum:]. _-')
+    flags=$(echo "$flags" | tr -cd '[:alnum:]. _-')
+    backend=$(echo "$backend" | tr -cd '[:alnum:]._-')
+
+    # Escape single quotes for SQL safety (belt-and-suspenders after sanitize)
     pn="${pn//\'/\'\'}"
     flags="${flags//\'/\'\'}"
 
@@ -262,9 +272,15 @@ cmd_stats() {
 cmd_history() {
   ensure_db
 
+  # Sanitize filter inputs to prevent SQL injection
+  local safe_tool safe_project
+  safe_tool=$(echo "${FILTER_TOOL:-}" | tr -cd '[:alnum:]._-')
+  safe_project=$(echo "${FILTER_PROJECT:-}" | tr -cd '[:alnum:]. _-')
+  safe_project="${safe_project//\'/\'\'}"
+
   local where_clauses=()
-  [[ -n "${FILTER_TOOL:-}" ]] && where_clauses+=("tool='$FILTER_TOOL'")
-  [[ -n "${FILTER_PROJECT:-}" ]] && where_clauses+=("project_name='$FILTER_PROJECT'")
+  [[ -n "$safe_tool" ]] && where_clauses+=("tool='$safe_tool'")
+  [[ -n "$safe_project" ]] && where_clauses+=("project_name='$safe_project'")
 
   local where=""
   if (( ${#where_clauses[@]} > 0 )); then
@@ -365,7 +381,7 @@ cmd_predict() {
     local pred_json
     pred_json=$(python3 "$predict_py" --db "$DB_FILE" --items "$total_items" --bytes "$total_bytes" --depth 3 --output json 2>/dev/null) || pred_json=""
 
-    if [[ -n "$pred_json" ]]; then
+    if [[ -n "$pred_json" ]] && ! echo "$pred_json" | grep -q '"error"' 2>/dev/null; then
       if [[ "$OUTPUT" == "json" ]]; then
         echo "$pred_json"
       else
