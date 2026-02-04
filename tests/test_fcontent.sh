@@ -5,7 +5,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FCONTENT="${SCRIPT_DIR}/fcontent"
+FCONTENT="${SCRIPT_DIR}/../fcontent"
 TEST_DIR=""
 TESTS_RUN=0
 TESTS_PASSED=0

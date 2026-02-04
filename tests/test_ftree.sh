@@ -5,7 +5,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FTREE="${SCRIPT_DIR}/ftree"
+FTREE="${SCRIPT_DIR}/../ftree"
 TEST_DIR=""
 TESTS_RUN=0
 TESTS_PASSED=0

@@ -5,9 +5,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FSEARCH="${SCRIPT_DIR}/fsearch"
-FCONTENT="${SCRIPT_DIR}/fcontent"
-FTREE="${SCRIPT_DIR}/ftree"
+FSEARCH="${SCRIPT_DIR}/../fsearch"
+FCONTENT="${SCRIPT_DIR}/../fcontent"
+FTREE="${SCRIPT_DIR}/../ftree"
 TEST_DIR=""
 TESTS_RUN=0
 TESTS_PASSED=0
