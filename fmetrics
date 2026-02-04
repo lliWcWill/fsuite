@@ -368,8 +368,10 @@ cmd_predict() {
   }
 
   local total_items total_bytes size_mb
-  total_items=$(echo "$recon_json" | grep -oP '"total_entries":\K[0-9]+' 2>/dev/null) || total_items=0
-  total_bytes=$(echo "$recon_json" | grep -oP '"size_bytes":\K[0-9]+' 2>/dev/null | awk '{s+=$1}END{print s+0}') || total_bytes=0
+  total_items=$(json_get "$recon_json" "total_entries") || total_items=0
+  [[ "$total_items" =~ ^[0-9]+$ ]] || total_items=0
+  total_bytes=$(json_get "$recon_json" "size_bytes") || total_bytes=0
+  [[ "$total_bytes" =~ ^[0-9]+$ ]] || total_bytes=0
   size_mb=$(_predict_size_mb "$total_bytes")
 
   if (( count < 5 )); then
@@ -407,17 +409,24 @@ cmd_predict() {
         echo "    Size:  ${size_mb}MB"
         echo ""
         echo "  Estimated Runtimes:"
-        local t pred_ms std_ms conf h_pred h_std
+        local t pred_ms std_ms conf h_pred h_std tool_block
         for t in ftree fsearch fcontent; do
-          pred_ms=$(echo "$pred_json" | grep -oP '"tool":\s*"'"$t"'"[^}]*"predicted_ms":\s*\K[0-9]+' 2>/dev/null) || continue
-          std_ms=$(echo "$pred_json" | grep -oP '"tool":\s*"'"$t"'"[^}]*"std_dev_ms":\s*\K[0-9]+' 2>/dev/null) || std_ms=0
-          conf=$(echo "$pred_json" | grep -oP '"tool":\s*"'"$t"'"[^}]*"confidence":\s*"\K[^"]+' 2>/dev/null) || conf="?"
+          # Extract the JSON block for this tool, then parse fields portably
+          tool_block=$(echo "$pred_json" | sed -n 's/.*\({"tool"[^}]*"'"$t"'"[^}]*}\).*/\1/p' | head -1) || continue
+          [[ -n "$tool_block" ]] || continue
+          pred_ms=$(json_get "$tool_block" "predicted_ms") || continue
+          [[ "$pred_ms" =~ ^-?[0-9]+$ ]] || continue
+          (( pred_ms < 0 )) && continue
+          std_ms=$(json_get "$tool_block" "std_dev_ms") || std_ms=0
+          [[ "$std_ms" =~ ^[0-9]+$ ]] || std_ms=0
+          conf=$(json_get "$tool_block" "confidence") || conf="?"
           h_pred=$(human_ms "$pred_ms")
           h_std=$(human_ms "$std_ms")
           printf '    %-12s ~%-8s +/-%s  [%s]\n' "$t" "$h_pred" "$h_std" "$conf"
         done
         local total_samples
-        total_samples=$(echo "$pred_json" | grep -oP '"total_historical_samples":\s*\K[0-9]+' 2>/dev/null) || total_samples="?"
+        total_samples=$(json_get "$pred_json" "total_historical_samples") || total_samples="?"
+        [[ "$total_samples" =~ ^[0-9]+$ ]] || total_samples="?"
         echo ""
         echo "  Based on $total_samples historical runs"
       fi
@@ -584,10 +593,14 @@ while [[ $# -gt 0 ]]; do
       FILTER_PROJECT="$2"; shift 2 ;;
     --limit)
       [[ -n "${2:-}" ]] || die "Missing value for $1"
-      LIMIT="$2"; shift 2 ;;
+      LIMIT="$2"
+      [[ "$LIMIT" =~ ^[0-9]+$ ]] || die "--limit must be a positive integer"
+      shift 2 ;;
     --days)
       [[ -n "${2:-}" ]] || die "Missing value for $1"
-      CLEAN_DAYS="$2"; shift 2 ;;
+      CLEAN_DAYS="$2"
+      [[ "$CLEAN_DAYS" =~ ^[0-9]+$ ]] || die "--days must be a positive integer"
+      shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     -*) die "Unknown option: $1" ;;
     *)  POSITIONAL+=("$1"); shift ;;

@@ -23,6 +23,7 @@ _fsuite_record_telemetry() {
   [[ "$end_ms" != "0" ]] || return 0
   [[ "$end_ms" =~ ^[0-9]+$ ]] || return 0
   local dur_ms=$(( end_ms - _TELEM_START_MS ))
+  (( dur_ms < 0 )) && dur_ms=0
   local telem_dir="$HOME/.fsuite"
   mkdir -p "$telem_dir" 2>/dev/null || return 0
   local ts

@@ -15,6 +15,7 @@ import json
 import math
 import sqlite3
 import sys
+from contextlib import closing
 from typing import Dict, List, Optional, Tuple
 
 VERSION = "1.0.0"
@@ -180,7 +181,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        with connect_db(args.db) as conn:
+        with closing(connect_db(args.db)) as conn:
             total_samples = conn.execute(
                 "SELECT COUNT(*) FROM telemetry WHERE exit_code=0"
             ).fetchone()[0]
