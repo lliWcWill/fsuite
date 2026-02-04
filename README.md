@@ -144,7 +144,13 @@ fsearch [OPTIONS] <pattern_or_ext> [path]
 **Key features:**
 
 - Glob-aware: `'upscale*'`, `'*progress*'`, `'*.log'`
-- Smart extension handling: passing `log` or `.log` both resolve to `*.log`
+- Smart pattern handling:
+  - Wildcards are preserved (`*`/`?`).
+  - Leading dot becomes an extension: `.log` -> `*.log`.
+  - Dotted names are literal: `file.txt` -> `file.txt`.
+  - Short lowercase tokens (<=4 chars, `^[a-z0-9]+$`, not purely numeric) become extensions:
+    `py` -> `*.py`, `main` -> `*.main`.
+  - Numeric-only tokens are treated literally (e.g. `123` stays `123`).
 - Auto-selects `fd`/`fdfind` when available, falls back to POSIX `find`
 - Interactive mode (prompts for missing args) or fully headless
 - Three output formats: `pretty` (default), `paths` (one per line), `json`
