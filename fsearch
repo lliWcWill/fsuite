@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.1.0"
 
 # -------------------------
 # Defaults (override via flags)
@@ -171,14 +171,24 @@ normalize_pattern() {
   local out="$p"
 
   if [[ "$p" == *'*'* || "$p" == *'?'* ]]; then
+    # Has wildcards: use as-is
     out="$p"
   else
     if [[ "$p" == .* ]]; then
+      # Starts with dot: treat as extension (.log → *.log)
       out="*${p}"
     elif [[ "$p" == *.* ]]; then
+      # Contains dot: treat as literal (file.txt → file.txt)
       out="$p"
     else
-      out="*.${p}"
+      # No wildcards, no dots: heuristic to distinguish extensions from filenames.
+      # Short all-lowercase strings (<=4 chars) → extension (py → *.py)
+      # Everything else → literal filename (Makefile, LICENSE, index)
+      if [[ ${#p} -le 4 ]] && [[ "$p" =~ ^[a-z0-9]+$ ]] && ! [[ "$p" =~ ^[0-9]+$ ]]; then
+        out="*.${p}"
+      else
+        out="$p"
+      fi
     fi
   fi
 
@@ -225,8 +235,8 @@ run_fd() {
 
 # JSON escape minimal
 json_escape() {
-  # Escapes backslashes and double quotes, and newlines.
-  sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e ':a;N;$!ba;s/\n/\\n/g'
+  # Escapes backslashes, double quotes, tabs, carriage returns, and newlines.
+  sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/\\t/g' -e 's/\r/\\r/g' -e ':a;N;$!ba;s/\n/\\n/g'
 }
 
 # -------------------------
