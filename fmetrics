@@ -1,0 +1,587 @@
+#!/usr/bin/env bash
+# fmetrics — performance telemetry and analytics for fsuite tools.
+# Part of fsuite. Provides stats, history, predictions, and data management.
+
+set -euo pipefail
+
+VERSION="1.0.0"
+
+# -------------------------
+# Paths
+# -------------------------
+FSUITE_DIR="$HOME/.fsuite"
+JSONL_FILE="$FSUITE_DIR/telemetry.jsonl"
+DB_FILE="$FSUITE_DIR/telemetry.db"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# -------------------------
+# Defaults
+# -------------------------
+DEFAULT_OUTPUT="pretty"
+DEFAULT_LIMIT=20
+DEFAULT_CLEAN_DAYS=90
+
+# -------------------------
+# Helpers
+# -------------------------
+die() {
+  local code=1
+  if [[ "${1:-}" =~ ^[0-9]+$ ]]; then code="$1"; shift; fi
+  echo "fmetrics: $*" >&2
+  exit "$code"
+}
+
+has() { command -v "$1" >/dev/null 2>&1; }
+
+json_escape() {
+  sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/\\t/g' -e 's/\r/\\r/g' -e ':a;N;$!ba;s/\n/\\n/g'
+}
+
+human_ms() {
+  local ms="$1"
+  if (( ms >= 60000 )); then
+    awk "BEGIN {printf \"%.1fm\", $ms/60000}"
+  elif (( ms >= 1000 )); then
+    awk "BEGIN {printf \"%.1fs\", $ms/1000}"
+  else
+    echo "${ms}ms"
+  fi
+}
+
+ensure_db() {
+  has sqlite3 || die 3 "sqlite3 is required. Run: fmetrics --install-hints"
+  mkdir -p "$FSUITE_DIR" 2>/dev/null || die "Cannot create $FSUITE_DIR"
+  sqlite3 "$DB_FILE" <<'SQL' >/dev/null 2>&1
+CREATE TABLE IF NOT EXISTS telemetry (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp TEXT NOT NULL,
+  tool TEXT NOT NULL,
+  version TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  path_hash TEXT NOT NULL,
+  project_name TEXT NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  exit_code INTEGER NOT NULL,
+  depth INTEGER NOT NULL DEFAULT -1,
+  items_scanned INTEGER NOT NULL DEFAULT -1,
+  bytes_scanned INTEGER NOT NULL DEFAULT -1,
+  flags TEXT NOT NULL DEFAULT '',
+  backend TEXT NOT NULL DEFAULT '',
+  UNIQUE(timestamp, tool, path_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_tool ON telemetry(tool);
+CREATE INDEX IF NOT EXISTS idx_project ON telemetry(project_name);
+CREATE INDEX IF NOT EXISTS idx_timestamp ON telemetry(timestamp);
+PRAGMA journal_mode=WAL;
+SQL
+}
+
+# -------------------------
+# Usage
+# -------------------------
+usage() {
+  cat <<'EOF'
+fmetrics — performance telemetry and analytics for fsuite
+
+USAGE
+  fmetrics <subcommand> [options]
+
+SUBCOMMANDS
+  stats              Show dashboard of tool usage, runtimes, reliability
+  history            Show recent runs (filterable)
+  predict <path>     Estimate how long fsuite tools will take on <path>
+  import             Ingest telemetry.jsonl into SQLite database
+  clean              Prune old telemetry data
+
+OPTIONS (global)
+  -o, --output       Output format: pretty (default) or json
+  -h, --help         Show this help
+  --version          Print version
+  --self-check       Verify dependencies
+  --install-hints    Print install commands for missing dependencies
+
+OPTIONS (history)
+  --tool <name>      Filter by tool (ftree, fsearch, fcontent)
+  --project <name>   Filter by project name
+  --limit <N>        Max rows (default 20)
+
+OPTIONS (clean)
+  --days <N>         Keep last N days (default 90)
+  --dry-run          Preview what would be deleted
+
+ENVIRONMENT
+  FSUITE_TELEMETRY=0  Disable telemetry collection in fsuite tools
+
+EXAMPLES
+  fmetrics import              Import telemetry data into SQLite
+  fmetrics stats               Show usage dashboard
+  fmetrics stats -o json       Machine-readable stats
+  fmetrics history --tool ftree --limit 10
+  fmetrics predict /project    Estimate runtimes for /project
+  fmetrics clean --days 30     Remove data older than 30 days
+EOF
+}
+
+# -------------------------
+# Subcommand: import
+# -------------------------
+cmd_import() {
+  ensure_db
+
+  if [[ ! -f "$JSONL_FILE" ]]; then
+    echo "No telemetry data found at $JSONL_FILE"
+    echo "Run fsuite tools (ftree, fsearch, fcontent) to generate telemetry."
+    return 0
+  fi
+
+  local total=0 inserted=0 skipped=0 errors=0
+
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    (( total++ )) || true
+
+    # Parse JSON fields using parameter expansion (no jq dependency)
+    local ts tool ver mode ph pn dur ec dep items bytes flags backend
+    ts=$(echo "$line" | grep -oP '"timestamp":"\K[^"]+' 2>/dev/null) || { (( errors++ )); continue; }
+    tool=$(echo "$line" | grep -oP '"tool":"\K[^"]+' 2>/dev/null) || { (( errors++ )); continue; }
+    ver=$(echo "$line" | grep -oP '"version":"\K[^"]+' 2>/dev/null) || ver=""
+    mode=$(echo "$line" | grep -oP '"mode":"\K[^"]+' 2>/dev/null) || mode=""
+    ph=$(echo "$line" | grep -oP '"path_hash":"\K[^"]+' 2>/dev/null) || ph=""
+    pn=$(echo "$line" | grep -oP '"project_name":"\K[^"]+' 2>/dev/null) || pn=""
+    dur=$(echo "$line" | grep -oP '"duration_ms":\K[0-9]+' 2>/dev/null) || dur=0
+    ec=$(echo "$line" | grep -oP '"exit_code":\K[0-9]+' 2>/dev/null) || ec=0
+    dep=$(echo "$line" | grep -oP '"depth":\K-?[0-9]+' 2>/dev/null) || dep=-1
+    items=$(echo "$line" | grep -oP '"items_scanned":\K-?[0-9]+' 2>/dev/null) || items=-1
+    bytes=$(echo "$line" | grep -oP '"bytes_scanned":\K-?[0-9]+' 2>/dev/null) || bytes=-1
+    flags=$(echo "$line" | grep -oP '"flags":"\K[^"]+' 2>/dev/null) || flags=""
+    backend=$(echo "$line" | grep -oP '"backend":"\K[^"]+' 2>/dev/null) || backend=""
+
+    # Escape single quotes for SQL
+    pn="${pn//\'/\'\'}"
+    flags="${flags//\'/\'\'}"
+
+    local result
+    result=$(sqlite3 "$DB_FILE" "INSERT OR IGNORE INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend) VALUES ('$ts','$tool','$ver','$mode','$ph','$pn',$dur,$ec,$dep,$items,$bytes,'$flags','$backend'); SELECT changes();" 2>/dev/null) || { (( errors++ )); continue; }
+
+    if [[ "$result" == "1" ]]; then
+      (( inserted++ )) || true
+    else
+      (( skipped++ )) || true
+    fi
+  done < "$JSONL_FILE"
+
+  if [[ "$OUTPUT" == "json" ]]; then
+    echo "{\"tool\":\"fmetrics\",\"version\":\"$VERSION\",\"subcommand\":\"import\",\"total_lines\":$total,\"inserted\":$inserted,\"skipped\":$skipped,\"errors\":$errors,\"db_path\":\"$DB_FILE\"}"
+  else
+    echo "Importing telemetry data..."
+    echo "  Processed $total lines"
+    echo "  Inserted $inserted new records"
+    echo "  Skipped $skipped duplicates"
+    (( errors > 0 )) && echo "  Errors: $errors (malformed lines)"
+    local db_size
+    db_size=$(du -h "$DB_FILE" 2>/dev/null | cut -f1) || db_size="unknown"
+    echo "Database: $DB_FILE ($db_size)"
+  fi
+}
+
+# -------------------------
+# Subcommand: stats
+# -------------------------
+cmd_stats() {
+  ensure_db
+
+  local count
+  count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM telemetry;" 2>/dev/null) || count=0
+
+  if (( count == 0 )); then
+    echo "No telemetry data in database."
+    echo "Run: fmetrics import"
+    return 0
+  fi
+
+  local oldest newest db_size
+  oldest=$(sqlite3 "$DB_FILE" "SELECT MIN(timestamp) FROM telemetry;")
+  newest=$(sqlite3 "$DB_FILE" "SELECT MAX(timestamp) FROM telemetry;")
+
+  # Compatible SQL: avg, min, max, success rate per tool
+  local stats_sql
+  stats_sql="SELECT tool, COUNT(*), CAST(AVG(duration_ms) AS INTEGER), MIN(duration_ms), MAX(duration_ms), ROUND(100.0 * SUM(CASE WHEN exit_code=0 THEN 1 ELSE 0 END) / COUNT(*), 1) FROM telemetry GROUP BY tool ORDER BY tool;"
+  local projects_sql="SELECT project_name, COUNT(*) as c FROM telemetry GROUP BY project_name ORDER BY c DESC LIMIT 5;"
+
+  if [[ "$OUTPUT" == "json" ]]; then
+    db_size=$(stat -c%s "$DB_FILE" 2>/dev/null) || db_size=0
+    echo -n "{\"tool\":\"fmetrics\",\"version\":\"$VERSION\",\"subcommand\":\"stats\","
+    echo -n "\"total_runs\":$count,\"db_path\":\"$DB_FILE\",\"db_size_bytes\":$db_size,"
+    echo -n "\"oldest_run\":\"$oldest\",\"newest_run\":\"$newest\","
+
+    echo -n "\"tools\":["
+    local first=1
+    while IFS='|' read -r t runs avg_ms min_ms max_ms sr; do
+      (( first )) || echo -n ","
+      first=0
+      echo -n "{\"name\":\"$t\",\"runs\":$runs,\"avg_ms\":$avg_ms,\"min_ms\":$min_ms,\"max_ms\":$max_ms,\"success_rate\":$sr}"
+    done < <(sqlite3 -separator '|' "$DB_FILE" "$stats_sql" 2>/dev/null)
+    echo -n "],"
+
+    echo -n "\"top_projects\":["
+    first=1
+    while IFS='|' read -r pname pruns; do
+      (( first )) || echo -n ","
+      first=0
+      echo -n "{\"name\":\"$pname\",\"runs\":$pruns}"
+    done < <(sqlite3 -separator '|' "$DB_FILE" "$projects_sql" 2>/dev/null)
+    echo "]}"
+  else
+    echo "fmetrics stats"
+    echo "============================================"
+    echo ""
+    printf "  %-12s %6s %10s %10s %10s %9s\n" "Tool" "Runs" "Avg" "Min" "Max" "Success"
+    echo "  ----------------------------------------------------------"
+
+    while IFS='|' read -r t runs avg_ms min_ms max_ms sr; do
+      printf "  %-12s %6s %10s %10s %10s %8s%%\n" \
+        "$t" "$runs" "$(human_ms "$avg_ms")" "$(human_ms "$min_ms")" "$(human_ms "$max_ms")" "$sr"
+    done < <(sqlite3 -separator '|' "$DB_FILE" "$stats_sql" 2>/dev/null)
+
+    echo ""
+    echo "  Top Projects:"
+    while IFS='|' read -r pname pruns; do
+      printf "    %-30s %d runs\n" "$pname" "$pruns"
+    done < <(sqlite3 -separator '|' "$DB_FILE" "$projects_sql" 2>/dev/null)
+
+    db_size=$(du -h "$DB_FILE" 2>/dev/null | cut -f1) || db_size="?"
+    echo ""
+    echo "  Telemetry: $count total runs -- $oldest to $newest"
+    echo "  Database: $DB_FILE -- $db_size"
+  fi
+}
+
+# -------------------------
+# Subcommand: history
+# -------------------------
+cmd_history() {
+  ensure_db
+
+  local where_clauses=()
+  [[ -n "${FILTER_TOOL:-}" ]] && where_clauses+=("tool='$FILTER_TOOL'")
+  [[ -n "${FILTER_PROJECT:-}" ]] && where_clauses+=("project_name='$FILTER_PROJECT'")
+
+  local where=""
+  if (( ${#where_clauses[@]} > 0 )); then
+    local IFS=" AND "
+    where="WHERE ${where_clauses[*]}"
+  fi
+
+  if [[ "$OUTPUT" == "json" ]]; then
+    echo -n "{\"tool\":\"fmetrics\",\"version\":\"$VERSION\",\"subcommand\":\"history\",\"runs\":["
+    local first=1
+    while IFS='|' read -r ts t mode pn dur ec items backend; do
+      (( first )) || echo -n ","
+      first=0
+      echo -n "{\"timestamp\":\"$ts\",\"tool\":\"$t\",\"mode\":\"$mode\",\"project\":\"$pn\",\"duration_ms\":$dur,\"exit_code\":$ec,\"items_scanned\":$items,\"backend\":\"$backend\"}"
+    done < <(sqlite3 -separator '|' "$DB_FILE" "SELECT timestamp,tool,mode,project_name,duration_ms,exit_code,items_scanned,backend FROM telemetry $where ORDER BY timestamp DESC LIMIT $LIMIT;" 2>/dev/null)
+    echo "]}"
+  else
+    local title="Recent Runs"
+    [[ -n "${FILTER_TOOL:-}" ]] && title="Recent $FILTER_TOOL Runs"
+    [[ -n "${FILTER_PROJECT:-}" ]] && title="$title (project: $FILTER_PROJECT)"
+    echo "fmetrics history — $title (last $LIMIT)"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    printf "  %-20s %-12s %-12s %-15s %8s %6s %6s\n" "Timestamp" "Tool" "Mode" "Project" "Time" "Items" "Exit"
+    echo "  ──────────────────────────────────────────────────────────────────────────────"
+
+    while IFS='|' read -r ts t mode pn dur ec items backend; do
+      printf "  %-20s %-12s %-12s %-15s %8s %6s %6s\n" \
+        "$ts" "$t" "$mode" "${pn:0:15}" "$(human_ms "$dur")" "$items" "$ec"
+    done < <(sqlite3 -separator '|' "$DB_FILE" "SELECT timestamp,tool,mode,project_name,duration_ms,exit_code,items_scanned,backend FROM telemetry $where ORDER BY timestamp DESC LIMIT $LIMIT;" 2>/dev/null)
+  fi
+}
+
+# -------------------------
+# Subcommand: predict
+# -------------------------
+_predict_size_mb() {
+  # Compute MB from bytes, avoiding inline awk quoting issues
+  local b="${1:-0}"
+  if (( b > 0 )); then
+    echo "$b" | awk '{printf "%.1f", $1/1048576}'
+  else
+    echo "0.0"
+  fi
+}
+
+_predict_get_avg() {
+  # Get average duration for a tool from DB
+  local tool_name="$1"
+  local sql="SELECT CAST(AVG(duration_ms) AS INTEGER) FROM telemetry WHERE tool='"
+  sql+="$tool_name"
+  sql+="' AND exit_code=0;"
+  local result
+  result=$(sqlite3 "$DB_FILE" "$sql" 2>/dev/null) || result=0
+  [[ -z "$result" ]] && result=0
+  echo "$result"
+}
+
+cmd_predict() {
+  local target="${PREDICT_PATH:-.}"
+  [[ -d "$target" ]] || die "Not a directory: $target"
+
+  ensure_db
+
+  local count
+  count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM telemetry WHERE exit_code=0;" 2>/dev/null) || count=0
+
+  # Quick recon scan to get project features
+  local recon_json
+  recon_json=$(FSUITE_TELEMETRY=0 "$SCRIPT_DIR/ftree" --recon -o json "$target" 2>/dev/null) || {
+    die "Failed to run ftree --recon on $target"
+  }
+
+  local total_items total_bytes size_mb
+  total_items=$(echo "$recon_json" | grep -oP '"total_entries":\K[0-9]+' 2>/dev/null) || total_items=0
+  total_bytes=$(echo "$recon_json" | grep -oP '"size_bytes":\K[0-9]+' 2>/dev/null | awk '{s+=$1}END{print s+0}') || total_bytes=0
+  size_mb=$(_predict_size_mb "$total_bytes")
+
+  if (( count < 5 )); then
+    if [[ "$OUTPUT" == "json" ]]; then
+      echo -n "{\"tool\":\"fmetrics\",\"version\":\"$VERSION\",\"subcommand\":\"predict\","
+      echo -n "\"path\":\"$target\",\"features\":{\"items\":$total_items,\"bytes\":$total_bytes},"
+      echo "\"error\":\"insufficient_data\",\"total_samples\":$count,\"minimum_required\":5}"
+    else
+      echo "fmetrics predict -- $target"
+      echo ""
+      echo "  Project: $total_items entries, ${size_mb}MB"
+      echo ""
+      echo "  Insufficient telemetry data: $count runs, need at least 5."
+      echo "  Run fsuite tools more to build prediction history."
+      echo "  Then: fmetrics import && fmetrics predict $target"
+    fi
+    return 0
+  fi
+
+  # Check for Python predict helper
+  local predict_py="$SCRIPT_DIR/fmetrics-predict.py"
+  if [[ -f "$predict_py" ]] && has python3; then
+    local pred_json
+    pred_json=$(python3 "$predict_py" --db "$DB_FILE" --items "$total_items" --bytes "$total_bytes" --depth 3 --output json 2>/dev/null) || pred_json=""
+
+    if [[ -n "$pred_json" ]]; then
+      if [[ "$OUTPUT" == "json" ]]; then
+        echo "$pred_json"
+      else
+        echo "fmetrics predict -- $target"
+        echo "============================================"
+        echo ""
+        echo "  Project Characteristics:"
+        echo "    Items: $total_items"
+        echo "    Size:  ${size_mb}MB"
+        echo ""
+        echo "  Estimated Runtimes:"
+        local t pred_ms std_ms conf h_pred h_std
+        for t in ftree fsearch fcontent; do
+          pred_ms=$(echo "$pred_json" | grep -oP '"tool":\s*"'"$t"'"[^}]*"predicted_ms":\s*\K[0-9]+' 2>/dev/null) || continue
+          std_ms=$(echo "$pred_json" | grep -oP '"tool":\s*"'"$t"'"[^}]*"std_dev_ms":\s*\K[0-9]+' 2>/dev/null) || std_ms=0
+          conf=$(echo "$pred_json" | grep -oP '"tool":\s*"'"$t"'"[^}]*"confidence":\s*"\K[^"]+' 2>/dev/null) || conf="?"
+          h_pred=$(human_ms "$pred_ms")
+          h_std=$(human_ms "$std_ms")
+          printf '    %-12s ~%-8s +/-%s  [%s]\n' "$t" "$h_pred" "$h_std" "$conf"
+        done
+        local total_samples
+        total_samples=$(echo "$pred_json" | grep -oP '"total_historical_samples":\s*\K[0-9]+' 2>/dev/null) || total_samples="?"
+        echo ""
+        echo "  Based on $total_samples historical runs"
+      fi
+      return 0
+    fi
+  fi
+
+  # Fallback: simple average-based prediction
+  if [[ "$OUTPUT" == "json" ]]; then
+    echo -n "{\"tool\":\"fmetrics\",\"version\":\"$VERSION\",\"subcommand\":\"predict\","
+    echo -n "\"path\":\"$target\","
+    echo -n "\"features\":{\"items\":$total_items,\"bytes\":$total_bytes},"
+    echo -n "\"predictions\":["
+    local first=1 t avg_ms
+    for t in ftree fsearch fcontent; do
+      (( first )) || echo -n ","
+      first=0
+      avg_ms=$(_predict_get_avg "$t")
+      echo -n "{\"tool\":\"$t\",\"predicted_ms\":$avg_ms,\"method\":\"average\",\"confidence\":\"low\"}"
+    done
+    echo "],\"total_historical_samples\":$count,\"method\":\"average_fallback\"}"
+  else
+    echo "fmetrics predict -- $target"
+    echo "============================================"
+    echo ""
+    echo "  Project: $total_items entries, ${size_mb}MB"
+    echo ""
+    echo "  Estimated Runtimes - based on historical averages:"
+    local t avg_ms
+    for t in ftree fsearch fcontent; do
+      avg_ms=$(_predict_get_avg "$t")
+      printf "    %-12s ~%s\n" "$t" "$(human_ms "$avg_ms")"
+    done
+    if ! has python3 || [[ ! -f "$SCRIPT_DIR/fmetrics-predict.py" ]]; then
+      echo ""
+      echo "  Note: Install python3 for k-NN predictions - more accurate."
+    fi
+    echo ""
+    echo "  Based on $count historical runs"
+  fi
+}
+
+# -------------------------
+# Subcommand: clean
+# -------------------------
+cmd_clean() {
+  ensure_db
+
+  local days="${CLEAN_DAYS:-$DEFAULT_CLEAN_DAYS}"
+  local cutoff
+  cutoff=$(date -u -d "-${days} days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || \
+    cutoff=$(date -u -v-"${days}d" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || \
+    die "Cannot compute date offset"
+
+  local to_delete
+  to_delete=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM telemetry WHERE timestamp < '$cutoff';" 2>/dev/null) || to_delete=0
+  local to_keep
+  to_keep=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM telemetry WHERE timestamp >= '$cutoff';" 2>/dev/null) || to_keep=0
+
+  if (( DRY_RUN )); then
+    if [[ "$OUTPUT" == "json" ]]; then
+      echo "{\"tool\":\"fmetrics\",\"version\":\"$VERSION\",\"subcommand\":\"clean\",\"dry_run\":true,\"days\":$days,\"cutoff\":\"$cutoff\",\"would_delete\":$to_delete,\"would_keep\":$to_keep}"
+    else
+      echo "fmetrics clean (dry run)"
+      echo "  Would delete $to_delete records older than $days days"
+      echo "  Would keep $to_keep records"
+    fi
+    return 0
+  fi
+
+  if (( to_delete == 0 )); then
+    echo "Nothing to clean. All $to_keep records are within the last $days days."
+    return 0
+  fi
+
+  sqlite3 "$DB_FILE" "DELETE FROM telemetry WHERE timestamp < '$cutoff';"
+  sqlite3 "$DB_FILE" "VACUUM;"
+
+  if [[ "$OUTPUT" == "json" ]]; then
+    local db_size
+    db_size=$(stat -c%s "$DB_FILE" 2>/dev/null) || db_size=0
+    echo "{\"tool\":\"fmetrics\",\"version\":\"$VERSION\",\"subcommand\":\"clean\",\"deleted\":$to_delete,\"kept\":$to_keep,\"days\":$days,\"db_size_bytes\":$db_size}"
+  else
+    local db_size
+    db_size=$(du -h "$DB_FILE" 2>/dev/null | cut -f1) || db_size="?"
+    echo "Cleaning telemetry older than $days days..."
+    echo "  Deleted $to_delete records"
+    echo "  Kept $to_keep records"
+    echo "  Database: $DB_FILE ($db_size)"
+  fi
+}
+
+# -------------------------
+# Self-check
+# -------------------------
+self_check() {
+  echo "fmetrics dependency check:"
+  if has sqlite3; then
+    echo "  sqlite3: $(sqlite3 --version 2>&1 | head -1)"
+  else
+    echo "  sqlite3: NOT FOUND"
+  fi
+  if has python3; then
+    echo "  python3: $(python3 --version 2>&1)"
+    if [[ -f "$SCRIPT_DIR/fmetrics-predict.py" ]]; then
+      echo "  fmetrics-predict.py: found"
+    else
+      echo "  fmetrics-predict.py: NOT FOUND (predictions unavailable)"
+    fi
+  else
+    echo "  python3: NOT FOUND (predictions unavailable, basic stats still work)"
+  fi
+  echo "  telemetry.jsonl: $(wc -l < "$JSONL_FILE" 2>/dev/null || echo "0") lines"
+  if [[ -f "$DB_FILE" ]]; then
+    local count
+    count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM telemetry;" 2>/dev/null) || count="error"
+    echo "  telemetry.db: $count records"
+  else
+    echo "  telemetry.db: not created yet (run: fmetrics import)"
+  fi
+}
+
+install_hints() {
+  cat <<'EOF'
+fmetrics dependencies:
+
+  Required:
+    sqlite3    sudo apt install sqlite3      # Debian/Ubuntu
+               brew install sqlite           # macOS
+
+  Optional (for predictions):
+    python3    sudo apt install python3      # Debian/Ubuntu
+               brew install python3          # macOS
+EOF
+}
+
+# -------------------------
+# Argument parsing
+# -------------------------
+SUBCOMMAND=""
+OUTPUT="$DEFAULT_OUTPUT"
+LIMIT="$DEFAULT_LIMIT"
+FILTER_TOOL=""
+FILTER_PROJECT=""
+PREDICT_PATH=""
+CLEAN_DAYS="$DEFAULT_CLEAN_DAYS"
+DRY_RUN=0
+
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)    usage; exit 0 ;;
+    --version)    echo "fmetrics $VERSION"; exit 0 ;;
+    --self-check) self_check; exit 0 ;;
+    --install-hints) install_hints; exit 0 ;;
+    -o|--output)
+      [[ -n "${2:-}" ]] || die "Missing value for $1"
+      OUTPUT="$2"; shift 2 ;;
+    --tool)
+      [[ -n "${2:-}" ]] || die "Missing value for $1"
+      FILTER_TOOL="$2"; shift 2 ;;
+    --project)
+      [[ -n "${2:-}" ]] || die "Missing value for $1"
+      FILTER_PROJECT="$2"; shift 2 ;;
+    --limit)
+      [[ -n "${2:-}" ]] || die "Missing value for $1"
+      LIMIT="$2"; shift 2 ;;
+    --days)
+      [[ -n "${2:-}" ]] || die "Missing value for $1"
+      CLEAN_DAYS="$2"; shift 2 ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    -*) die "Unknown option: $1" ;;
+    *)  POSITIONAL+=("$1"); shift ;;
+  esac
+done
+
+# Validate output
+case "$OUTPUT" in
+  pretty|json) ;;
+  *) die "Invalid output: $OUTPUT (use pretty or json)" ;;
+esac
+
+# Extract subcommand
+SUBCOMMAND="${POSITIONAL[0]:-}"
+[[ -n "$SUBCOMMAND" ]] || { usage; exit 0; }
+
+case "$SUBCOMMAND" in
+  stats)   cmd_stats ;;
+  history) cmd_history ;;
+  predict)
+    PREDICT_PATH="${POSITIONAL[1]:-}"
+    [[ -n "$PREDICT_PATH" ]] || die "predict requires a path argument"
+    cmd_predict ;;
+  import)  cmd_import ;;
+  clean)   cmd_clean ;;
+  *)       die "Unknown subcommand: $SUBCOMMAND. Run: fmetrics --help" ;;
+esac
