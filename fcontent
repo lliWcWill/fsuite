@@ -253,6 +253,7 @@ if (( SHOWN_MATCHES == MAX_MATCHES )); then
       "${BASE_RG[@]}" ${RG_ARGS[@]+"${RG_ARGS[@]}"} -l -- "$QUERY" "$SEARCH_PATH" 2>/dev/null | sort -u || true
     )
   fi
+  MATCH_FILES=("${FULL_MATCH_FILES[@]}")
   TOTAL_FILES="${#FULL_MATCH_FILES[@]}"
 fi
 
