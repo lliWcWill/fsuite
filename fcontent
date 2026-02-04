@@ -237,8 +237,25 @@ mapfile -t MATCH_FILES < <(
   done | sort -u || true
 )
 
-TOTAL_FILES="${#MATCH_FILES[@]}"
 SHOWN_MATCHES="${#MATCH_LINES[@]}"
+TOTAL_FILES="${#MATCH_FILES[@]}"
+
+# TOTAL_FILES defaults to MATCH_FILES (derived from MATCH_LINES).
+# If we likely truncated matches, recompute TOTAL_FILES from the full rg pass.
+# Keep SHOWN_MATCHES as the capped number from MATCH_LINES.
+if (( SHOWN_MATCHES == MAX_MATCHES )); then
+  if (( FILES_FROM_STDIN == 1 )); then
+    mapfile -t FULL_MATCH_FILES < <(
+      xargs -d '\n' -a "$TMP_LIST" "${BASE_RG[@]}" ${RG_ARGS[@]+"${RG_ARGS[@]}"} -l -- "$QUERY" 2>/dev/null | sort -u || true
+    )
+  else
+    mapfile -t FULL_MATCH_FILES < <(
+      "${BASE_RG[@]}" ${RG_ARGS[@]+"${RG_ARGS[@]}"} -l -- "$QUERY" "$SEARCH_PATH" 2>/dev/null | sort -u || true
+    )
+  fi
+  MATCH_FILES=("${FULL_MATCH_FILES[@]}")
+  TOTAL_FILES="${#FULL_MATCH_FILES[@]}"
+fi
 
 if [[ "$OUTPUT" == "json" ]]; then
   echo -n "{"

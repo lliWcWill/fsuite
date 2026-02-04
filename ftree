@@ -40,6 +40,9 @@ tree_supports_gitignore() {
 du_bytes() {
   local p="$1" out rc
   LAST_OP_TIMED_OUT=0
+  if ! has timeout; then
+    LAST_OP_TIMED_OUT=1; printf "%s" "-1"; return
+  fi
   out=$(timeout 3 du -sb "$p" 2>/dev/null) || rc=$?
   if [[ "${rc:-0}" -eq 124 ]]; then
     LAST_OP_TIMED_OUT=1; printf "%s" "-1"; return
@@ -59,6 +62,9 @@ du_bytes() {
 count_items_total() {
   local p="$1" n pipe_rc
   LAST_OP_TIMED_OUT=0
+  if ! has timeout; then
+    LAST_OP_TIMED_OUT=1; printf "%s" "-1"; return
+  fi
   set +e
   n=$(timeout 3 find "$p" -mindepth 1 2>/dev/null | wc -l)
   pipe_rc="${PIPESTATUS[0]}"

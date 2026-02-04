@@ -101,10 +101,15 @@ NOTES ON PATTERNS (GLOBS)
     fsearch '*progress*' /some/path
 
 EXTENSIONS
+  Wildcards are preserved (e.g. *progress* or upscale*).
   If you pass:
-    log   -> treated as *.log
-    .log  -> treated as *.log
-  If you pass wildcards yourself (like *progress* or upscale*), they are used as-is.
+    .log      -> treated as *.log
+    file.txt  -> treated literally as file.txt
+  If you pass a short lowercase token (<=4 chars, ^[a-z0-9]+$, not purely numeric):
+    py    -> *.py
+    main  -> *.main
+  Numeric-only tokens are NOT treated as extensions:
+    123   -> treated literally as 123
 
 HEADLESS / AI AGENT USAGE
   This script is designed to be easy for an agent to call in "headless" mode:
