@@ -48,6 +48,13 @@ human_ms() {
   fi
 }
 
+# Portable JSON field extraction (no grep -oP / PCRE dependency)
+# Handles both "key":"stringval" and "key":numval
+json_get() {
+  local line="$1" key="$2"
+  echo "$line" | sed -n 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*"\{0,1\}\([^",}]*\)"\{0,1\}.*/\1/p'
+}
+
 ensure_db() {
   has sqlite3 || die 3 "sqlite3 is required. Run: fmetrics --install-hints"
   mkdir -p "$FSUITE_DIR" 2>/dev/null || die "Cannot create $FSUITE_DIR"
@@ -140,21 +147,28 @@ cmd_import() {
     [[ -z "$line" ]] && continue
     (( total++ )) || true
 
-    # Parse JSON fields using grep -oP (no jq dependency)
+    # Parse JSON fields using portable json_get (no grep -oP / PCRE dependency)
     local ts tool ver mode ph pn dur ec dep items bytes flags backend
-    ts=$(echo "$line" | grep -oP '"timestamp":"\K[^"]+' 2>/dev/null) || { (( errors++ )); continue; }
-    tool=$(echo "$line" | grep -oP '"tool":"\K[^"]+' 2>/dev/null) || { (( errors++ )); continue; }
-    ver=$(echo "$line" | grep -oP '"version":"\K[^"]+' 2>/dev/null) || ver=""
-    mode=$(echo "$line" | grep -oP '"mode":"\K[^"]+' 2>/dev/null) || mode=""
-    ph=$(echo "$line" | grep -oP '"path_hash":"\K[^"]+' 2>/dev/null) || ph=""
-    pn=$(echo "$line" | grep -oP '"project_name":"\K[^"]+' 2>/dev/null) || pn=""
-    dur=$(echo "$line" | grep -oP '"duration_ms":\K[0-9]+' 2>/dev/null) || dur=0
-    ec=$(echo "$line" | grep -oP '"exit_code":\K[0-9]+' 2>/dev/null) || ec=0
-    dep=$(echo "$line" | grep -oP '"depth":\K-?[0-9]+' 2>/dev/null) || dep=-1
-    items=$(echo "$line" | grep -oP '"items_scanned":\K-?[0-9]+' 2>/dev/null) || items=-1
-    bytes=$(echo "$line" | grep -oP '"bytes_scanned":\K-?[0-9]+' 2>/dev/null) || bytes=-1
-    flags=$(echo "$line" | grep -oP '"flags":"\K[^"]+' 2>/dev/null) || flags=""
-    backend=$(echo "$line" | grep -oP '"backend":"\K[^"]+' 2>/dev/null) || backend=""
+    ts=$(json_get "$line" "timestamp") || true
+    [[ -n "$ts" ]] || { (( errors++ )); continue; }
+    tool=$(json_get "$line" "tool") || true
+    [[ -n "$tool" ]] || { (( errors++ )); continue; }
+    ver=$(json_get "$line" "version") || ver=""
+    mode=$(json_get "$line" "mode") || mode=""
+    ph=$(json_get "$line" "path_hash") || ph=""
+    pn=$(json_get "$line" "project_name") || pn=""
+    dur=$(json_get "$line" "duration_ms") || dur=0
+    [[ "$dur" =~ ^-?[0-9]+$ ]] || dur=0
+    ec=$(json_get "$line" "exit_code") || ec=0
+    [[ "$ec" =~ ^[0-9]+$ ]] || ec=0
+    dep=$(json_get "$line" "depth") || dep=-1
+    [[ "$dep" =~ ^-?[0-9]+$ ]] || dep=-1
+    items=$(json_get "$line" "items_scanned") || items=-1
+    [[ "$items" =~ ^-?[0-9]+$ ]] || items=-1
+    bytes=$(json_get "$line" "bytes_scanned") || bytes=-1
+    [[ "$bytes" =~ ^-?[0-9]+$ ]] || bytes=-1
+    flags=$(json_get "$line" "flags") || flags=""
+    backend=$(json_get "$line" "backend") || backend=""
 
     # Sanitize string fields: strip non-safe characters to prevent SQL injection
     ts=$(echo "$ts" | tr -cd '[:alnum:].:T Z+-')

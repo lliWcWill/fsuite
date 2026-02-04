@@ -180,35 +180,32 @@ def main():
     args = parser.parse_args()
 
     try:
-        conn = connect_db(args.db)
+        with connect_db(args.db) as conn:
+            total_samples = conn.execute(
+                "SELECT COUNT(*) FROM telemetry WHERE exit_code=0"
+            ).fetchone()[0]
+
+            tools = ["ftree", "fsearch", "fcontent"]
+            predictions = []
+
+            for tool in tools:
+                data = get_tool_data(conn, tool)
+                result = predict_for_tool(data, args.items, args.bytes, args.depth, args.k)
+                if result:
+                    result["tool"] = tool
+                    result["samples"] = len(data)
+                    predictions.append(result)
+                else:
+                    predictions.append({
+                        "tool": tool,
+                        "predicted_ms": -1,
+                        "confidence": "none",
+                        "samples": len(data),
+                        "error": f"insufficient data, need {MIN_SAMPLES} samples, have {len(data)}",
+                    })
     except Exception as e:
         print(json.dumps({"error": f"Cannot open database: {e}"}))
         sys.exit(1)
-
-    total_samples = conn.execute(
-        "SELECT COUNT(*) FROM telemetry WHERE exit_code=0"
-    ).fetchone()[0]
-
-    tools = ["ftree", "fsearch", "fcontent"]
-    predictions = []
-
-    for tool in tools:
-        data = get_tool_data(conn, tool)
-        result = predict_for_tool(data, args.items, args.bytes, args.depth, args.k)
-        if result:
-            result["tool"] = tool
-            result["samples"] = len(data)
-            predictions.append(result)
-        else:
-            predictions.append({
-                "tool": tool,
-                "predicted_ms": -1,
-                "confidence": "none",
-                "samples": len(data),
-                "error": f"insufficient data, need {MIN_SAMPLES} samples, have {len(data)}",
-            })
-
-    conn.close()
 
     output = {
         "tool": "fmetrics",
