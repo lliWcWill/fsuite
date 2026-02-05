@@ -113,6 +113,8 @@ SQL
   sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN ram_total_kb INTEGER DEFAULT -1;" 2>/dev/null || true
   sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN ram_available_kb INTEGER DEFAULT -1;" 2>/dev/null || true
   sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN load_avg_1m TEXT DEFAULT '-1';" 2>/dev/null || true
+  sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN filesystem_type TEXT DEFAULT 'unknown';" 2>/dev/null || true
+  sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN storage_type TEXT DEFAULT 'unknown';" 2>/dev/null || true
 }
 
 # -------------------------
@@ -214,6 +216,10 @@ cmd_import() {
     [[ "$ram_avail" =~ ^-?[0-9]+$ ]] || ram_avail=-1
     load_avg=$(json_get "$line" "load_avg_1m") || load_avg="-1"
     [[ "$load_avg" =~ ^[0-9.]+$ ]] || load_avg="-1"
+    fs_type=$(json_get "$line" "filesystem_type") || fs_type="unknown"
+    [[ -z "$fs_type" ]] && fs_type="unknown"
+    stor_type=$(json_get "$line" "storage_type") || stor_type="unknown"
+    [[ -z "$stor_type" ]] && stor_type="unknown"
 
     # Sanitize string fields using helper (strips unsafe chars + escapes quotes)
     ts=$(sql_escape "$ts")
@@ -225,9 +231,11 @@ cmd_import() {
     flags=$(sql_escape "$flags")
     backend=$(sql_escape "$backend")
     load_avg=$(sql_escape "$load_avg")
+    fs_type=$(sql_escape "$fs_type")
+    stor_type=$(sql_escape "$stor_type")
 
     local result
-    result=$(sqlite3 "$DB_FILE" "INSERT OR IGNORE INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend,cpu_temp_mc,disk_temp_mc,ram_total_kb,ram_available_kb,load_avg_1m) VALUES ('$ts','$tool','$ver','$mode','$ph','$pn',$dur,$ec,$dep,$items,$bytes,'$flags','$backend',$cpu_temp,$disk_temp,$ram_total,$ram_avail,'$load_avg'); SELECT changes();" 2>/dev/null) || { (( errors++ )); continue; }
+    result=$(sqlite3 "$DB_FILE" "INSERT OR IGNORE INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend,cpu_temp_mc,disk_temp_mc,ram_total_kb,ram_available_kb,load_avg_1m,filesystem_type,storage_type) VALUES ('$ts','$tool','$ver','$mode','$ph','$pn',$dur,$ec,$dep,$items,$bytes,'$flags','$backend',$cpu_temp,$disk_temp,$ram_total,$ram_avail,'$load_avg','$fs_type','$stor_type'); SELECT changes();" 2>/dev/null) || { (( errors++ )); continue; }
 
     if [[ "$result" == "1" ]]; then
       (( inserted++ )) || true
