@@ -63,6 +63,16 @@ human_bytes() {
   fi
 }
 
+# SQL escape helper - prevents injection, handles special chars consistently
+sql_escape() {
+  local val="$1"
+  # Strip unsafe characters, keep alphanumeric and safe punctuation
+  val=$(printf '%s' "$val" | tr -cd '[:alnum:]. _:-')
+  # Escape single quotes for SQL
+  val="${val//\'/\'\'}"
+  printf '%s' "$val"
+}
+
 # Portable JSON field extraction (no grep -oP / PCRE dependency)
 # Handles both "key":"stringval" and "key":numval
 json_get() {
@@ -205,20 +215,16 @@ cmd_import() {
     load_avg=$(json_get "$line" "load_avg_1m") || load_avg="-1"
     [[ "$load_avg" =~ ^[0-9.]+$ ]] || load_avg="-1"
 
-    # Sanitize string fields: strip non-safe characters to prevent SQL injection
-    ts=$(echo "$ts" | tr -cd '[:alnum:].:T Z+-')
-    tool=$(echo "$tool" | tr -cd '[:alnum:]._-')
-    ver=$(echo "$ver" | tr -cd '[:alnum:]._-')
-    mode=$(echo "$mode" | tr -cd '[:alnum:]._-')
-    ph=$(echo "$ph" | tr -cd '[:alnum:]')
-    pn=$(echo "$pn" | tr -cd '[:alnum:]. _-')
-    flags=$(echo "$flags" | tr -cd '[:alnum:]. _-')
-    backend=$(echo "$backend" | tr -cd '[:alnum:]._-')
-    load_avg=$(echo "$load_avg" | tr -cd '[:alnum:].-')
-
-    # Escape single quotes for SQL safety (belt-and-suspenders after sanitize)
-    pn="${pn//\'/\'\'}"
-    flags="${flags//\'/\'\'}"
+    # Sanitize string fields using helper (strips unsafe chars + escapes quotes)
+    ts=$(sql_escape "$ts")
+    tool=$(sql_escape "$tool")
+    ver=$(sql_escape "$ver")
+    mode=$(sql_escape "$mode")
+    ph=$(sql_escape "$ph")
+    pn=$(sql_escape "$pn")
+    flags=$(sql_escape "$flags")
+    backend=$(sql_escape "$backend")
+    load_avg=$(sql_escape "$load_avg")
 
     local result
     result=$(sqlite3 "$DB_FILE" "INSERT OR IGNORE INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend,cpu_temp_mc,disk_temp_mc,ram_total_kb,ram_available_kb,load_avg_1m) VALUES ('$ts','$tool','$ver','$mode','$ph','$pn',$dur,$ec,$dep,$items,$bytes,'$flags','$backend',$cpu_temp,$disk_temp,$ram_total,$ram_avail,'$load_avg'); SELECT changes();" 2>/dev/null) || { (( errors++ )); continue; }

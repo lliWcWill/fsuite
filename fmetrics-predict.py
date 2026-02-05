@@ -14,6 +14,7 @@ import argparse
 import json
 import math
 import sqlite3
+import statistics
 import sys
 from contextlib import closing
 from typing import Dict, List, Optional, Tuple
@@ -80,6 +81,8 @@ def z_score_normalize(value: float, mean: float, std: float) -> float:
 
 def euclidean_distance(a: List[float], b: List[float]) -> float:
     """Compute Euclidean distance between two feature vectors."""
+    if len(a) != len(b):
+        raise ValueError(f"Vector lengths must match: {len(a)} != {len(b)}")
     return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
 
 
@@ -88,9 +91,8 @@ def filter_outliers_iqr(data: List[dict], factor: float = 1.5) -> List[dict]:
     if len(data) < 4:
         return data
     durations = sorted(d["duration_ms"] for d in data)
-    n = len(durations)
-    q1 = durations[n // 4]
-    q3 = durations[3 * n // 4]
+    quartiles = statistics.quantiles(durations, n=4)
+    q1, q3 = quartiles[0], quartiles[2]
     iqr = q3 - q1
     lower = q1 - factor * iqr
     upper = q3 + factor * iqr
@@ -198,6 +200,9 @@ def main():
     parser.add_argument("--version", action="version", version=f"fmetrics-predict {VERSION}")
     args = parser.parse_args()
 
+    if args.k <= 0:
+        parser.error("--k must be greater than 0")
+
     try:
         with closing(connect_db(args.db)) as conn:
             total_samples = conn.execute(
@@ -244,7 +249,7 @@ def main():
                 "predictions": predictions,
                 "total_historical_samples": total_samples,
             }
-    except Exception as e:
+    except (OSError, sqlite3.Error) as e:
         print(json.dumps({"error": f"Cannot open database: {e}"}))
         sys.exit(1)
 

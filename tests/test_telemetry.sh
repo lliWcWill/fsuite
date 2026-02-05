@@ -20,7 +20,6 @@ TESTS_FAILED=0
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 setup() {
@@ -48,6 +47,7 @@ teardown() {
   fi
 
   # Restore telemetry backup
+  mkdir -p "$HOME/.fsuite" 2>/dev/null || true
   if [[ -n "$BACKUP_TELEMETRY" && -f "$BACKUP_TELEMETRY" ]]; then
     mv "$BACKUP_TELEMETRY" "$HOME/.fsuite/telemetry.jsonl"
   fi
@@ -68,8 +68,7 @@ fail() {
 
 run_test() {
   TESTS_RUN=$((TESTS_RUN + 1))
-  local test_name="$1"
-  shift
+  shift  # Skip test description (used by caller for display)
   "$@" || true
 }
 
@@ -258,6 +257,10 @@ test_tier3_machine_profile() {
 # ============================================================================
 
 test_schema_migration_idempotent() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "Schema migration test skipped (sqlite3 not available)"
+    return 0
+  fi
   rm -f "$HOME/.fsuite/telemetry.db"
   # Run fmetrics import twice (which runs ensure_db twice)
   FSUITE_TELEMETRY=1 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
@@ -380,6 +383,7 @@ test_non_numeric_telemetry_env() {
 # ============================================================================
 
 main() {
+  trap 'teardown' EXIT INT TERM
   echo "======================================"
   echo "  fsuite Telemetry Test Suite"
   echo "======================================"

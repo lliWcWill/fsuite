@@ -77,8 +77,8 @@ _fsuite_disk_temp_mc() {
 
   if [[ "$os" == "linux" ]]; then
     # NVMe drives
-    local nvme_hwmon_dirs=(/sys/class/hwmon/hwmon*/temp1_input)
-    for f in "${nvme_hwmon_dirs[@]}"; do
+    local hwmon_dirs=(/sys/class/hwmon/hwmon*/temp1_input)
+    for f in "${hwmon_dirs[@]}"; do
       if [[ -r "$f" ]]; then
         local name_file="${f%/temp1_input}/name"
         if [[ -r "$name_file" ]]; then
@@ -96,7 +96,7 @@ _fsuite_disk_temp_mc() {
       fi
     done
     # SATA drivetemp
-    for f in "${nvme_hwmon_dirs[@]}"; do
+    for f in "${hwmon_dirs[@]}"; do
       if [[ -r "$f" ]]; then
         local name_file="${f%/temp1_input}/name"
         if [[ -r "$name_file" ]]; then
@@ -436,6 +436,7 @@ _fsuite_generate_machine_profile() {
   mkdir -p "$profile_dir" 2>/dev/null || return 0
 
   # Atomic write with portable locking (flock on Linux, mkdir fallback on macOS)
+  # Note: Lock helper functions defined in local scope for encapsulation
   local lock_acquired=0
   _fsuite_acquire_lock() {
     if command -v flock >/dev/null 2>&1; then
@@ -467,6 +468,8 @@ _fsuite_generate_machine_profile() {
     return 0  # Skip if can't acquire lock
   fi
 
+  # Subshell for atomic profile generation
+  # Note: 'return' statements inside only exit the subshell, not the parent function
   (
 
     # Double-check after acquiring lock

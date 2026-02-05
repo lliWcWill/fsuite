@@ -82,7 +82,6 @@ _fsuite_record_telemetry() {
     echo "$_telem_line" >> "$telem_dir/telemetry.jsonl"
   } 200>"$telem_dir/.telemetry.lock" 2>/dev/null || true
 }
-trap '_fsuite_record_telemetry' EXIT
 
 DEFAULT_PATH="."
 DEFAULT_OUTPUT="pretty"     # pretty|paths|json
@@ -300,7 +299,7 @@ TMP_LIST=""
 cleanup() {
   [[ -n "$TMP_LIST" && -f "$TMP_LIST" ]] && rm -f "$TMP_LIST" || true
 }
-trap '_exit_code=$?; _fsuite_record_telemetry; cleanup; exit $_exit_code' EXIT
+trap '_exit_code=$?; _TELEM_EXIT_CODE=$_exit_code; _fsuite_record_telemetry; cleanup; exit $_exit_code' EXIT
 
 if (( FILES_FROM_STDIN == 1 )); then
   TMP_LIST="$(mktemp)"

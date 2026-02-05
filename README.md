@@ -76,7 +76,7 @@ AFTER fsuite:
   3-4 calls. Full understanding. ~70% fewer tool invocations.
 ```
 
-The full unedited analysis is in **[AGENT-ANALYSIS.md](docs/AGENT-ANALYSIS.md)** — the raw self-assessment, exactly as Claude Code wrote it after studying and testing every tool in this repo.
+The full unedited analysis is in **[AGENT-ANALYSIS.md](AGENT-ANALYSIS.md)** — the raw self-assessment, exactly as Claude Code wrote it after studying and testing every tool in this repo.
 
 That document is the pitch. Not because we wrote it, but because the agent did.
 

@@ -396,7 +396,7 @@ QUIET=0
 # Pre-process arguments: expand combined short flags like -L3 to -L 3
 _args=()
 for _arg in "$@"; do
-  if [[ "$_arg" =~ ^-([LmFd])([0-9]+)$ ]]; then
+  if [[ "$_arg" =~ ^-([LmF])([0-9]+)$ ]]; then
     _args+=("-${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
   else
     _args+=("$_arg")
