@@ -44,7 +44,8 @@ _fsuite_record_telemetry() {
   if [[ -n "${SEARCH_PATH:-}" ]]; then
     local abs_sp
     abs_sp=$(cd "$SEARCH_PATH" 2>/dev/null && pwd) || abs_sp="$SEARCH_PATH"
-    ph=$(printf "%s" "$abs_sp" | sha256sum 2>/dev/null | cut -c1-16) || ph="unknown"
+    ph=$(printf "%s" "$abs_sp" | sha256sum 2>/dev/null | cut -c1-16) || true
+    [[ -z "$ph" ]] && ph="unknown"
   fi
   # Sanitize project name: alphanumeric + safe chars only
   local pn=""
@@ -283,7 +284,7 @@ TMP_LIST=""
 cleanup() {
   [[ -n "$TMP_LIST" && -f "$TMP_LIST" ]] && rm -f "$TMP_LIST" || true
 }
-trap 'cleanup; _fsuite_record_telemetry' EXIT
+trap '_exit_code=$?; _fsuite_record_telemetry; cleanup; exit $_exit_code' EXIT
 
 if (( FILES_FROM_STDIN == 1 )); then
   TMP_LIST="$(mktemp)"

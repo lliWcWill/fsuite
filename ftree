@@ -40,11 +40,16 @@ _fsuite_record_telemetry() {
   ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "unknown")
   local ph=""
   if [[ -n "${ABS_TARGET:-}" ]]; then
-    ph=$(printf "%s" "$ABS_TARGET" | sha256sum 2>/dev/null | cut -c1-16) || ph="unknown"
+    ph=$(printf "%s" "$ABS_TARGET" | sha256sum 2>/dev/null | cut -c1-16) || true
+    [[ -z "$ph" ]] && ph="unknown"
   fi
-  # Sanitize project name: alphanumeric + safe chars only
+  # Sanitize project name: alphanumeric + safe chars, then JSON-escape
   local pn=""
-  [[ -n "${ABS_TARGET:-}" ]] && pn=$(basename "$ABS_TARGET" | tr -cd '[:alnum:]. _-')
+  if [[ -n "${ABS_TARGET:-}" ]]; then
+    pn=$(basename "$ABS_TARGET" | tr -cd '[:alnum:]. _-')
+    # JSON-escape any remaining special chars (backslash, quotes)
+    pn=$(printf '%s' "$pn" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
+  fi
   local mode="tree"
   (( ${SNAPSHOT:-0} == 1 )) && mode="snapshot"
   (( ${RECON:-0} == 1 )) && mode="recon"
@@ -678,18 +683,10 @@ run_recon() {
   local total_entries=$(( total_visible + total_excluded ))
   _TELEM_ITEMS=$total_entries  # telemetry: capture recon entry count
 
-  # Compute total_size_bytes from depth-1 visible entries only (avoids overcount)
-  # Only sum entries that are direct children of the target (RECON_DEPTH 1 entries)
+  # Compute total_size_bytes using du_bytes on TARGET (avoids double-counting at RECON_DEPTH > 1)
   local total_size_bytes=0
-  local rec sz
-  for rec in "${sorted_vis_dirs[@]+"${sorted_vis_dirs[@]}"}"; do
-    sz=$(cut -d'|' -f4 <<<"$rec")
-    [[ "$sz" =~ ^[0-9]+$ ]] && total_size_bytes=$(( total_size_bytes + sz ))
-  done
-  for rec in "${sorted_vis_files[@]+"${sorted_vis_files[@]}"}"; do
-    sz=$(cut -d'|' -f4 <<<"$rec")
-    [[ "$sz" =~ ^[0-9]+$ ]] && total_size_bytes=$(( total_size_bytes + sz ))
-  done
+  total_size_bytes=$(du_bytes "$TARGET" 2>/dev/null) || total_size_bytes=0
+  [[ "$total_size_bytes" =~ ^[0-9]+$ ]] || total_size_bytes=0
 
   # --- Output ---
   if [[ "$OUTPUT" == "json" ]]; then

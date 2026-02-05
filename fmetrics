@@ -379,9 +379,9 @@ _predict_size_mb() {
 _predict_get_avg() {
   # Get average duration for a tool from DB
   local tool_name="$1"
-  local sql="SELECT CAST(AVG(duration_ms) AS INTEGER) FROM telemetry WHERE tool='"
-  sql+="$tool_name"
-  sql+="' AND exit_code=0;"
+  # Sanitize tool_name: escape single quotes for SQL safety
+  local safe_tool="${tool_name//\'/\'\'}"
+  local sql="SELECT CAST(AVG(duration_ms) AS INTEGER) FROM telemetry WHERE tool='${safe_tool}' AND exit_code=0;"
   local result
   result=$(sqlite3 "$DB_FILE" "$sql" 2>/dev/null) || result=0
   [[ -z "$result" ]] && result=0

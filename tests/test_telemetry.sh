@@ -293,11 +293,15 @@ test_graceful_without_common_lib() {
   local lib="${FSUITE_DIR}/_fsuite_common.sh"
   if [[ -f "$lib" ]]; then
     mv "$lib" "${lib}.bak"
+    # Trap to restore lib on any exit (including abort)
+    trap 'mv "${lib}.bak" "$lib" 2>/dev/null || true' RETURN
+
     rm -f "$HOME/.fsuite/telemetry.jsonl"
 
     FSUITE_TELEMETRY=1 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
 
     mv "${lib}.bak" "$lib"
+    trap - RETURN  # Clear trap after successful restore
 
     if [[ -f "$HOME/.fsuite/telemetry.jsonl" ]]; then
       local bytes

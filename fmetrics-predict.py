@@ -229,24 +229,24 @@ def main():
                         "samples": len(data),
                         "error": f"insufficient data, need {MIN_SAMPLES} samples, have {len(data)}",
                     })
+
+            output = {
+                "tool": "fmetrics",
+                "version": VERSION,
+                "subcommand": "predict",
+                "method": "knn_regression",
+                "k": args.k,
+                "target_features": {
+                    "items": args.items,
+                    "bytes": args.bytes,
+                    "depth": args.depth,
+                },
+                "predictions": predictions,
+                "total_historical_samples": total_samples,
+            }
     except Exception as e:
         print(json.dumps({"error": f"Cannot open database: {e}"}))
         sys.exit(1)
-
-    output = {
-        "tool": "fmetrics",
-        "version": VERSION,
-        "subcommand": "predict",
-        "method": "knn_regression",
-        "k": args.k,
-        "target_features": {
-            "items": args.items,
-            "bytes": args.bytes,
-            "depth": args.depth,
-        },
-        "predictions": predictions,
-        "total_historical_samples": total_samples,
-    }
 
     if args.output == "json":
         print(json.dumps(output))

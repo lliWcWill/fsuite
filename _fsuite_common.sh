@@ -259,9 +259,39 @@ _fsuite_generate_machine_profile() {
 
   mkdir -p "$profile_dir" 2>/dev/null || return 0
 
-  # Atomic write with flock
+  # Atomic write with portable locking (flock on Linux, mkdir fallback on macOS)
+  local lock_acquired=0
+  _fsuite_acquire_lock() {
+    if command -v flock >/dev/null 2>&1; then
+      exec 200>"$lock_file"
+      flock -x 200 2>/dev/null && lock_acquired=1
+    else
+      # mkdir-based lock for macOS/BSD (atomic operation)
+      local max_attempts=10 attempt=0
+      while (( attempt < max_attempts )); do
+        if mkdir "$lock_file.d" 2>/dev/null; then
+          lock_acquired=1
+          break
+        fi
+        sleep 0.1
+        (( attempt++ ))
+      done
+    fi
+  }
+  _fsuite_release_lock() {
+    if command -v flock >/dev/null 2>&1; then
+      exec 200>&- 2>/dev/null || true
+    else
+      rmdir "$lock_file.d" 2>/dev/null || true
+    fi
+  }
+
+  _fsuite_acquire_lock
+  if (( lock_acquired == 0 )); then
+    return 0  # Skip if can't acquire lock
+  fi
+
   (
-    flock -x 200 2>/dev/null || true
 
     # Double-check after acquiring lock
     if [[ -f "$profile_file" ]]; then
@@ -313,7 +343,9 @@ _fsuite_generate_machine_profile() {
 EOF
     mv "$tmp_file" "$profile_file" 2>/dev/null || rm -f "$tmp_file"
 
-  ) 200>"$lock_file"
+  )
+
+  _fsuite_release_lock
 }
 
 # -------------------------
@@ -330,5 +362,5 @@ _fsuite_hw_json_fields() {
     return 0
   fi
 
-  echo "\"cpu_temp_mc\":${_FSUITE_HW_CPU_TEMP_MC:-1},\"disk_temp_mc\":${_FSUITE_HW_DISK_TEMP_MC:-1},\"ram_total_kb\":${_FSUITE_HW_RAM_TOTAL_KB:-1},\"ram_available_kb\":${_FSUITE_HW_RAM_AVAIL_KB:-1},\"load_avg_1m\":\"${_FSUITE_HW_LOAD_AVG_1M:-1}\""
+  echo "\"cpu_temp_mc\":${_FSUITE_HW_CPU_TEMP_MC:--1},\"disk_temp_mc\":${_FSUITE_HW_DISK_TEMP_MC:--1},\"ram_total_kb\":${_FSUITE_HW_RAM_TOTAL_KB:--1},\"ram_available_kb\":${_FSUITE_HW_RAM_AVAIL_KB:--1},\"load_avg_1m\":\"${_FSUITE_HW_LOAD_AVG_1M:--1}\""
 }
