@@ -122,8 +122,11 @@ OPTIONS
   -m, --max-matches N
       Limit number of printed matches in pretty/json output. Default: 200
 
-  --max-files N
+  -n, --max-files N
       When reading from stdin, limit number of file paths consumed (safety). Default: 2000
+
+  -q, --quiet
+      Suppress header lines in pretty mode. Useful for scripting.
 
   --rg-args "..."
       Extra arguments passed to rg (advanced).
@@ -187,6 +190,18 @@ MAX_FILES="$DEFAULT_MAX_FILES"
 RG_ARGS=()
 INSTALL_HINTS=0
 SELF_CHECK=0
+QUIET=0
+
+# Pre-process arguments: expand combined short flags like -m5 to -m 5
+_args=()
+for _arg in "$@"; do
+  if [[ "$_arg" =~ ^-([mn])([0-9]+)$ ]]; then
+    _args+=("-${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
+  else
+    _args+=("$_arg")
+  fi
+done
+set -- "${_args[@]}"
 
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
@@ -194,7 +209,8 @@ while [[ $# -gt 0 ]]; do
     -p|--path) SEARCH_PATH="${2:-}"; shift 2 ;;
     -o|--output) OUTPUT="${2:-}"; shift 2 ;;
     -m|--max-matches) MAX_MATCHES="${2:-}"; shift 2 ;;
-    --max-files) MAX_FILES="${2:-}"; shift 2 ;;
+    -n|--max-files) MAX_FILES="${2:-}"; shift 2 ;;
+    -q|--quiet) QUIET=1; shift ;;
     --rg-args)
       if [[ -n "${2:-}" ]]; then
         read -r -a _rg_tokens <<< "${2}"
@@ -236,7 +252,7 @@ fi
 [[ -n "$QUERY" ]] || die "Missing query. Try: fcontent --help"
 case "$OUTPUT" in pretty|paths|json) ;; *) die "Invalid --output: $OUTPUT" ;; esac
 [[ "$MAX_MATCHES" =~ ^[0-9]+$ ]] || die "-m/--max-matches must be an integer"
-[[ "$MAX_FILES" =~ ^[0-9]+$ ]] || die "--max-files must be an integer"
+[[ "$MAX_FILES" =~ ^[0-9]+$ ]] || die "-n/--max-files must be an integer"
 
 has rg || die "rg (ripgrep) is required. Run: fcontent --install-hints"
 
@@ -397,21 +413,27 @@ if [[ "$OUTPUT" == "json" ]]; then
 fi
 
 # pretty output
-echo "ContentSearch(query: \"$QUERY\")"
-if (( FILES_FROM_STDIN == 1 )); then
-  echo "  ⎿ mode: stdin_files (max_files=$MAX_FILES)"
-else
-  echo "  ⎿ mode: directory path=\"$SEARCH_PATH\""
+if (( QUIET == 0 )); then
+  echo "ContentSearch(query: \"$QUERY\")"
+  if (( FILES_FROM_STDIN == 1 )); then
+    echo "  ⎿ mode: stdin_files (max_files=$MAX_FILES)"
+  else
+    echo "  ⎿ mode: directory path=\"$SEARCH_PATH\""
+  fi
+  echo "  ⎿ matched_files: $TOTAL_FILES"
+  echo "  ⎿ shown_matches: $SHOWN_MATCHES (cap=$MAX_MATCHES)"
 fi
-echo "  ⎿ matched_files: $TOTAL_FILES"
-echo "  ⎿ shown_matches: $SHOWN_MATCHES (cap=$MAX_MATCHES)"
 if (( SHOWN_MATCHES == 0 )); then
   # Emit metacharacter warning to stderr (pretty mode)
   (( _METACHAR_WARNING == 1 )) && echo "Warning: $_METACHAR_WARNING_MSG" >&2
   exit 0
 fi
 for line in "${MATCH_LINES[@]}"; do
-  echo "     $line"
+  if (( QUIET == 1 )); then
+    echo "$line"
+  else
+    echo "     $line"
+  fi
 done
 # Emit metacharacter warning to stderr (pretty mode)
 (( _METACHAR_WARNING == 1 )) && echo "Warning: $_METACHAR_WARNING_MSG" >&2

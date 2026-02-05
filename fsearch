@@ -146,6 +146,9 @@ OPTIONS
       paths:  print only matching paths, one per line (best for piping/headless use)
       json:   print a compact JSON object (best for AI agents/tools)
 
+  -q, --quiet
+      Suppress header line in pretty mode. Useful for scripting.
+
   -i, --interactive
       Force interactive prompts even if args were provided.
 
@@ -331,6 +334,18 @@ OUTPUT="$DEFAULT_OUTPUT"
 FORCE_INTERACTIVE=0
 INSTALL_HINTS=0
 SELF_CHECK=0
+QUIET=0
+
+# Pre-process arguments: expand combined short flags like -m5 to -m 5
+_args=()
+for _arg in "$@"; do
+  if [[ "$_arg" =~ ^-([m])([0-9]+)$ ]]; then
+    _args+=("-${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
+  else
+    _args+=("$_arg")
+  fi
+done
+set -- "${_args[@]}"
 
 # Manual parsing to support both flags and positionals
 POSITIONAL=()
@@ -340,6 +355,7 @@ while [[ $# -gt 0 ]]; do
     -m|--max) MAX="${2:-}"; shift 2 ;;
     -b|--backend) BACKEND="${2:-}"; shift 2 ;;
     -o|--output) OUTPUT="${2:-}"; shift 2 ;;
+    -q|--quiet) QUIET=1; shift ;;
     -i|--interactive) FORCE_INTERACTIVE=1; shift ;;
     --install-hints) INSTALL_HINTS=1; shift ;;
     --self-check) SELF_CHECK=1; shift ;;
@@ -448,12 +464,18 @@ if [[ "$OUTPUT" == "json" ]]; then
 fi
 
 # pretty output
-echo "Search(pattern: \"$PATTERN\" -> name \"$NAME_GLOB\", path: \"$SEARCH_PATH\")"
-echo "  ⎿ Found $TOTAL_FOUND files (backend: $BACKEND_BIN)"
+if (( QUIET == 0 )); then
+  echo "Search(pattern: \"$PATTERN\" -> name \"$NAME_GLOB\", path: \"$SEARCH_PATH\")"
+  echo "  ⎿ Found $TOTAL_FOUND files (backend: $BACKEND_BIN)"
+fi
 if (( TOTAL_FOUND == 0 )); then exit 0; fi
 for ((i=0; i<SHOWN; i++)); do
-  echo "     ${RESULTS[i]}"
+  if (( QUIET == 1 )); then
+    echo "${RESULTS[i]}"
+  else
+    echo "     ${RESULTS[i]}"
+  fi
 done
-if (( TOTAL_FOUND > MAX )); then
+if (( QUIET == 0 )) && (( TOTAL_FOUND > MAX )); then
   echo "     … (showing first $MAX)"
 fi

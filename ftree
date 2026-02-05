@@ -260,6 +260,9 @@ OPTIONS
       Truncate pretty output at N lines (0 = unlimited). Default: 200
       Does not apply to paths or json output.
 
+  -q, --quiet
+      Suppress header line. Useful for piping/scripting.
+
   -F, --filelimit N
       Limit entries listed per directory. Default: 80
       tree may annotate directories when entries exceed this limit.
@@ -388,10 +391,23 @@ SELF_CHECK=0
 INSTALL_HINTS=0
 RECON_DEPTH_SET=0
 BUDGET="$DEFAULT_BUDGET"
+QUIET=0
+
+# Pre-process arguments: expand combined short flags like -L3 to -L 3
+_args=()
+for _arg in "$@"; do
+  if [[ "$_arg" =~ ^-([LmFd])([0-9]+)$ ]]; then
+    _args+=("-${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
+  else
+    _args+=("$_arg")
+  fi
+done
+set -- "${_args[@]}"
 
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    -q|--quiet) QUIET=1; shift ;;
     -o|--output)
       shift; [[ $# -gt 0 ]] || die "Missing value for --output"
       OUTPUT="$1"; shift ;;
@@ -1012,19 +1028,21 @@ run_tree_pretty() {
     truncated=1
   fi
 
-  echo "Tree($ABS_TARGET, depth=$DEPTH, filelimit=$FILELIMIT)"
-  local count_label
-  if (( TREE_COUNTS_VALID == 1 )); then
-    count_label="$TREE_DIRS directories, $TREE_FILES files"
-  else
-    count_label="? directories, ? files"
+  if (( QUIET == 0 )); then
+    echo "Tree($ABS_TARGET, depth=$DEPTH, filelimit=$FILELIMIT)"
+    local count_label
+    if (( TREE_COUNTS_VALID == 1 )); then
+      count_label="$TREE_DIRS directories, $TREE_FILES files"
+    else
+      count_label="? directories, ? files"
+    fi
+    if (( truncated == 1 )); then
+      echo "  ⎿ $count_label (showing $shown_lines of $total_content lines, truncated)"
+    else
+      echo "  ⎿ $count_label (showing $shown_lines of $total_content lines)"
+    fi
+    echo ""
   fi
-  if (( truncated == 1 )); then
-    echo "  ⎿ $count_label (showing $shown_lines of $total_content lines, truncated)"
-  else
-    echo "  ⎿ $count_label (showing $shown_lines of $total_content lines)"
-  fi
-  echo ""
 
   local i
   for (( i = 0; i < shown_lines && i < total_content; i++ )); do
