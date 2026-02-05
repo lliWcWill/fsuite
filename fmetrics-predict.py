@@ -30,15 +30,33 @@ def connect_db(db_path: str) -> sqlite3.Connection:
     return conn
 
 
-def get_tool_data(conn: sqlite3.Connection, tool: str) -> List[dict]:
-    """Fetch successful historical runs for a given tool."""
-    cursor = conn.execute(
-        "SELECT duration_ms, items_scanned, bytes_scanned, depth "
-        "FROM telemetry WHERE tool = ? AND exit_code = 0 "
-        "AND items_scanned >= 0",
-        (tool,)
-    )
-    return [dict(row) for row in cursor.fetchall()]
+def get_tool_data(conn: sqlite3.Connection, tool: str, require_bytes: bool = True) -> List[dict]:
+    """Fetch successful historical runs for a given tool.
+
+    If require_bytes is True, only returns rows with bytes_scanned >= 0.
+    If False, returns all rows with items_scanned >= 0, substituting 0 for negative bytes.
+    """
+    if require_bytes:
+        cursor = conn.execute(
+            "SELECT duration_ms, items_scanned, bytes_scanned, depth "
+            "FROM telemetry WHERE tool = ? AND exit_code = 0 "
+            "AND items_scanned >= 0 AND bytes_scanned >= 0",
+            (tool,)
+        )
+    else:
+        cursor = conn.execute(
+            "SELECT duration_ms, items_scanned, bytes_scanned, depth "
+            "FROM telemetry WHERE tool = ? AND exit_code = 0 "
+            "AND items_scanned >= 0",
+            (tool,)
+        )
+    rows = [dict(row) for row in cursor.fetchall()]
+    # If not requiring bytes, substitute 0 for negative values
+    if not require_bytes:
+        for row in rows:
+            if row["bytes_scanned"] < 0:
+                row["bytes_scanned"] = 0
+    return rows
 
 
 def compute_stats(values: List[float]) -> Tuple[float, float]:
@@ -190,8 +208,15 @@ def main():
             predictions = []
 
             for tool in tools:
-                data = get_tool_data(conn, tool)
+                # Try strict mode first (require bytes_scanned >= 0)
+                data = get_tool_data(conn, tool, require_bytes=True)
                 result = predict_for_tool(data, args.items, args.bytes, args.depth, args.k)
+
+                # Fallback: if not enough data, try without bytes requirement
+                if result is None and len(data) < MIN_SAMPLES:
+                    data = get_tool_data(conn, tool, require_bytes=False)
+                    result = predict_for_tool(data, args.items, args.bytes, args.depth, args.k)
+
                 if result:
                     result["tool"] = tool
                     result["samples"] = len(data)

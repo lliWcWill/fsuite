@@ -495,7 +495,6 @@ test_pipeline_with_permission_errors() {
     pass "Permission error handling varies by system"
   fi
 }
-}
 
 # ============================================================================
 # Performance and stress tests

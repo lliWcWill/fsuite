@@ -87,6 +87,15 @@ main() {
     failed_suites+=("integration")
   fi
 
+  # Run telemetry tests
+  echo ""
+  if run_test_suite "${SCRIPT_DIR}/test_telemetry.sh" "Telemetry Test Suite"; then
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+  else
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+    failed_suites+=("telemetry")
+  fi
+
   TOTAL_TESTS=$((TOTAL_PASSED + TOTAL_FAILED))
 
   # Final summary

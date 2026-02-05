@@ -7,15 +7,25 @@ set -euo pipefail
 VERSION="1.1.0"
 
 # -------------------------
+# Source common library for tiered telemetry
+# -------------------------
+_FSUITE_SCRIPT_DIR="$(cd "$(dirname "$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
+_FSUITE_LIB="$_FSUITE_SCRIPT_DIR/_fsuite_common.sh"
+[[ -f "$_FSUITE_LIB" ]] && source "$_FSUITE_LIB" || true
+
+# -------------------------
 # Telemetry — opt-out via FSUITE_TELEMETRY=0
+# Tiers: 0=disabled, 1=timing+bytes, 2=+hardware, 3=+profile
 # -------------------------
 _FSUITE_TELEM="${FSUITE_TELEMETRY:-1}"
+[[ "$_FSUITE_TELEM" =~ ^[0-9]+$ ]] || _FSUITE_TELEM=1
 _TELEM_START_MS=$(date +%s%3N 2>/dev/null || echo 0)
 _TELEM_EXIT_CODE=0
+_TELEM_BYTES=-1
 
 _fsuite_record_telemetry() {
   _TELEM_EXIT_CODE=$?
-  [[ "$_FSUITE_TELEM" == "1" ]] || return 0
+  (( _FSUITE_TELEM >= 1 )) || return 0
   [[ "$_TELEM_START_MS" != "0" ]] || return 0
   [[ "$_TELEM_START_MS" =~ ^[0-9]+$ ]] || return 0
   local end_ms
@@ -43,7 +53,28 @@ _fsuite_record_telemetry() {
     abs_pn=$(cd "$SEARCH_PATH" 2>/dev/null && pwd) || abs_pn="$SEARCH_PATH"
     pn=$(basename "$abs_pn" | tr -cd '[:alnum:]. _-')
   fi
-  local _telem_line="{\"timestamp\":\"$ts\",\"tool\":\"fcontent\",\"version\":\"$VERSION\",\"mode\":\"$mode\",\"path_hash\":\"$ph\",\"project_name\":\"$pn\",\"duration_ms\":$dur_ms,\"exit_code\":$_TELEM_EXIT_CODE,\"depth\":-1,\"items_scanned\":${TOTAL_FILES:-0},\"bytes_scanned\":-1,\"flags\":\"-o ${OUTPUT:-pretty}\",\"backend\":\"rg\"}"
+  # Compute bytes_scanned in directory mode only (not stdin mode)
+  if [[ "$_TELEM_BYTES" -eq -1 ]] && (( ${FILES_FROM_STDIN:-0} == 0 )) && [[ -d "${SEARCH_PATH:-}" ]]; then
+    local _bs=""
+    if command -v timeout >/dev/null 2>&1; then
+      _bs=$(timeout 3 du -sb "$SEARCH_PATH" 2>/dev/null | cut -f1) || _bs=""
+    else
+      # macOS fallback: no timeout, use du -sk * 1024
+      _bs=$(du -sk "$SEARCH_PATH" 2>/dev/null | cut -f1) || _bs=""
+      [[ "${_bs:-}" =~ ^[0-9]+$ ]] && _bs=$(( _bs * 1024 ))
+    fi
+    [[ "${_bs:-}" =~ ^[0-9]+$ ]] && _TELEM_BYTES="$_bs"
+  fi
+  # Collect hardware telemetry if tier >= 2
+  if type _fsuite_collect_hw_telemetry &>/dev/null; then
+    _fsuite_collect_hw_telemetry "$_FSUITE_TELEM"
+  fi
+  local _hw_fields=""
+  if type _fsuite_hw_json_fields &>/dev/null && (( _FSUITE_TELEM >= 2 )); then
+    _hw_fields=$(_fsuite_hw_json_fields "$_FSUITE_TELEM")
+    [[ -n "$_hw_fields" ]] && _hw_fields=",${_hw_fields}"
+  fi
+  local _telem_line="{\"timestamp\":\"$ts\",\"tool\":\"fcontent\",\"version\":\"$VERSION\",\"mode\":\"$mode\",\"path_hash\":\"$ph\",\"project_name\":\"$pn\",\"duration_ms\":$dur_ms,\"exit_code\":$_TELEM_EXIT_CODE,\"depth\":-1,\"items_scanned\":${TOTAL_FILES:-0},\"bytes_scanned\":${_TELEM_BYTES},\"flags\":\"-o ${OUTPUT:-pretty}\",\"backend\":\"rg\"${_hw_fields}}"
   # Atomic append with flock to prevent interleaved writes
   {
     flock -x 200 2>/dev/null
@@ -209,6 +240,29 @@ case "$OUTPUT" in pretty|paths|json) ;; *) die "Invalid --output: $OUTPUT" ;; es
 has rg || die "rg (ripgrep) is required. Run: fcontent --install-hints"
 
 # -------------------------
+# Metacharacter warning detection
+# -------------------------
+_has_regex_metachar() {
+  local q="$1"
+  # Check for common regex metacharacters: ( ) [ ] { } * + ? ^ $ | \
+  # Using glob pattern since bracket expressions in regex are tricky
+  [[ "$q" == *[\(\)\[\]\{\}*+?^\$\|\\]* ]]
+}
+
+_METACHAR_WARNING=0
+_METACHAR_WARNING_MSG="Query contains regex metacharacters. Consider --rg-args '-F' for literal search."
+
+if _has_regex_metachar "$QUERY"; then
+  _METACHAR_WARNING=1
+  # Suppress warning if -F or --fixed-strings already in RG_ARGS
+  for _arg in "${RG_ARGS[@]+"${RG_ARGS[@]}"}"; do
+    case "$_arg" in
+      -F|--fixed-strings) _METACHAR_WARNING=0; break ;;
+    esac
+  done
+fi
+
+# -------------------------
 # Determine input: stdin file list vs directory mode
 # -------------------------
 # If the user explicitly gave a path (positional or --path that isn't the
@@ -261,6 +315,8 @@ if [[ "$OUTPUT" == "paths" ]]; then
   else
     "${BASE_RG[@]}" ${RG_ARGS[@]+"${RG_ARGS[@]}"} -l -- "$QUERY" "$SEARCH_PATH" 2>/dev/null | sort -u || true
   fi
+  # Emit metacharacter warning to stderr (paths mode)
+  (( _METACHAR_WARNING == 1 )) && echo "Warning: $_METACHAR_WARNING_MSG" >&2
   exit 0
 fi
 
@@ -329,7 +385,12 @@ if [[ "$OUTPUT" == "json" ]]; then
     if (( i > 0 )); then echo -n ","; fi
     echo -n "\"$f\""
   done
-  echo -n "]}"
+  echo -n "]"
+  # Add warning field in JSON output if metacharacter detected
+  if (( _METACHAR_WARNING == 1 )); then
+    echo -n ",\"warning\":\"$_METACHAR_WARNING_MSG\""
+  fi
+  echo -n "}"
   echo
   exit 0
 fi
@@ -344,8 +405,12 @@ fi
 echo "  ⎿ matched_files: $TOTAL_FILES"
 echo "  ⎿ shown_matches: $SHOWN_MATCHES (cap=$MAX_MATCHES)"
 if (( SHOWN_MATCHES == 0 )); then
+  # Emit metacharacter warning to stderr (pretty mode)
+  (( _METACHAR_WARNING == 1 )) && echo "Warning: $_METACHAR_WARNING_MSG" >&2
   exit 0
 fi
 for line in "${MATCH_LINES[@]}"; do
   echo "     $line"
 done
+# Emit metacharacter warning to stderr (pretty mode)
+(( _METACHAR_WARNING == 1 )) && echo "Warning: $_METACHAR_WARNING_MSG" >&2

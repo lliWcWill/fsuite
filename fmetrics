@@ -48,6 +48,21 @@ human_ms() {
   fi
 }
 
+human_bytes() {
+  local bytes="$1"
+  if (( bytes < 0 )); then
+    echo "?"
+  elif (( bytes < 1024 )); then
+    echo "${bytes}B"
+  elif (( bytes < 1048576 )); then
+    awk "BEGIN {printf \"%.1fK\", $bytes/1024}"
+  elif (( bytes < 1073741824 )); then
+    awk "BEGIN {printf \"%.1fM\", $bytes/1048576}"
+  else
+    awk "BEGIN {printf \"%.1fG\", $bytes/1073741824}"
+  fi
+}
+
 # Portable JSON field extraction (no grep -oP / PCRE dependency)
 # Handles both "key":"stringval" and "key":numval
 json_get() {
@@ -81,6 +96,13 @@ CREATE INDEX IF NOT EXISTS idx_project ON telemetry(project_name);
 CREATE INDEX IF NOT EXISTS idx_timestamp ON telemetry(timestamp);
 PRAGMA journal_mode=WAL;
 SQL
+
+  # Schema migration for Tier 2 hardware columns (idempotent - errors suppressed)
+  sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN cpu_temp_mc INTEGER DEFAULT -1;" 2>/dev/null || true
+  sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN disk_temp_mc INTEGER DEFAULT -1;" 2>/dev/null || true
+  sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN ram_total_kb INTEGER DEFAULT -1;" 2>/dev/null || true
+  sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN ram_available_kb INTEGER DEFAULT -1;" 2>/dev/null || true
+  sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN load_avg_1m TEXT DEFAULT '-1';" 2>/dev/null || true
 }
 
 # -------------------------
@@ -99,6 +121,7 @@ SUBCOMMANDS
   predict <path>     Estimate how long fsuite tools will take on <path>
   import             Ingest telemetry.jsonl into SQLite database
   clean              Prune old telemetry data
+  profile            Show machine profile (Tier 3 telemetry)
 
 OPTIONS (global)
   -o, --output       Output format: pretty (default) or json
@@ -149,6 +172,7 @@ cmd_import() {
 
     # Parse JSON fields using portable json_get (no grep -oP / PCRE dependency)
     local ts tool ver mode ph pn dur ec dep items bytes flags backend
+    local cpu_temp disk_temp ram_total ram_avail load_avg
     ts=$(json_get "$line" "timestamp") || true
     [[ -n "$ts" ]] || { (( errors++ )); continue; }
     tool=$(json_get "$line" "tool") || true
@@ -169,6 +193,17 @@ cmd_import() {
     [[ "$bytes" =~ ^-?[0-9]+$ ]] || bytes=-1
     flags=$(json_get "$line" "flags") || flags=""
     backend=$(json_get "$line" "backend") || backend=""
+    # Hardware telemetry fields (Tier 2)
+    cpu_temp=$(json_get "$line" "cpu_temp_mc") || cpu_temp=-1
+    [[ "$cpu_temp" =~ ^-?[0-9]+$ ]] || cpu_temp=-1
+    disk_temp=$(json_get "$line" "disk_temp_mc") || disk_temp=-1
+    [[ "$disk_temp" =~ ^-?[0-9]+$ ]] || disk_temp=-1
+    ram_total=$(json_get "$line" "ram_total_kb") || ram_total=-1
+    [[ "$ram_total" =~ ^-?[0-9]+$ ]] || ram_total=-1
+    ram_avail=$(json_get "$line" "ram_available_kb") || ram_avail=-1
+    [[ "$ram_avail" =~ ^-?[0-9]+$ ]] || ram_avail=-1
+    load_avg=$(json_get "$line" "load_avg_1m") || load_avg="-1"
+    [[ "$load_avg" =~ ^[0-9.]+$ ]] || load_avg="-1"
 
     # Sanitize string fields: strip non-safe characters to prevent SQL injection
     ts=$(echo "$ts" | tr -cd '[:alnum:].:T Z+-')
@@ -179,13 +214,14 @@ cmd_import() {
     pn=$(echo "$pn" | tr -cd '[:alnum:]. _-')
     flags=$(echo "$flags" | tr -cd '[:alnum:]. _-')
     backend=$(echo "$backend" | tr -cd '[:alnum:]._-')
+    load_avg=$(echo "$load_avg" | tr -cd '[:alnum:].-')
 
     # Escape single quotes for SQL safety (belt-and-suspenders after sanitize)
     pn="${pn//\'/\'\'}"
     flags="${flags//\'/\'\'}"
 
     local result
-    result=$(sqlite3 "$DB_FILE" "INSERT OR IGNORE INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend) VALUES ('$ts','$tool','$ver','$mode','$ph','$pn',$dur,$ec,$dep,$items,$bytes,'$flags','$backend'); SELECT changes();" 2>/dev/null) || { (( errors++ )); continue; }
+    result=$(sqlite3 "$DB_FILE" "INSERT OR IGNORE INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend,cpu_temp_mc,disk_temp_mc,ram_total_kb,ram_available_kb,load_avg_1m) VALUES ('$ts','$tool','$ver','$mode','$ph','$pn',$dur,$ec,$dep,$items,$bytes,'$flags','$backend',$cpu_temp,$disk_temp,$ram_total,$ram_avail,'$load_avg'); SELECT changes();" 2>/dev/null) || { (( errors++ )); continue; }
 
     if [[ "$result" == "1" ]]; then
       (( inserted++ )) || true
@@ -305,25 +341,25 @@ cmd_history() {
   if [[ "$OUTPUT" == "json" ]]; then
     echo -n "{\"tool\":\"fmetrics\",\"version\":\"$VERSION\",\"subcommand\":\"history\",\"runs\":["
     local first=1
-    while IFS='|' read -r ts t mode pn dur ec items backend; do
+    while IFS='|' read -r ts t mode pn dur ec items bytes backend; do
       (( first )) || echo -n ","
       first=0
-      echo -n "{\"timestamp\":\"$ts\",\"tool\":\"$t\",\"mode\":\"$mode\",\"project\":\"$pn\",\"duration_ms\":$dur,\"exit_code\":$ec,\"items_scanned\":$items,\"backend\":\"$backend\"}"
-    done < <(sqlite3 -separator '|' "$DB_FILE" "SELECT timestamp,tool,mode,project_name,duration_ms,exit_code,items_scanned,backend FROM telemetry $where ORDER BY timestamp DESC LIMIT $LIMIT;" 2>/dev/null)
+      echo -n "{\"timestamp\":\"$ts\",\"tool\":\"$t\",\"mode\":\"$mode\",\"project\":\"$pn\",\"duration_ms\":$dur,\"exit_code\":$ec,\"items_scanned\":$items,\"bytes_scanned\":$bytes,\"backend\":\"$backend\"}"
+    done < <(sqlite3 -separator '|' "$DB_FILE" "SELECT timestamp,tool,mode,project_name,duration_ms,exit_code,items_scanned,bytes_scanned,backend FROM telemetry $where ORDER BY timestamp DESC LIMIT $LIMIT;" 2>/dev/null)
     echo "]}"
   else
     local title="Recent Runs"
     [[ -n "${FILTER_TOOL:-}" ]] && title="Recent $FILTER_TOOL Runs"
     [[ -n "${FILTER_PROJECT:-}" ]] && title="$title (project: $FILTER_PROJECT)"
     echo "fmetrics history — $title (last $LIMIT)"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    printf "  %-20s %-12s %-12s %-15s %8s %6s %6s\n" "Timestamp" "Tool" "Mode" "Project" "Time" "Items" "Exit"
-    echo "  ──────────────────────────────────────────────────────────────────────────────"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    printf "  %-20s %-12s %-12s %-12s %8s %6s %8s %6s\n" "Timestamp" "Tool" "Mode" "Project" "Time" "Items" "Bytes" "Exit"
+    echo "  ─────────────────────────────────────────────────────────────────────────────────────────────"
 
-    while IFS='|' read -r ts t mode pn dur ec items backend; do
-      printf "  %-20s %-12s %-12s %-15s %8s %6s %6s\n" \
-        "$ts" "$t" "$mode" "${pn:0:15}" "$(human_ms "$dur")" "$items" "$ec"
-    done < <(sqlite3 -separator '|' "$DB_FILE" "SELECT timestamp,tool,mode,project_name,duration_ms,exit_code,items_scanned,backend FROM telemetry $where ORDER BY timestamp DESC LIMIT $LIMIT;" 2>/dev/null)
+    while IFS='|' read -r ts t mode pn dur ec items bytes backend; do
+      printf "  %-20s %-12s %-12s %-12s %8s %6s %8s %6s\n" \
+        "$ts" "$t" "$mode" "${pn:0:12}" "$(human_ms "$dur")" "$items" "$(human_bytes "$bytes")" "$ec"
+    done < <(sqlite3 -separator '|' "$DB_FILE" "SELECT timestamp,tool,mode,project_name,duration_ms,exit_code,items_scanned,bytes_scanned,backend FROM telemetry $where ORDER BY timestamp DESC LIMIT $LIMIT;" 2>/dev/null)
   fi
 }
 
@@ -370,7 +406,7 @@ cmd_predict() {
   local total_items total_bytes size_mb
   total_items=$(json_get "$recon_json" "total_entries") || total_items=0
   [[ "$total_items" =~ ^[0-9]+$ ]] || total_items=0
-  total_bytes=$(json_get "$recon_json" "size_bytes") || total_bytes=0
+  total_bytes=$(json_get "$recon_json" "total_size_bytes") || total_bytes=0
   [[ "$total_bytes" =~ ^[0-9]+$ ]] || total_bytes=0
   size_mb=$(_predict_size_mb "$total_bytes")
 
@@ -520,6 +556,32 @@ cmd_clean() {
 }
 
 # -------------------------
+# Subcommand: profile
+# -------------------------
+cmd_profile() {
+  local profile_file="$FSUITE_DIR/machine_profile.json"
+
+  if [[ ! -f "$profile_file" ]]; then
+    if [[ "$OUTPUT" == "json" ]]; then
+      echo "{\"tool\":\"fmetrics\",\"version\":\"$VERSION\",\"subcommand\":\"profile\",\"error\":\"no profile\",\"hint\":\"Run any fsuite tool with FSUITE_TELEMETRY=3 to generate\"}"
+    else
+      echo "No machine profile found."
+      echo "Generate one by running any fsuite tool with FSUITE_TELEMETRY=3"
+      echo "Example: FSUITE_TELEMETRY=3 ftree ."
+    fi
+    return 0
+  fi
+
+  if [[ "$OUTPUT" == "json" ]]; then
+    cat "$profile_file"
+  else
+    echo "Machine Profile ($profile_file)"
+    echo "================================"
+    cat "$profile_file" | sed 's/[{}",]//g' | sed 's/^ */  /' | grep -v '^$'
+  fi
+}
+
+# -------------------------
 # Self-check
 # -------------------------
 self_check() {
@@ -626,5 +688,6 @@ case "$SUBCOMMAND" in
     cmd_predict ;;
   import)  cmd_import ;;
   clean)   cmd_clean ;;
+  profile) cmd_profile ;;
   *)       die "Unknown subcommand: $SUBCOMMAND. Run: fmetrics --help" ;;
 esac

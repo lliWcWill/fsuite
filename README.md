@@ -582,10 +582,77 @@ ftree --install-hints      # Print install command for tree
 
 ---
 
+## Telemetry
+
+fsuite collects anonymous performance telemetry to help predict operation times and identify bottlenecks. **All data stays local** — nothing is transmitted anywhere.
+
+### Telemetry Tiers
+
+Control telemetry via the `FSUITE_TELEMETRY` environment variable:
+
+| Tier | Description | Data Collected |
+|------|-------------|----------------|
+| `0` | Disabled | None |
+| `1` | Basic (default) | Duration, items scanned, bytes scanned, exit code |
+| `2` | Hardware | Tier 1 + CPU temp, disk temp, RAM usage, load average |
+| `3` | Full | Tier 2 + machine profile (CPU model, cores, total RAM) |
+
+### Examples
+
+```bash
+# Disable telemetry
+FSUITE_TELEMETRY=0 ftree /project
+
+# Enable hardware metrics
+FSUITE_TELEMETRY=2 fcontent "TODO" /project
+
+# Full telemetry with machine profile
+FSUITE_TELEMETRY=3 fsearch "*.py" /project
+```
+
+### Data Storage
+
+- **Telemetry log**: `~/.fsuite/telemetry.jsonl` (append-only JSONL)
+- **SQLite database**: `~/.fsuite/telemetry.db` (after `fmetrics import`)
+- **Machine profile**: `~/.fsuite/machine_profile.json` (Tier 3 only, regenerated daily)
+
+### Using Telemetry
+
+The `fmetrics` tool provides analytics on your telemetry data:
+
+```bash
+# Import telemetry into SQLite for analysis
+fmetrics import
+
+# View usage statistics
+fmetrics stats
+
+# View recent runs
+fmetrics history --tool ftree --limit 10
+
+# Predict runtime for a directory
+fmetrics predict /project
+
+# View machine profile
+fmetrics profile
+
+# Clean old data (keep last 30 days)
+fmetrics clean --days 30
+```
+
+### Privacy
+
+- **All data is local** — nothing is sent to any server
+- **Paths are hashed** — the actual path `/home/user/secret-project` is stored as a 16-character SHA256 prefix
+- **No file contents** — only metadata (counts, sizes, durations)
+- **Easy to disable** — set `FSUITE_TELEMETRY=0` globally in your shell config
+
+---
+
 ## Security Notes
 
 - No tool stores passwords or credentials
-- No tool writes to the filesystem or modifies files
+- No tool writes to the filesystem or modifies files (except telemetry in `~/.fsuite/`)
 - For scanning protected directories, authenticate first with `sudo -v` then run with `sudo`
 - No auto-install behavior; `--install-hints` only _prints_ commands for you to run manually
 
