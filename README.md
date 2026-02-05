@@ -153,6 +153,7 @@ fsearch [OPTIONS] <pattern_or_ext> [path]
   - Numeric-only tokens are treated literally (e.g. `123` stays `123`).
 - Auto-selects `fd`/`fdfind` when available, falls back to POSIX `find`
 - Interactive mode (prompts for missing args) or fully headless
+- Quiet mode (`-q`) for existence checks — exit 0 if found, 1 if not
 - Three output formats: `pretty` (default), `paths` (one per line), `json`
 
 **Examples:**
@@ -187,7 +188,8 @@ fcontent [OPTIONS] <query> [path]
 - Directory mode: recursively searches a path
 - Piped mode: reads file paths from stdin (pairs with `fsearch --output paths`)
 - Three output formats: `pretty` (default), `paths` (matched files only), `json`
-- Configurable match and file caps to prevent terminal floods
+- Configurable match (`-m`) and file (`-n`) caps to prevent terminal floods
+- Quiet mode (`-q`) for existence checks — exit 0 if found, 1 if not
 - Pass-through for extra `rg` flags via `--rg-args`
 
 **Examples:**
@@ -221,6 +223,7 @@ ftree [OPTIONS] [path]
 - Excluded-dir summaries in recon show what's hidden and how big it is
 - `--include` promotes excluded dirs back to normal treatment
 - Multiple `--ignore` flags accumulate (v1.0.1+): `-I 'docs' -I '*.md'` excludes both
+- Quiet mode (`-q`) for silent operation — exit code only
 - Three output formats: `pretty` (default), `paths` (flat file list), `json`
 - Snapshot mode (`--snapshot`): combined recon + tree in one command (v1.2.0+)
 - Truncation with overflow count and drill-down suggestion
@@ -415,6 +418,7 @@ Copy-paste ready. Every command runs headless (no prompts, no TTY needed) unless
 | `fsearch --self-check` | Show which backends are available |
 | `fsearch --install-hints` | Print install commands for `fd` and `rg` |
 | `fsearch --version` | Print version |
+| `fsearch -q '*.py' /project` | Quiet mode — exit code only, no output |
 | `fsearch -i` | **Interactive** — prompts for pattern and path |
 
 ### `fcontent` — Search Inside Files
@@ -425,7 +429,8 @@ Copy-paste ready. Every command runs headless (no prompts, no TTY needed) unless
 | `fcontent "TODO" /project` | Find every `TODO` in a project tree |
 | `fcontent --output paths "ERROR" /var/log` | Print only the file paths that matched (one per line) |
 | `fcontent --output json "ERROR" /var/log` | Structured JSON with `matches[]`, `matched_files[]`, counts |
-| `fcontent --max-matches 20 "debug" /project` | Cap output to 20 match lines |
+| `fcontent -m 20 "debug" /project` | Cap output to 20 match lines |
+| `fcontent -n 50 "debug" /project` | Cap to 50 files searched |
 | `fcontent --rg-args "-i" "error" /var/log` | Case-insensitive search |
 | `fcontent --rg-args "--hidden" "secret" ~` | Include hidden/dotfiles in search |
 | `fcontent --rg-args "-i --hidden" "token" ~` | Case-insensitive + hidden files |
@@ -433,6 +438,7 @@ Copy-paste ready. Every command runs headless (no prompts, no TTY needed) unless
 | `fcontent --self-check` | Verify `rg` is installed |
 | `fcontent --install-hints` | Print install command for `rg` |
 | `fcontent --version` | Print version |
+| `fcontent -q "TODO" /project` | Quiet mode — exit code only (0=found, 1=not found) |
 
 ### `ftree` — Visualize Directory Structure
 
@@ -440,7 +446,7 @@ Copy-paste ready. Every command runs headless (no prompts, no TTY needed) unless
 |---------|-------------|
 | `ftree /project` | Tree view, depth 3, default excludes, 200-line cap |
 | `ftree --recon /project` | Recon: per-dir item counts and sizes |
-| `ftree -L 5 /project/src` | Deeper tree (depth 5) of a subdirectory |
+| `ftree -L5 /project/src` | Deeper tree (depth 5) of a subdirectory |
 | `ftree -o json /project` | Structured JSON tree with metadata envelope |
 | `ftree -o paths /project` | Flat file list, one per line |
 | `ftree --recon -o json /project` | Recon JSON: agent-parseable per-dir inventory |
@@ -454,12 +460,13 @@ Copy-paste ready. Every command runs headless (no prompts, no TTY needed) unless
 | `ftree -d /project` | Directories only |
 | `ftree -s /project` | Show file/dir sizes |
 | `ftree -f /project` | Full absolute paths |
-| `ftree -m 50 /project` | Cap pretty output at 50 lines |
+| `ftree -m50 /project` | Cap pretty output at 50 lines (combined flag) |
 | `ftree -m 0 /project` | Unlimited lines (may be large!) |
 | `ftree --gitignore /project` | Also honor `.gitignore` rules (if tree supports it) |
 | `ftree --self-check` | Verify tree is installed, check `--gitignore` support |
 | `ftree --install-hints` | Print install command for tree |
 | `ftree --version` | Print version |
+| `ftree -q /project` | Quiet mode — exit code only |
 
 ### Pipeline — Find Then Grep (the power move)
 
@@ -499,6 +506,8 @@ These are designed for AI agents, CI pipelines, cron jobs, and automation script
 | **Batch rename prep** | `fsearch -o paths '*_old*' /project` | List all `_old` files an agent should rename or delete |
 | **Monitor new files** | `fsearch -o json '*.tmp' /var/tmp` | Agent checks `total_found` periodically to track tmp growth |
 | **Multi-stage pipeline** | `fsearch -o paths '*.py' /src \| fcontent -o paths "class " \| xargs head -5` | Find Python files with classes, show first 5 lines of each |
+| **Existence check** | `fsearch -q '*.lock' /project && echo "found"` | Quiet mode — check if lockfiles exist (exit code only) |
+| **Grep check** | `fcontent -q "FIXME" /src \|\| echo "clean"` | Quiet mode — check if FIXME exists in codebase |
 
 ### Interactive / Human Shortcuts
 
@@ -522,20 +531,26 @@ These are designed for AI agents, CI pipelines, cron jobs, and automation script
 | `--output` | `-o` | `pretty`, `paths`, `json` | `pretty` |
 | `--backend` | `-b` | `auto`, `find`, `fd` | `auto` |
 | `--max` | `-m` | any integer | `50` |
+| `--quiet` | `-q` | — | off |
 | `--interactive` | `-i` | — | off |
 | `--self-check` | — | — | — |
 | `--install-hints` | — | — | — |
+
+> **Tip:** Numeric flags support combined syntax: `-m50` is equivalent to `-m 50`.
 
 **`fcontent`**
 
 | Flag | Short | Values | Default |
 |------|-------|--------|---------|
 | `--output` | `-o` | `pretty`, `paths`, `json` | `pretty` |
-| `--max-matches` | — | any integer | `200` |
-| `--max-files` | — | any integer | `2000` |
+| `--max-matches` | `-m` | any integer | `200` |
+| `--max-files` | `-n` | any integer | `2000` |
+| `--quiet` | `-q` | — | off |
 | `--rg-args` | — | quoted string of rg flags | none |
 | `--self-check` | — | — | — |
 | `--install-hints` | — | — | — |
+
+> **Tip:** Numeric flags support combined syntax: `-m50` is equivalent to `-m 50`.
 
 **`ftree`**
 
@@ -554,10 +569,13 @@ These are designed for AI agents, CI pipelines, cron jobs, and automation script
 | `--hide-excluded` | — | — | off |
 | `--dirs-only` | `-d` | — | off |
 | `--sizes` | `-s` | — | off |
+| `--quiet` | `-q` | — | off |
 | `--gitignore` | — | — | off |
 | `--full-paths` | `-f` | — | off |
 | `--self-check` | — | — | — |
 | `--install-hints` | — | — | — |
+
+> **Tip:** Numeric flags support combined syntax: `-L5` is equivalent to `-L 5`.
 
 ---
 
@@ -594,8 +612,12 @@ Control telemetry via the `FSUITE_TELEMETRY` environment variable:
 |------|-------------|----------------|
 | `0` | Disabled | None |
 | `1` | Basic (default) | Duration, items scanned, bytes scanned, exit code |
-| `2` | Hardware | Tier 1 + CPU temp, disk temp, RAM usage, load average |
+| `2` | Hardware | Tier 1 + CPU temp, disk temp, RAM usage, load average, filesystem type, storage type |
 | `3` | Full | Tier 2 + machine profile (CPU model, cores, total RAM) |
+
+**Tier 2 fields:**
+- `filesystem_type`: ext4, ntfs, exfat, apfs, nfs, cifs, tmpfs, etc.
+- `storage_type`: ssd, hdd, nvme, network, removable, tmpfs, etc.
 
 ### Examples
 
