@@ -208,7 +208,7 @@ _fsuite_detect_filesystem_type() {
   if [[ "$os" == "linux" ]]; then
     # Try findmnt first (most reliable)
     if command -v findmnt >/dev/null 2>&1; then
-      fstype=$(findmnt -n -o FSTYPE "$path" 2>/dev/null) || true
+      fstype=$(findmnt -n -o FSTYPE --target "$path" 2>/dev/null) || true
       if [[ -n "$fstype" ]]; then
         echo "$fstype"
         return 0
