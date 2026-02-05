@@ -186,6 +186,51 @@ test_tier1_no_hardware_fields() {
   fi
 }
 
+test_tier2_filesystem_storage_fields() {
+  rm -f "$HOME/.fsuite/telemetry.jsonl"
+  FSUITE_TELEMETRY=2 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
+  local line
+  line=$(tail -1 "$HOME/.fsuite/telemetry.jsonl" 2>/dev/null)
+
+  local has_fs has_st
+  has_fs=$(echo "$line" | grep -o '"filesystem_type"' || true)
+  has_st=$(echo "$line" | grep -o '"storage_type"' || true)
+
+  if [[ -n "$has_fs" ]] && [[ -n "$has_st" ]]; then
+    pass "Tier 2 includes filesystem_type and storage_type fields"
+  else
+    fail "Tier 2 should include filesystem_type and storage_type"
+  fi
+}
+
+test_filesystem_type_not_unknown() {
+  rm -f "$HOME/.fsuite/telemetry.jsonl"
+  FSUITE_TELEMETRY=2 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
+  local line fs_type
+  line=$(tail -1 "$HOME/.fsuite/telemetry.jsonl" 2>/dev/null)
+  fs_type=$(echo "$line" | grep -oE '"filesystem_type":"[^"]+"' | cut -d'"' -f4)
+
+  if [[ -n "$fs_type" ]] && [[ "$fs_type" != "unknown" ]]; then
+    pass "Filesystem type detected: $fs_type"
+  else
+    fail "Filesystem type should not be unknown for valid path"
+  fi
+}
+
+test_storage_type_not_unknown() {
+  rm -f "$HOME/.fsuite/telemetry.jsonl"
+  FSUITE_TELEMETRY=2 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
+  local line st_type
+  line=$(tail -1 "$HOME/.fsuite/telemetry.jsonl" 2>/dev/null)
+  st_type=$(echo "$line" | grep -oE '"storage_type":"[^"]+"' | cut -d'"' -f4)
+
+  if [[ -n "$st_type" ]] && [[ "$st_type" != "unknown" ]]; then
+    pass "Storage type detected: $st_type"
+  else
+    fail "Storage type should not be unknown for valid path"
+  fi
+}
+
 # ============================================================================
 # Tier 3 Tests (Machine Profile)
 # ============================================================================
@@ -367,6 +412,12 @@ main() {
   echo "== Tier 2 (Hardware) =="
   run_test "Tier 2 includes hardware fields" test_tier2_hardware_fields
   run_test "Tier 1 excludes hardware fields" test_tier1_no_hardware_fields
+
+  echo ""
+  echo "== Filesystem & Storage Detection =="
+  run_test "Tier 2 includes fs/storage fields" test_tier2_filesystem_storage_fields
+  run_test "Filesystem type detected" test_filesystem_type_not_unknown
+  run_test "Storage type detected" test_storage_type_not_unknown
 
   echo ""
   echo "== Tier 3 (Machine Profile) =="

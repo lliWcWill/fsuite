@@ -68,7 +68,7 @@ _fsuite_record_telemetry() {
   fi
   # Collect hardware telemetry if tier >= 2
   if type _fsuite_collect_hw_telemetry &>/dev/null; then
-    _fsuite_collect_hw_telemetry "$_FSUITE_TELEM"
+    _fsuite_collect_hw_telemetry "$_FSUITE_TELEM" "${SEARCH_PATH:-}"
   fi
   local _hw_fields=""
   if type _fsuite_hw_json_fields &>/dev/null && (( _FSUITE_TELEM >= 2 )); then

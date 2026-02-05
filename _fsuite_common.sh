@@ -195,20 +195,190 @@ _fsuite_load_avg_1m() {
 }
 
 # -------------------------
+# Filesystem & Storage Detection (Tier 2)
+# -------------------------
+
+# Detect filesystem type for a given path
+# Returns: ext4, ntfs, exfat, apfs, nfs, cifs, tmpfs, unknown, etc.
+_fsuite_detect_filesystem_type() {
+  local path="${1:-/}"
+  local os fstype
+  os=$(_fsuite_detect_os)
+
+  if [[ "$os" == "linux" ]]; then
+    # Try findmnt first (most reliable)
+    if command -v findmnt >/dev/null 2>&1; then
+      fstype=$(findmnt -n -o FSTYPE "$path" 2>/dev/null) || true
+      if [[ -n "$fstype" ]]; then
+        echo "$fstype"
+        return 0
+      fi
+    fi
+    # Fallback: parse /proc/mounts via df
+    if [[ -r /proc/mounts ]]; then
+      local mnt_point fstype_tmp
+      mnt_point=$(df "$path" 2>/dev/null | tail -1 | awk '{print $6}') || mnt_point=""
+      if [[ -n "$mnt_point" ]]; then
+        fstype_tmp=$(awk -v mp=" $mnt_point " '$0 ~ mp {print $3; exit}' /proc/mounts 2>/dev/null) || true
+        if [[ -n "$fstype_tmp" ]]; then
+          echo "$fstype_tmp"
+          return 0
+        fi
+      fi
+    fi
+  elif [[ "$os" == "macos" ]]; then
+    # Try diskutil info
+    if command -v diskutil >/dev/null 2>&1; then
+      fstype=$(diskutil info "$path" 2>/dev/null | grep "Type (Bundle):" | awk '{print $3}') || true
+      if [[ -z "$fstype" ]]; then
+        fstype=$(diskutil info "$path" 2>/dev/null | grep "File System Personality:" | sed 's/.*: *//' | tr -d '\n') || true
+      fi
+      if [[ -n "$fstype" ]]; then
+        # Normalize common macOS names
+        case "$fstype" in
+          *APFS*|*apfs*) echo "apfs" ;;
+          *HFS*|*hfs*) echo "hfs+" ;;
+          *NTFS*|*ntfs*) echo "ntfs" ;;
+          *ExFAT*|*exfat*|*exFAT*) echo "exfat" ;;
+          *) echo "$fstype" ;;
+        esac
+        return 0
+      fi
+    fi
+    # Fallback: parse mount output
+    fstype=$(mount 2>/dev/null | grep " on $path " | sed 's/.*(\([^,]*\).*/\1/' | head -1) || true
+    if [[ -n "$fstype" ]]; then
+      echo "$fstype"
+      return 0
+    fi
+  fi
+
+  echo "unknown"
+}
+
+# Detect storage type for a given path's underlying device
+# Returns: ssd, hdd, nvme, network, removable, unknown
+_fsuite_detect_storage_type() {
+  local path="${1:-/}"
+  local os fstype device rota
+  os=$(_fsuite_detect_os)
+
+  # First check if it's a network filesystem
+  fstype=$(_fsuite_detect_filesystem_type "$path")
+  case "$fstype" in
+    nfs|nfs4|cifs|smbfs|fuse.sshfs|fuse.rclone|9p|afs|glusterfs|ceph)
+      echo "network"
+      return 0
+      ;;
+  esac
+
+  if [[ "$os" == "linux" ]]; then
+    # Get device from df
+    device=$(df "$path" 2>/dev/null | tail -1 | awk '{print $1}') || true
+    if [[ -z "$device" || "$device" == "-" ]]; then
+      echo "unknown"
+      return 0
+    fi
+
+    # Handle tmpfs, devtmpfs, etc.
+    case "$fstype" in
+      tmpfs|devtmpfs|ramfs|overlay)
+        echo "tmpfs"
+        return 0
+        ;;
+    esac
+
+    # Check for NVMe explicitly (before ROTA check)
+    if [[ "$device" == *nvme* ]]; then
+      echo "nvme"
+      return 0
+    fi
+
+    # Extract base device name (strip /dev/ and partition numbers)
+    local base_device
+    base_device=$(basename "$device" | sed -E 's/p?[0-9]+$//')
+
+    # Try lsblk for ROTA (rotational) flag
+    if command -v lsblk >/dev/null 2>&1; then
+      rota=$(lsblk -n -d -o ROTA "/dev/$base_device" 2>/dev/null | head -1 | tr -d ' ') || true
+      if [[ "$rota" == "0" ]]; then
+        echo "ssd"
+        return 0
+      elif [[ "$rota" == "1" ]]; then
+        echo "hdd"
+        return 0
+      fi
+    fi
+
+    # Fallback: check sysfs directly
+    local sysfs_rota="/sys/block/$base_device/queue/rotational"
+    if [[ -r "$sysfs_rota" ]]; then
+      rota=$(cat "$sysfs_rota" 2>/dev/null) || true
+      if [[ "$rota" == "0" ]]; then
+        echo "ssd"
+        return 0
+      elif [[ "$rota" == "1" ]]; then
+        echo "hdd"
+        return 0
+      fi
+    fi
+
+    # Check if removable (USB drives, SD cards)
+    local sysfs_removable="/sys/block/$base_device/removable"
+    if [[ -r "$sysfs_removable" ]]; then
+      local removable
+      removable=$(cat "$sysfs_removable" 2>/dev/null) || true
+      if [[ "$removable" == "1" ]]; then
+        echo "removable"
+        return 0
+      fi
+    fi
+
+  elif [[ "$os" == "macos" ]]; then
+    # Use diskutil info to check for Solid State
+    if command -v diskutil >/dev/null 2>&1; then
+      local is_ssd is_removable
+      is_ssd=$(diskutil info "$path" 2>/dev/null | grep "Solid State:" | awk '{print $3}') || true
+      if [[ "$is_ssd" == "Yes" ]]; then
+        echo "ssd"
+        return 0
+      elif [[ "$is_ssd" == "No" ]]; then
+        echo "hdd"
+        return 0
+      fi
+
+      # Check for removable/external
+      is_removable=$(diskutil info "$path" 2>/dev/null | grep "Removable Media:" | awk '{print $3}') || true
+      if [[ "$is_removable" == "Yes" || "$is_removable" == "Removable" ]]; then
+        echo "removable"
+        return 0
+      fi
+    fi
+  fi
+
+  echo "unknown"
+}
+
+# -------------------------
 # Tier-Aware Collection
 # -------------------------
 
 # Collects hardware telemetry based on tier level
 # Sets _FSUITE_HW_* variables
+# $1 = tier level (0-3)
+# $2 = target path (optional, for filesystem/storage detection)
 _fsuite_collect_hw_telemetry() {
   local tier="${1:-1}"
+  local target_path="${2:-}"
 
-  # Initialize all to -1
+  # Initialize all to defaults
   _FSUITE_HW_CPU_TEMP_MC=-1
   _FSUITE_HW_DISK_TEMP_MC=-1
   _FSUITE_HW_RAM_TOTAL_KB=-1
   _FSUITE_HW_RAM_AVAIL_KB=-1
   _FSUITE_HW_LOAD_AVG_1M="-1"
+  _FSUITE_HW_FILESYSTEM_TYPE="unknown"
+  _FSUITE_HW_STORAGE_TYPE="unknown"
 
   # Tier 0: no telemetry
   if (( tier == 0 )); then
@@ -227,6 +397,12 @@ _fsuite_collect_hw_telemetry() {
     _FSUITE_HW_RAM_TOTAL_KB=$(_fsuite_ram_total_kb)
     _FSUITE_HW_RAM_AVAIL_KB=$(_fsuite_ram_available_kb)
     _FSUITE_HW_LOAD_AVG_1M=$(_fsuite_load_avg_1m)
+
+    # Filesystem and storage detection (path-dependent)
+    if [[ -n "$target_path" ]] && [[ -e "$target_path" ]]; then
+      _FSUITE_HW_FILESYSTEM_TYPE=$(_fsuite_detect_filesystem_type "$target_path")
+      _FSUITE_HW_STORAGE_TYPE=$(_fsuite_detect_storage_type "$target_path")
+    fi
   fi
 
   # Tier 3: also generate machine profile
@@ -362,5 +538,5 @@ _fsuite_hw_json_fields() {
     return 0
   fi
 
-  echo "\"cpu_temp_mc\":${_FSUITE_HW_CPU_TEMP_MC:--1},\"disk_temp_mc\":${_FSUITE_HW_DISK_TEMP_MC:--1},\"ram_total_kb\":${_FSUITE_HW_RAM_TOTAL_KB:--1},\"ram_available_kb\":${_FSUITE_HW_RAM_AVAIL_KB:--1},\"load_avg_1m\":\"${_FSUITE_HW_LOAD_AVG_1M:--1}\""
+  echo "\"cpu_temp_mc\":${_FSUITE_HW_CPU_TEMP_MC:--1},\"disk_temp_mc\":${_FSUITE_HW_DISK_TEMP_MC:--1},\"ram_total_kb\":${_FSUITE_HW_RAM_TOTAL_KB:--1},\"ram_available_kb\":${_FSUITE_HW_RAM_AVAIL_KB:--1},\"load_avg_1m\":\"${_FSUITE_HW_LOAD_AVG_1M:--1}\",\"filesystem_type\":\"${_FSUITE_HW_FILESYSTEM_TYPE:-unknown}\",\"storage_type\":\"${_FSUITE_HW_STORAGE_TYPE:-unknown}\""
 }
