@@ -4,13 +4,14 @@
 
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.4.0"
 
 # -------------------------
 # Source common library for tiered telemetry
 # -------------------------
 _FSUITE_SCRIPT_DIR="$(cd "$(dirname "$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
 _FSUITE_LIB="$_FSUITE_SCRIPT_DIR/_fsuite_common.sh"
+[[ ! -f "$_FSUITE_LIB" ]] && _FSUITE_LIB="/usr/share/fsuite/_fsuite_common.sh"
 [[ -f "$_FSUITE_LIB" ]] && source "$_FSUITE_LIB" || true
 
 # -------------------------

@@ -1,0 +1,6 @@
+# Debian build artifacts
+.debhelper/
+*.substvars
+files
+debhelper-build-stamp
+fsuite/

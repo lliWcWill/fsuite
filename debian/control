@@ -1,0 +1,26 @@
+Source: fsuite
+Section: utils
+Priority: optional
+Maintainer: Chess Williams <chess.w.williams@gmail.com>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.0
+Homepage: https://github.com/lliWcWill/fsuite
+Vcs-Git: https://github.com/lliWcWill/fsuite.git
+Vcs-Browser: https://github.com/lliWcWill/fsuite
+Rules-Requires-Root: no
+
+Package: fsuite
+Architecture: all
+Depends: ${misc:Depends}, bash (>= 4.0), coreutils, findutils
+Recommends: tree, ripgrep, fd-find, python3, sqlite3
+Description: Filesystem reconnaissance toolkit for humans and AI agents
+ fsuite provides three composable CLI utilities that turn filesystem
+ exploration into a clean, scriptable, agent-friendly pipeline:
+ .
+  * fsearch - Find files by name, extension, or glob pattern
+  * fcontent - Search inside files for text (powered by ripgrep)
+  * ftree - Visualize directory structure with smart defaults and recon mode
+ .
+ Each tool outputs in multiple formats (pretty, paths, JSON) for both
+ human and programmatic consumption. Includes telemetry analytics via
+ fmetrics for performance tracking.

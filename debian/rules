@@ -1,0 +1,20 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_install:
+	# Install main tools to /usr/bin
+	install -D -m 755 ftree $(CURDIR)/debian/fsuite/usr/bin/ftree
+	install -D -m 755 fsearch $(CURDIR)/debian/fsuite/usr/bin/fsearch
+	install -D -m 755 fcontent $(CURDIR)/debian/fsuite/usr/bin/fcontent
+	install -D -m 755 fmetrics $(CURDIR)/debian/fsuite/usr/bin/fmetrics
+	install -D -m 755 fmetrics-predict.py $(CURDIR)/debian/fsuite/usr/bin/fmetrics-predict
+	# Install shared library to /usr/share/fsuite
+	install -D -m 644 _fsuite_common.sh $(CURDIR)/debian/fsuite/usr/share/fsuite/_fsuite_common.sh
+
+override_dh_auto_build:
+	# Nothing to build - shell scripts
+
+override_dh_auto_test:
+	# Skip tests during package build
