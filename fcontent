@@ -119,7 +119,7 @@ OPTIONS
       paths:  print unique file paths that matched (one per line)
       json:   print compact JSON with match metadata (best for AI agents)
 
-  --max-matches N
+  -m, --max-matches N
       Limit number of printed matches in pretty/json output. Default: 200
 
   --max-files N
@@ -193,7 +193,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -p|--path) SEARCH_PATH="${2:-}"; shift 2 ;;
     -o|--output) OUTPUT="${2:-}"; shift 2 ;;
-    --max-matches) MAX_MATCHES="${2:-}"; shift 2 ;;
+    -m|--max-matches) MAX_MATCHES="${2:-}"; shift 2 ;;
     --max-files) MAX_FILES="${2:-}"; shift 2 ;;
     --rg-args)
       if [[ -n "${2:-}" ]]; then
@@ -235,7 +235,7 @@ fi
 
 [[ -n "$QUERY" ]] || die "Missing query. Try: fcontent --help"
 case "$OUTPUT" in pretty|paths|json) ;; *) die "Invalid --output: $OUTPUT" ;; esac
-[[ "$MAX_MATCHES" =~ ^[0-9]+$ ]] || die "--max-matches must be an integer"
+[[ "$MAX_MATCHES" =~ ^[0-9]+$ ]] || die "-m/--max-matches must be an integer"
 [[ "$MAX_FILES" =~ ^[0-9]+$ ]] || die "--max-files must be an integer"
 
 has rg || die "rg (ripgrep) is required. Run: fcontent --install-hints"
