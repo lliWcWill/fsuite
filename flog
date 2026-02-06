@@ -1,0 +1,506 @@
+#!/usr/bin/env bash
+# flog — Fusion socket logger viewer with clean/slim output (agent-friendly)
+# Part of fsuite. Provides filtered, readable output like the Fusion frontend.
+
+set -euo pipefail
+
+VERSION="1.2.0"
+
+# -------------------------
+# Defaults
+# -------------------------
+DEFAULT_LOG="$HOME/.optofidelity/log/socket_logger/socket_logger_debug.log"
+DEFAULT_OUTPUT="pretty"   # pretty|slim|json
+DEFAULT_LINES=50
+DEFAULT_MAX_MATCHES=200
+
+# Filter patterns - what we WANT to see (test-relevant)
+INCLUDE='test_framework\.|➤|FAIL:|WARNING:|ERROR:|Device grade:|Sequence finished|Running suite|DUT aligned|Battery level|cmc_plugin.*(suite_end|LCD grade|Writing JSON|Pushing JSON)|mvda_plugin.*(suite_end|LCD grade|Writing|Pushing JSON|response)|radi_status_plugin.*light_tower|light_tower_plugin.*LightState'
+
+# Filter patterns - what we HIDE (noise)
+EXCLUDE='testloader|cherrypy|tntserver|fusion_modbus|CommSocket|Fusion UI|combo_sequencer\.(statemachine|plugin)|tntclient|config_handler|non-persistent|StreamStop|fetchScrollValues|checkOverflow|TabSelectionBar|mainTabs width|AppHeader|disableUserInteraction|Message from server|StepWindow disposal|step-window deferred|object MessageEvent|\[object Object\]|Status update from server|notified$|canvas off touch|needed width|runSelected success|drawImageOnCanvas|Test case logging|Test case state|subscribeAction|subscribed$|PUT http://|\\\\u27a4|cWidthMax|cHeightMax|show image images/|Test cases selected:|no need but still updated|starting action |finished action |GroupTests DisposeCallback$'
+
+# NPI mode: verbose diagnostic include — shows DUT commands, IO signals, robot moves, connection events
+NPI_INCLUDE="$INCLUDE|bring_up_service|BringupTool|log_request_parameters.*signal|dut_comm\.dut_communication_client|dut_comm\.socket_wrapper.*>>> msg|robotcontroller.*(Move Robot|set_speed|return_tool)|Robot speed set|robot acceleration set|tntclient.*(Bad Request|error)"
+
+# NPI mode: surgical exclude — removes robot plumbing + socket transfer noise but keeps business-level lines
+NPI_EXCLUDE='cherrypy|urllib3|CommSocket|dtcomm\.protocol|_get_pose|_update_coordinate_frame|_check_limits|_execute_poses|_preprocess_poses|Effective pos|Effective path|get_position |show_robot|serialize_for_webapi|Array dump|translate: Position|_send_header|_recv_header|_recv_ack|_send_ack|Transferred.*[KM]iB|Waited for start|Receiving with timeout|_recv_body.*<<<|fetchScrollValues|checkOverflow|TabSelectionBar|mainTabs width|AppHeader|disableUserInteraction|enableUserInteraction|Message from server|StepWindow disposal|step-window deferred|object MessageEvent|\[object Object\]|Status update from server|notified$|canvas off touch|needed width|runSelected success|drawImageOnCanvas|Test case logging|Test case state|subscribeAction|subscribed$|\\\\u27a4|cWidthMax|cHeightMax|show image images/|Test cases selected:|no need but still updated|starting action |finished action |GroupTests DisposeCallback$|config_handler|non-persistent|StreamStop|testloader|combo_sequencer\.(statemachine|plugin)|PUT http://|Fusion UI|fusion_modbus.*write_output'
+
+# -------------------------
+# Helpers
+# -------------------------
+die() { echo "flog: $*" >&2; exit 2; }
+
+usage() {
+  cat <<'EOF'
+flog — Fusion socket logger viewer with clean output (agent-friendly)
+
+USAGE
+  flog [COMMAND] [OPTIONS]
+
+COMMANDS
+  tail              Live stream filtered log (Ctrl+C to stop)
+  snapshot [N]      Show last N filtered lines (default: 50)
+  errors [N]        Show last N error/fail lines (default: 50)
+  search <pattern>  Search for pattern in filtered output
+  tower             Show current light tower status
+  info              Show log file info (size, lines, last modified)
+
+OPTIONS
+  -f, --file PATH
+      Log file path. Default: ~/.optofidelity/log/socket_logger/socket_logger_debug.log
+
+  -o, --output pretty|slim|json|npi
+      pretty: Clean formatted output with headers (default)
+      slim:   Minimal cleaned output, no headers (good for piping)
+      json:   Structured JSON (best for AI agents)
+      npi:    NPI-style clean output (tab-separated, matches NPI_logout.log format)
+
+  -n, --lines N
+      Number of lines for snapshot/errors/search (default: 50)
+
+  -r, --raw
+      Skip output cleaning (show raw filtered lines)
+
+  --no-color
+      Disable color output
+
+  --self-check
+      Verify log file exists and show stats
+
+  -h, --help
+      Show this help
+
+  --version
+      Print version
+
+OUTPUT CLEANING
+  The tool transforms verbose log lines into readable format:
+
+  BEFORE:
+    2026-01-20 12:26:28,463    INFO: test_framework.mic.MicTest.async Thread-50:MainProcess ->   _analyze   515 - Mic 0: True
+
+  AFTER (pretty):
+    2026-01-20 12:26:28  INFO  _analyze - Mic 0: True
+
+  AFTER (slim):
+    12:26:28  INFO  Mic 0: True
+
+  AFTER (npi):
+    2026-01-20 12:26.28	INFO Mic 0: True
+
+FILTER PATTERNS
+  Included (shown):
+    - test_framework.* (all test output)
+    - ➤ markers (test case start/finish)
+    - FAIL:/WARNING:/ERROR:
+    - Device grade, LCD grade
+    - CMC/MVDA endpoint reporting
+    - Light tower status
+
+  Excluded (hidden):
+    - cherrypy HTTP logs
+    - fusion_modbus I/O
+    - tntserver internals
+    - state machine transitions
+    - socket communication
+
+EXAMPLES
+  # Live stream (interactive)
+  flog tail
+
+  # Last 30 cleaned lines
+  flog snapshot 30
+
+  # Last 20 errors only
+  flog errors 20
+
+  # Search for mic failures
+  flog search "mic.*fail"
+
+  # JSON output for agents
+  flog snapshot 50 -o json
+
+  # Check tower status
+  flog tower
+
+  # Slim output for piping
+  flog snapshot 100 -o slim | grep "FAIL"
+
+  # NPI-style output (matches NPI_logout.log format)
+  flog snapshot 80 -o npi
+
+EOF
+}
+
+# Clean log line (pretty format)
+clean_line_pretty() {
+  sed -E '
+    # Clean ➤ marker lines
+    s/^([0-9-]+ [0-9:]+),[0-9]+\s+(➤\s*):.*header\s+[0-9]+ - /\1  \2 /
+
+    # Clean FAIL/ERROR lines
+    s/^([0-9-]+ [0-9:]+),[0-9]+\s+(FAIL|ERROR):.*[0-9]+ - /\1  \2  /
+
+    # Strip module path and thread from INFO/DEBUG/WARNING
+    s/^([0-9-]+ [0-9:]+),[0-9]+\s+(INFO|DEBUG|WARNING): [A-Za-z0-9._]+ Thread-[0-9]+:MainProcess ->\s+([a-zA-Z_]+)\s+[0-9]+ - /\1  \2  \3 - /
+
+    # CP Server Thread format
+    s/^([0-9-]+ [0-9:]+),[0-9]+\s+(INFO|DEBUG|WARNING): [A-Za-z0-9._]+ CP Server Thread-[0-9]+:MainProcess ->\s+([a-zA-Z_]+)\s+[0-9]+ - /\1  \2  \3 - /
+
+    # Fallback: just strip milliseconds
+    s/^([0-9-]+ [0-9:]+),[0-9]+/\1/
+  '
+}
+
+# Clean log line (slim format - minimal)
+clean_line_slim() {
+  sed -E '
+    # Extract just time, level, and message
+    s/^[0-9-]+ ([0-9:]+),[0-9]+\s+(➤\s*):.*header\s+[0-9]+ - /\1  \2 /
+    s/^[0-9-]+ ([0-9:]+),[0-9]+\s+(FAIL|ERROR|WARNING|INFO|DEBUG):.*->\s+[a-zA-Z_]+\s+[0-9]+ - /\1  \2  /
+    s/^[0-9-]+ ([0-9:]+),[0-9]+\s+(FAIL|ERROR|WARNING|INFO|DEBUG):[^-]+ - /\1  \2  /
+    s/^[0-9-]+ ([0-9:]+),[0-9]+/\1/
+  '
+}
+
+# Clean log line (npi format - matches NPI_logout.log from BringupTool)
+# Converts socket_logger verbose format to tab-separated NPI style:
+#   2026-02-06 10:04.54	DEBUG Buttons
+clean_line_npi() {
+  sed -E '
+    # ➤ marker lines: strip module/thread, normalize to "➤ message" (single space)
+    s/^([0-9]{4}-[0-9]{2}-[0-9]{2}) ([0-9]{2}):([0-9]{2}):([0-9]{2}),[0-9]+\s+➤[^:]*:.*header\s+[0-9]+ - (.*)/\1 \2:\3.\4\t➤ \5/
+    t
+
+    # Lines with CP Server Thread (any level): strip module/thread/func/lineno
+    s/^([0-9]{4}-[0-9]{2}-[0-9]{2}) ([0-9]{2}):([0-9]{2}):([0-9]{2}),[0-9]+\s+(INFO|DEBUG|WARNING|ERROR|FAIL): [A-Za-z0-9._]+ CP Server Thread-[0-9]+:MainProcess ->\s+[a-zA-Z_]+\s+[0-9]+ - (.*)/\1 \2:\3.\4\t\5 \6/
+    t
+
+    # Lines with Thread-N (any level): strip module/thread/func/lineno
+    s/^([0-9]{4}-[0-9]{2}-[0-9]{2}) ([0-9]{2}):([0-9]{2}):([0-9]{2}),[0-9]+\s+(INFO|DEBUG|WARNING|ERROR|FAIL): [A-Za-z0-9._]+ Thread-[0-9]+:MainProcess ->\s+[a-zA-Z_]+\s+[0-9]+ - (.*)/\1 \2:\3.\4\t\5 \6/
+    t
+
+    # BringupTool UI lines: "DEBUG:       BringupTool UI Thread-NNN:MainProcess ->   None   0 - msg"
+    s/^([0-9]{4}-[0-9]{2}-[0-9]{2}) ([0-9]{2}):([0-9]{2}):([0-9]{2}),[0-9]+\s+(INFO|DEBUG|WARNING|ERROR|FAIL):\s+BringupTool UI Thread-[0-9]+:MainProcess ->\s+None\s+[0-9]+ - (.*)/\1 \2:\3.\4\t\5 \6/
+    t
+
+    # bring_up_service lines: same structure with -> arrow
+    s/^([0-9]{4}-[0-9]{2}-[0-9]{2}) ([0-9]{2}):([0-9]{2}):([0-9]{2}),[0-9]+\s+(INFO|DEBUG|WARNING|ERROR): bring_up_service[A-Za-z0-9._]* Thread-[0-9]+:MainProcess ->\s+[a-zA-Z_]+\s+[0-9]+ - (.*)/\1 \2:\3.\4\t\5 \6/
+    t
+
+    # root log_request_parameters lines (IO signals, etc)
+    s/^([0-9]{4}-[0-9]{2}-[0-9]{2}) ([0-9]{2}):([0-9]{2}):([0-9]{2}),[0-9]+\s+(INFO|DEBUG|WARNING|ERROR):\s+root (CP Server Thread|Thread)-[0-9]+:MainProcess ->\s+[a-zA-Z_]+\s+[0-9]+ - (.*)/\1 \2:\3.\4\t\5 \7/
+    t
+
+    # combo_sequencer/restsrv error lines
+    s/^([0-9]{4}-[0-9]{2}-[0-9]{2}) ([0-9]{2}):([0-9]{2}):([0-9]{2}),[0-9]+\s+(ERROR):\s+[a-zA-Z0-9._]+ (MainThread|Thread-[0-9]+):MainProcess ->\s+[a-zA-Z_]+\s+[0-9]+ - (.*)/\1 \2:\3.\4\t\5 \7/
+    t
+
+    # Fallback: convert timestamp only (comma ms → dot seconds)
+    s/^([0-9]{4}-[0-9]{2}-[0-9]{2}) ([0-9]{2}):([0-9]{2}):([0-9]{2}),[0-9]+(.*)/\1 \2:\3.\4\5/
+  '
+}
+
+# JSON escape
+json_escape() {
+  sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/\\t/g' | tr '\n' ' '
+}
+
+# -------------------------
+# Pre-process combined short flags (e.g., -n50 → -n 50)
+# -------------------------
+_args=()
+for _arg in "$@"; do
+  if [[ "$_arg" =~ ^-([no])([0-9]+)$ ]]; then
+    _args+=("-${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
+  elif [[ "$_arg" =~ ^-([o])(.+)$ ]]; then
+    _args+=("-${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
+  else
+    _args+=("$_arg")
+  fi
+done
+set -- "${_args[@]}"
+
+# -------------------------
+# Parse args
+# -------------------------
+COMMAND=""
+LOG_FILE="$DEFAULT_LOG"
+OUTPUT="$DEFAULT_OUTPUT"
+LINES="$DEFAULT_LINES"
+RAW_MODE=0
+NO_COLOR=0
+SELF_CHECK=0
+PATTERN=""
+
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -f|--file) LOG_FILE="${2:-}"; shift 2 ;;
+    -o|--output) OUTPUT="${2:-}"; shift 2 ;;
+    -n|--lines) LINES="${2:-}"; shift 2 ;;
+    -r|--raw) RAW_MODE=1; shift ;;
+    --no-color) NO_COLOR=1; shift ;;
+    --self-check) SELF_CHECK=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --version) echo "flog $VERSION"; exit 0 ;;
+    -*) die "Unknown option: $1 (try --help)" ;;
+    *) POSITIONAL+=("$1"); shift ;;
+  esac
+done
+
+COMMAND="${POSITIONAL[0]:-}"
+ARG1="${POSITIONAL[1]:-}"
+
+# Handle numeric arg for snapshot/errors
+if [[ "$ARG1" =~ ^[0-9]+$ ]]; then
+  LINES="$ARG1"
+elif [[ -n "$ARG1" ]]; then
+  PATTERN="$ARG1"
+fi
+
+# -------------------------
+# Validation
+# -------------------------
+case "$OUTPUT" in pretty|slim|json|npi) ;; *) die "Invalid --output: $OUTPUT" ;; esac
+[[ "$LINES" =~ ^[0-9]+$ ]] || die "--lines must be an integer"
+
+# Self-check mode
+if (( SELF_CHECK == 1 )); then
+  echo "flog self-check:"
+  if [[ -f "$LOG_FILE" ]]; then
+    local_size=$(ls -lh "$LOG_FILE" 2>/dev/null | awk '{print $5}')
+    local_lines=$(wc -l < "$LOG_FILE" 2>/dev/null || echo "?")
+    local_mod=$(stat -c '%y' "$LOG_FILE" 2>/dev/null | cut -d'.' -f1 || stat -f '%Sm' "$LOG_FILE" 2>/dev/null || echo "?")
+    echo "  ✓ Log file exists: $LOG_FILE"
+    echo "    Size: $local_size"
+    echo "    Lines: $local_lines"
+    echo "    Modified: $local_mod"
+  else
+    echo "  ✗ Log file not found: $LOG_FILE"
+  fi
+  exit 0
+fi
+
+# Pick include/exclude filters based on output mode
+if [[ "$OUTPUT" == "npi" ]]; then
+  ACTIVE_INCLUDE="$NPI_INCLUDE"
+  ACTIVE_EXCLUDE="$NPI_EXCLUDE"
+else
+  ACTIVE_INCLUDE="$INCLUDE"
+  ACTIVE_EXCLUDE="$EXCLUDE"
+fi
+
+# Validate log file exists
+[[ -f "$LOG_FILE" ]] || die "Log file not found: $LOG_FILE"
+
+# -------------------------
+# Commands
+# -------------------------
+
+cmd_info() {
+  local size lines modified
+  size=$(ls -lh "$LOG_FILE" | awk '{print $5}')
+  lines=$(wc -l < "$LOG_FILE")
+  modified=$(stat -c '%y' "$LOG_FILE" 2>/dev/null | cut -d'.' -f1 || stat -f '%Sm' "$LOG_FILE" 2>/dev/null || echo "?")
+
+  local error_count fail_count
+  error_count=$(grep -c -E "ERROR:" "$LOG_FILE" 2>/dev/null || echo "0")
+  fail_count=$(grep -c -E "FAIL:" "$LOG_FILE" 2>/dev/null || echo "0")
+
+  if [[ "$OUTPUT" == "json" ]]; then
+    echo "{\"tool\":\"flog\",\"version\":\"$VERSION\",\"file\":\"$LOG_FILE\",\"size\":\"$size\",\"lines\":$lines,\"modified\":\"$modified\",\"errors\":$error_count,\"fails\":$fail_count}"
+  else
+    echo "Log Info: $LOG_FILE"
+    echo "  Size:     $size"
+    echo "  Lines:    $lines"
+    echo "  Modified: $modified"
+    echo "  Errors:   $error_count"
+    echo "  Fails:    $fail_count"
+  fi
+}
+
+cmd_tower() {
+  # Extract tower status from log
+  # Two plugin types: radi_status_plugin (production) vs light_tower_plugin (NPI/radi117)
+  local tower_line=""
+  local status=""
+  local timestamp=""
+
+  # Try radi_status_plugin first (production RADis)
+  tower_line=$(grep "radi_status_plugin" "$LOG_FILE" 2>/dev/null | tail -1 || true)
+  if [[ -n "$tower_line" ]]; then
+    # Format: 'light_tower': 'yellow'
+    status=$(echo "$tower_line" | sed -n "s/.*light_tower': '\([^']*\)'.*/\1/p" 2>/dev/null || true)
+    timestamp=$(echo "$tower_line" | cut -d',' -f1 || true)
+  fi
+
+  # Try light_tower_plugin if not found (NPI RADis like radi117)
+  if [[ -z "$status" ]]; then
+    tower_line=$(grep "light_tower_plugin" "$LOG_FILE" 2>/dev/null | tail -1 || true)
+    if [[ -n "$tower_line" ]]; then
+      # Format: 'sequencer_state': <LightState.YELLOW: 2>
+      status=$(echo "$tower_line" | sed -n "s/.*sequencer_state.: <LightState\.\([A-Z]*\):.*/\1/p" 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)
+      timestamp=$(echo "$tower_line" | cut -d',' -f1 || true)
+    fi
+  fi
+
+  status="${status:-NO_DATA}"
+  timestamp="${timestamp:-unknown}"
+
+  if [[ "$OUTPUT" == "json" ]]; then
+    echo "{\"tool\":\"flog\",\"version\":\"$VERSION\",\"tower\":\"$status\",\"timestamp\":\"$timestamp\"}"
+  elif [[ "$OUTPUT" == "slim" ]]; then
+    echo "$status"
+  else
+    echo "Tower Status: $status"
+    echo "Last Update:  $timestamp"
+  fi
+}
+
+cmd_tail() {
+  if [[ "$OUTPUT" == "json" ]]; then
+    die "JSON output not supported for tail (use snapshot instead)"
+  fi
+
+  if [[ "$OUTPUT" == "pretty" || "$OUTPUT" == "npi" ]]; then
+    echo "=== flog: Live stream (Ctrl+C to stop) ==="
+    echo "File: $LOG_FILE"
+    echo ""
+  fi
+
+  if (( RAW_MODE == 1 )); then
+    tail -f "$LOG_FILE" | grep --line-buffered -E "$ACTIVE_INCLUDE" | grep --line-buffered -v -E "$ACTIVE_EXCLUDE"
+  elif [[ "$OUTPUT" == "slim" ]]; then
+    tail -f "$LOG_FILE" | grep --line-buffered -E "$ACTIVE_INCLUDE" | grep --line-buffered -v -E "$ACTIVE_EXCLUDE" | clean_line_slim
+  elif [[ "$OUTPUT" == "npi" ]]; then
+    tail -f "$LOG_FILE" | grep --line-buffered -E "$ACTIVE_INCLUDE" | grep --line-buffered -v -E "$ACTIVE_EXCLUDE" | clean_line_npi
+  else
+    tail -f "$LOG_FILE" | grep --line-buffered -E "$ACTIVE_INCLUDE" | grep --line-buffered -v -E "$ACTIVE_EXCLUDE" | clean_line_pretty
+  fi
+}
+
+cmd_snapshot() {
+  local filtered_lines
+
+  # Get more lines than needed to account for filtering
+  local fetch_lines=$(( LINES * 10 ))
+  (( fetch_lines < 1000 )) && fetch_lines=1000
+
+  if (( RAW_MODE == 1 )); then
+    mapfile -t filtered_lines < <(tail -n "$fetch_lines" "$LOG_FILE" | grep -E "$ACTIVE_INCLUDE" | grep -v -E "$ACTIVE_EXCLUDE" | tail -n "$LINES")
+  elif [[ "$OUTPUT" == "slim" ]]; then
+    mapfile -t filtered_lines < <(tail -n "$fetch_lines" "$LOG_FILE" | grep -E "$ACTIVE_INCLUDE" | grep -v -E "$ACTIVE_EXCLUDE" | clean_line_slim | tail -n "$LINES")
+  elif [[ "$OUTPUT" == "npi" ]]; then
+    mapfile -t filtered_lines < <(tail -n "$fetch_lines" "$LOG_FILE" | grep -E "$ACTIVE_INCLUDE" | grep -v -E "$ACTIVE_EXCLUDE" | clean_line_npi | tail -n "$LINES")
+  else
+    mapfile -t filtered_lines < <(tail -n "$fetch_lines" "$LOG_FILE" | grep -E "$ACTIVE_INCLUDE" | grep -v -E "$ACTIVE_EXCLUDE" | clean_line_pretty | tail -n "$LINES")
+  fi
+
+  local count=${#filtered_lines[@]}
+
+  if [[ "$OUTPUT" == "json" ]]; then
+    echo -n "{\"tool\":\"flog\",\"version\":\"$VERSION\",\"mode\":\"snapshot\",\"requested\":$LINES,\"returned\":$count,\"lines\":["
+    local first=1
+    for line in "${filtered_lines[@]+"${filtered_lines[@]}"}"; do
+      (( first )) || echo -n ","
+      first=0
+      echo -n "\"$(echo "$line" | json_escape)\""
+    done
+    echo "]}"
+  else
+    [[ "$OUTPUT" == "pretty" || "$OUTPUT" == "npi" ]] && echo "=== flog: Snapshot (last $count filtered lines) ===" && echo ""
+    for line in "${filtered_lines[@]+"${filtered_lines[@]}"}"; do
+      echo "$line"
+    done
+  fi
+}
+
+cmd_errors() {
+  local error_lines
+
+  local fetch_lines=$(( LINES * 20 ))
+  (( fetch_lines < 2000 )) && fetch_lines=2000
+
+  if (( RAW_MODE == 1 )); then
+    mapfile -t error_lines < <(tail -n "$fetch_lines" "$LOG_FILE" | grep -E "FAIL:|ERROR:|WARNING:" | tail -n "$LINES")
+  elif [[ "$OUTPUT" == "slim" ]]; then
+    mapfile -t error_lines < <(tail -n "$fetch_lines" "$LOG_FILE" | grep -E "FAIL:|ERROR:|WARNING:" | clean_line_slim | tail -n "$LINES")
+  elif [[ "$OUTPUT" == "npi" ]]; then
+    mapfile -t error_lines < <(tail -n "$fetch_lines" "$LOG_FILE" | grep -E "FAIL:|ERROR:|WARNING:" | clean_line_npi | tail -n "$LINES")
+  else
+    mapfile -t error_lines < <(tail -n "$fetch_lines" "$LOG_FILE" | grep -E "FAIL:|ERROR:|WARNING:" | clean_line_pretty | tail -n "$LINES")
+  fi
+
+  local count=${#error_lines[@]}
+
+  if [[ "$OUTPUT" == "json" ]]; then
+    echo -n "{\"tool\":\"flog\",\"version\":\"$VERSION\",\"mode\":\"errors\",\"requested\":$LINES,\"returned\":$count,\"lines\":["
+    local first=1
+    for line in "${error_lines[@]+"${error_lines[@]}"}"; do
+      (( first )) || echo -n ","
+      first=0
+      echo -n "\"$(echo "$line" | json_escape)\""
+    done
+    echo "]}"
+  else
+    [[ "$OUTPUT" == "pretty" || "$OUTPUT" == "npi" ]] && echo "=== flog: Errors/Warnings (last $count) ===" && echo ""
+    for line in "${error_lines[@]+"${error_lines[@]}"}"; do
+      echo "$line"
+    done
+  fi
+}
+
+cmd_search() {
+  [[ -z "$PATTERN" ]] && die "search requires a pattern"
+
+  local search_lines
+
+  if (( RAW_MODE == 1 )); then
+    mapfile -t search_lines < <(grep -E "$ACTIVE_INCLUDE" "$LOG_FILE" | grep -v -E "$ACTIVE_EXCLUDE" | grep -i -E "$PATTERN" | tail -n "$LINES")
+  elif [[ "$OUTPUT" == "slim" ]]; then
+    mapfile -t search_lines < <(grep -E "$ACTIVE_INCLUDE" "$LOG_FILE" | grep -v -E "$ACTIVE_EXCLUDE" | grep -i -E "$PATTERN" | clean_line_slim | tail -n "$LINES")
+  elif [[ "$OUTPUT" == "npi" ]]; then
+    mapfile -t search_lines < <(grep -E "$ACTIVE_INCLUDE" "$LOG_FILE" | grep -v -E "$ACTIVE_EXCLUDE" | grep -i -E "$PATTERN" | clean_line_npi | tail -n "$LINES")
+  else
+    mapfile -t search_lines < <(grep -E "$ACTIVE_INCLUDE" "$LOG_FILE" | grep -v -E "$ACTIVE_EXCLUDE" | grep -i -E "$PATTERN" | clean_line_pretty | tail -n "$LINES")
+  fi
+
+  local count=${#search_lines[@]}
+
+  if [[ "$OUTPUT" == "json" ]]; then
+    echo -n "{\"tool\":\"flog\",\"version\":\"$VERSION\",\"mode\":\"search\",\"pattern\":\"$(echo "$PATTERN" | json_escape)\",\"returned\":$count,\"lines\":["
+    local first=1
+    for line in "${search_lines[@]+"${search_lines[@]}"}"; do
+      (( first )) || echo -n ","
+      first=0
+      echo -n "\"$(echo "$line" | json_escape)\""
+    done
+    echo "]}"
+  else
+    [[ "$OUTPUT" == "pretty" || "$OUTPUT" == "npi" ]] && echo "=== flog: Search '$PATTERN' ($count matches) ===" && echo ""
+    for line in "${search_lines[@]+"${search_lines[@]}"}"; do
+      echo "$line"
+    done
+  fi
+}
+
+# -------------------------
+# Main
+# -------------------------
+case "$COMMAND" in
+  tail)     cmd_tail ;;
+  snapshot) cmd_snapshot ;;
+  errors)   cmd_errors ;;
+  search)   cmd_search ;;
+  tower)    cmd_tower ;;
+  info)     cmd_info ;;
+  "")
+    # Default: show snapshot
+    cmd_snapshot
+    ;;
+  *)
+    die "Unknown command: $COMMAND (try --help)"
+    ;;
+esac
