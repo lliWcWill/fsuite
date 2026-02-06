@@ -49,7 +49,11 @@ _fsuite_record_telemetry() {
   # Sanitize project name: alphanumeric + safe chars, then JSON-escape
   local pn=""
   if [[ -n "${ABS_TARGET:-}" ]]; then
-    pn=$(basename "$ABS_TARGET" | tr -cd '[:alnum:]. _-')
+    if type _fsuite_infer_project_name &>/dev/null; then
+      pn=$(_fsuite_infer_project_name "$ABS_TARGET")
+    else
+      pn=$(basename "$ABS_TARGET" | tr -cd '[:alnum:]. _-')
+    fi
     # JSON-escape any remaining special chars (backslash, quotes)
     pn=$(printf '%s' "$pn" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')
   fi
@@ -824,6 +828,12 @@ render_recon_json() {
   echo -n "\"version\":\"$VERSION\","
   echo -n "\"mode\":\"recon\","
   echo -n "\"backend\":\"find/du/stat\","
+  local _end_ms _dur_ms
+  _end_ms=$(date +%s%3N 2>/dev/null || echo 0)
+  [[ "$_end_ms" =~ ^[0-9]+$ ]] || _end_ms=0
+  _dur_ms=$(( _end_ms - _TELEM_START_MS ))
+  (( _dur_ms < 0 )) && _dur_ms=0
+  echo -n "\"duration_ms\":$_dur_ms,"
   echo -n "\"path\":\"$(printf "%s" "$ABS_TARGET" | json_escape)\","
   echo -n "\"recon_depth\":$RECON_DEPTH,"
   echo -n "\"budget_seconds\":$BUDGET,"
@@ -1033,6 +1043,7 @@ tree_lines_json() {
 # $1: include_lines (0 or 1). When 1, appends "lines" field.
 emit_tree_json_object() {
   local include_lines="${1:-0}"
+  local emit_duration="${2:-1}"
   local total_lines=${#TREE_BODY_LINES[@]}
   local shown_lines="$total_lines"
   local truncated="false"
@@ -1049,6 +1060,14 @@ emit_tree_json_object() {
   echo -n "\"version\":\"$VERSION\","
   echo -n "\"mode\":\"tree\","
   echo -n "\"backend\":\"tree\","
+  if (( emit_duration == 1 )); then
+    local _end_ms _dur_ms
+    _end_ms=$(date +%s%3N 2>/dev/null || echo 0)
+    [[ "$_end_ms" =~ ^[0-9]+$ ]] || _end_ms=0
+    _dur_ms=$(( _end_ms - _TELEM_START_MS ))
+    (( _dur_ms < 0 )) && _dur_ms=0
+    echo -n "\"duration_ms\":$_dur_ms,"
+  fi
   echo -n "\"path\":\"$(printf "%s" "$ABS_TARGET" | json_escape)\","
   echo -n "\"depth\":$DEPTH,"
   echo -n "\"filelimit\":$FILELIMIT,"
@@ -1155,16 +1174,24 @@ run_snapshot_json() {
   tree_build_args
   tree_capture_body_and_counts
 
+  # Capture snapshot duration after all work is done (recon + tree build)
+  local _snap_end_ms _snap_dur_ms
+  _snap_end_ms=$(date +%s%3N 2>/dev/null || echo 0)
+  [[ "$_snap_end_ms" =~ ^[0-9]+$ ]] || _snap_end_ms=0
+  _snap_dur_ms=$(( _snap_end_ms - _TELEM_START_MS ))
+  (( _snap_dur_ms < 0 )) && _snap_dur_ms=0
+
   # Emit snapshot JSON envelope with tree object embedded
   echo -n "{"
   echo -n "\"tool\":\"ftree\","
   echo -n "\"version\":\"$VERSION\","
   echo -n "\"mode\":\"snapshot\","
+  echo -n "\"duration_ms\":$_snap_dur_ms,"
   echo -n "\"path\":\"$(printf "%s" "$ABS_TARGET" | json_escape)\","
   echo -n "\"snapshot\":{"
   echo -n "\"recon\":$recon_json_str,"
   echo -n "\"tree\":"
-  emit_tree_json_object $(( NO_LINES == 0 ))
+  emit_tree_json_object $(( NO_LINES == 0 )) 0
   echo -n "}}"
   echo
 }

@@ -55,7 +55,11 @@ _fsuite_record_telemetry() {
   if [[ -n "${SEARCH_PATH:-}" ]]; then
     local abs_pn
     abs_pn=$(cd "$SEARCH_PATH" 2>/dev/null && pwd) || abs_pn="$SEARCH_PATH"
-    pn=$(basename "$abs_pn" | tr -cd '[:alnum:]. _-')
+    if type _fsuite_infer_project_name &>/dev/null; then
+      pn=$(_fsuite_infer_project_name "$abs_pn")
+    else
+      pn=$(basename "$abs_pn" | tr -cd '[:alnum:]. _-')
+    fi
   fi
   if [[ -n "${_TELEM_PROJECT_NAME:-}" ]]; then
     pn=$(printf '%s' "$_TELEM_PROJECT_NAME" | tr -cd '[:alnum:]. _-')

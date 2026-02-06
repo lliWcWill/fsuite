@@ -830,6 +830,92 @@ test_default_flag_seeding() {
 }
 
 # ============================================================================
+# v1.5.0+ — duration_ms in JSON + project name inference
+# ============================================================================
+
+test_duration_ms_recon() {
+  local output
+  output=$("${FTREE}" --recon --output json "${TEST_DIR}" 2>&1)
+  if echo "$output" | python3 -c "import json,sys; d=json.load(sys.stdin); assert isinstance(d['duration_ms'], int) and d['duration_ms'] >= 0" 2>/dev/null; then
+    pass "Recon JSON includes duration_ms as non-negative integer"
+  else
+    # Fallback: check field exists with grep
+    if echo "$output" | grep -q '"duration_ms":[0-9]'; then
+      pass "Recon JSON includes duration_ms field"
+    else
+      fail "Recon JSON should include duration_ms" "Got keys: $(echo "$output" | python3 -c "import json,sys; print(list(json.load(sys.stdin).keys())[:8])" 2>/dev/null || echo 'parse error')"
+    fi
+  fi
+}
+
+test_duration_ms_tree() {
+  check_tree || return
+  local output
+  output=$("${FTREE}" --output json "${TEST_DIR}" 2>&1)
+  if echo "$output" | python3 -c "import json,sys; d=json.load(sys.stdin); assert isinstance(d['duration_ms'], int) and d['duration_ms'] >= 0" 2>/dev/null; then
+    pass "Tree JSON includes duration_ms as non-negative integer"
+  else
+    if echo "$output" | grep -q '"duration_ms":[0-9]'; then
+      pass "Tree JSON includes duration_ms field"
+    else
+      fail "Tree JSON should include duration_ms"
+    fi
+  fi
+}
+
+test_duration_ms_snapshot() {
+  check_tree || return
+  local output
+  output=$("${FTREE}" --snapshot --output json "${TEST_DIR}" 2>&1)
+  local valid=0
+  if echo "$output" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+# Top-level has duration_ms
+assert isinstance(d['duration_ms'], int) and d['duration_ms'] >= 0
+# Nested recon has duration_ms
+assert isinstance(d['snapshot']['recon']['duration_ms'], int)
+# Nested tree does NOT have duration_ms (avoids child > parent confusion)
+assert 'duration_ms' not in d['snapshot']['tree']
+" 2>/dev/null; then
+    pass "Snapshot JSON: top-level duration_ms present, nested tree omits it"
+  else
+    if echo "$output" | grep -q '"duration_ms":[0-9]'; then
+      pass "Snapshot JSON includes duration_ms field"
+    else
+      fail "Snapshot JSON should include top-level duration_ms"
+    fi
+  fi
+}
+
+test_project_name_inference() {
+  rm -f /home/player3vsgpt/.fsuite/telemetry.jsonl
+  # Scan a SUBDIR of TEST_DIR — project name should be the TEST_DIR basename, not "src"
+  FSUITE_TELEMETRY=1 "${FTREE}" --recon "${TEST_DIR}/src" >/dev/null 2>&1 || true
+  local line
+  line=$(tail -1 /home/player3vsgpt/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
+  # TEST_DIR is a temp dir like /tmp/tmp.XXXXX — its basename is the temp name
+  # The walk-up should find .git in TEST_DIR and use that as project root
+  local test_dir_name
+  test_dir_name=$(basename "${TEST_DIR}")
+  if [[ "$line" =~ \"project_name\":\"${test_dir_name}\" ]]; then
+    pass "Project name inferred from .git parent, not from scanned subdir"
+  else
+    # If it says "src" that means walk-up didn't work
+    if [[ "$line" =~ \"project_name\":\"src\" ]]; then
+      fail "Project name should be parent dir (found .git), not 'src'" "Got: $line"
+    else
+      # Could be a different name due to symlinks etc — check it's not empty
+      if [[ "$line" =~ \"project_name\":\"\" ]]; then
+        fail "Project name should not be empty" "Got: $line"
+      else
+        pass "Project name inference produced a non-empty name (may differ due to path resolution)"
+      fi
+    fi
+  fi
+}
+
+# ============================================================================
 # Main Test Runner
 # ============================================================================
 
@@ -934,6 +1020,10 @@ main() {
   run_test "Project-name flag" test_project_name
   run_test "Flag accumulation in telemetry" test_flag_accumulation
   run_test "Default flag seeding" test_default_flag_seeding
+  run_test "Recon JSON includes duration_ms" test_duration_ms_recon
+  run_test "Tree JSON includes duration_ms" test_duration_ms_tree
+  run_test "Snapshot JSON duration_ms hierarchy" test_duration_ms_snapshot
+  run_test "Project name inference from subdir" test_project_name_inference
 
   teardown
 

@@ -509,6 +509,68 @@ test_v15_predict_tool_filter() {
 }
 
 # ============================================================================
+# v1.5.0+ — Project Name Inference (walk-up heuristic)
+# ============================================================================
+
+test_v15_project_name_walkup() {
+  # Create a project with .git inside TEST_DIR
+  local proj_dir="${TEST_DIR}/myproject"
+  mkdir -p "${proj_dir}/.git"
+  mkdir -p "${proj_dir}/src/deep/nested"
+  echo "hello" > "${proj_dir}/src/deep/nested/file.txt"
+
+  # Scan the deeply nested subdir — project name should be "myproject", not "nested"
+  rm -f /home/player3vsgpt/.fsuite/telemetry.jsonl
+  FSUITE_TELEMETRY=1 "${FTREE}" --recon "${proj_dir}/src/deep/nested" >/dev/null 2>&1 || true
+  local line
+  line=$(tail -1 /home/player3vsgpt/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
+  if [[ "$line" =~ \"project_name\":\"myproject\" ]]; then
+    pass "ftree: walk-up finds .git and uses project root name"
+  else
+    fail "ftree should infer project_name='myproject' from .git" "Got: $line"
+    return
+  fi
+
+  # Test fsearch on the same subdir
+  rm -f /home/player3vsgpt/.fsuite/telemetry.jsonl
+  FSUITE_TELEMETRY=1 "${FSEARCH}" --output paths "*.txt" "${proj_dir}/src/deep/nested" >/dev/null 2>&1 || true
+  line=$(tail -1 /home/player3vsgpt/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
+  if [[ "$line" =~ \"project_name\":\"myproject\" ]]; then
+    pass "fsearch: walk-up finds .git and uses project root name"
+  else
+    fail "fsearch should infer project_name='myproject'" "Got: $line"
+    return
+  fi
+
+  # Test fcontent on the same subdir
+  rm -f /home/player3vsgpt/.fsuite/telemetry.jsonl
+  FSUITE_TELEMETRY=1 "${FCONTENT}" "hello" "${proj_dir}/src/deep/nested" >/dev/null 2>&1 || true
+  line=$(tail -1 /home/player3vsgpt/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
+  if [[ "$line" =~ \"project_name\":\"myproject\" ]]; then
+    pass "fcontent: walk-up finds .git and uses project root name"
+  else
+    fail "fcontent should infer project_name='myproject'" "Got: $line"
+  fi
+}
+
+test_v15_project_name_fallback() {
+  # Create a dir with NO project markers
+  local plain_dir="${TEST_DIR}/plaindir"
+  mkdir -p "${plain_dir}"
+  echo "data" > "${plain_dir}/file.txt"
+
+  rm -f /home/player3vsgpt/.fsuite/telemetry.jsonl
+  FSUITE_TELEMETRY=1 "${FTREE}" --recon "${plain_dir}" >/dev/null 2>&1 || true
+  local line
+  line=$(tail -1 /home/player3vsgpt/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
+  if [[ "$line" =~ \"project_name\":\"plaindir\" ]]; then
+    pass "Fallback: basename used when no project markers found"
+  else
+    fail "Should fall back to basename 'plaindir'" "Got: $line"
+  fi
+}
+
+# ============================================================================
 # Main Test Runner
 # ============================================================================
 
@@ -586,6 +648,11 @@ main() {
   run_test "fmetrics --self-check shows python3 status" test_v15_selfcheck_python3
   run_test "fmetrics --self-check shows predict script" test_v15_selfcheck_predict
   run_test "fmetrics predict --tool filter" test_v15_predict_tool_filter
+
+  echo ""
+  echo "== v1.5.0+: Project Name Inference =="
+  run_test "Walk-up heuristic across all tools" test_v15_project_name_walkup
+  run_test "Basename fallback without markers" test_v15_project_name_fallback
 
   teardown
 

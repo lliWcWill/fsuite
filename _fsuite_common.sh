@@ -543,3 +543,32 @@ _fsuite_hw_json_fields() {
 
   echo "\"cpu_temp_mc\":${_FSUITE_HW_CPU_TEMP_MC:--1},\"disk_temp_mc\":${_FSUITE_HW_DISK_TEMP_MC:--1},\"ram_total_kb\":${_FSUITE_HW_RAM_TOTAL_KB:--1},\"ram_available_kb\":${_FSUITE_HW_RAM_AVAIL_KB:--1},\"load_avg_1m\":\"${_FSUITE_HW_LOAD_AVG_1M:--1}\",\"filesystem_type\":\"${_FSUITE_HW_FILESYSTEM_TYPE:-unknown}\",\"storage_type\":\"${_FSUITE_HW_STORAGE_TYPE:-unknown}\""
 }
+
+# -------------------------
+# Project Name Inference
+# -------------------------
+# Walks up from a path looking for project root markers (.git, package.json, etc.)
+# Returns basename of the project root, or basename of the input path as fallback.
+# $1 = absolute path to start from
+_fsuite_infer_project_name() {
+  local start_path="${1:-.}"
+
+  # Edge case: root path has no meaningful project name
+  [[ "$start_path" == "/" ]] && return 0
+
+  local walk="$start_path"
+
+  while [[ "$walk" != "/" ]]; do
+    if [[ -d "$walk/.git" ]] || [[ -f "$walk/package.json" ]] || \
+       [[ -f "$walk/Cargo.toml" ]] || [[ -f "$walk/go.mod" ]] || \
+       [[ -f "$walk/pyproject.toml" ]] || [[ -f "$walk/setup.py" ]] || \
+       [[ -f "$walk/.project" ]] || [[ -f "$walk/Makefile" ]]; then
+      basename "$walk" | tr -cd '[:alnum:]. _-'
+      return 0
+    fi
+    walk=$(dirname "$walk")
+  done
+
+  # Fallback: basename of original path
+  basename "$start_path" | tr -cd '[:alnum:]. _-'
+}
