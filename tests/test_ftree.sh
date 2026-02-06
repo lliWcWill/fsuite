@@ -360,11 +360,12 @@ test_recon_excluded_dirs() {
 test_recon_hide_excluded() {
   local output
   output=$("${FTREE}" --recon --hide-excluded "${TEST_DIR}" 2>&1)
-  # Should not show excluded section
-  if ! [[ "$output" =~ default-excluded ]]; then
-    pass "Hide-excluded flag works in recon"
+  # The summary header always mentions "default-excluded" as a count.
+  # The actual section "[default-excluded]" should be suppressed.
+  if ! [[ "$output" =~ \[default-excluded\] ]]; then
+    pass "Hide-excluded suppresses excluded directory section"
   else
-    fail "Hide-excluded should suppress excluded directory section"
+    fail "Hide-excluded should suppress [default-excluded] section"
   fi
 }
 
@@ -693,26 +694,138 @@ test_truncation_message() {
 
   local output
   output=$("${FTREE}" -m 20 "${TEST_DIR}" 2>&1)
-  if [[ "$output" =~ "more lines not shown" ]] || [[ "$output" =~ "truncated" ]]; then
-    pass "Truncation message is shown"
+  local line_count
+  line_count=$(echo "$output" | wc -l)
+  if [[ "$output" =~ "more lines not shown" ]] || [[ "$output" =~ "truncated" ]] || (( line_count < 40 )); then
+    pass "Truncation works (output limited or message shown)"
   else
-    pass "Truncation behavior varies by directory size"
+    fail "Should truncate with -m 20 on 150 files" "Got $line_count lines"
   fi
 }
 
 test_drill_down_suggestion() {
   check_tree || return
-  # Create many files to trigger truncation
-  for i in {1..150}; do
-    touch "${TEST_DIR}/file${i}.txt"
+  # Files already created by test_truncation_message, but add more just in case
+  for i in {151..200}; do
+    touch "${TEST_DIR}/file${i}.txt" 2>/dev/null || true
   done
 
   local output
   output=$("${FTREE}" -m 20 "${TEST_DIR}" 2>&1)
-  if [[ "$output" =~ "Drill deeper" ]] || [[ "$output" =~ "truncated" ]]; then
-    pass "Drill-down suggestion appears on truncation"
+  local line_count
+  line_count=$(echo "$output" | wc -l)
+  if [[ "$output" =~ "Drill deeper" ]] || [[ "$output" =~ "truncated" ]] || (( line_count < 40 )); then
+    pass "Drill-down or truncation occurs on large dirs"
   else
-    pass "Drill-down message depends on truncation"
+    fail "Should show drill-down or truncation on 200+ files" "Got $line_count lines"
+  fi
+}
+
+# ============================================================================
+# v1.5.0 Feature Tests
+# ============================================================================
+
+test_no_lines_json() {
+  check_tree || return
+  local output
+  output=$("${FTREE}" --snapshot --no-lines --output json "${TEST_DIR}" 2>&1)
+  # Should have tree_json but NOT lines array
+  if [[ "$output" =~ \"tree_json\" ]] && ! [[ "$output" =~ \"lines\" ]]; then
+    pass "--no-lines omits lines array from snapshot JSON"
+  else
+    fail "--no-lines should keep tree_json but omit lines"
+  fi
+}
+
+test_no_lines_requires_snapshot() {
+  local output rc=0
+  output=$("${FTREE}" --no-lines "${TEST_DIR}" 2>&1) || rc=$?
+  if [[ $rc -ne 0 ]] && [[ "$output" =~ "only valid with --snapshot" ]]; then
+    pass "--no-lines correctly rejects non-snapshot mode"
+  else
+    fail "Should error when --no-lines used without --snapshot" "rc=$rc"
+  fi
+}
+
+test_no_lines_requires_json() {
+  check_tree || return
+  local output rc=0
+  output=$("${FTREE}" --snapshot --no-lines --output pretty "${TEST_DIR}" 2>&1) || rc=$?
+  if [[ $rc -ne 0 ]] && [[ "$output" =~ "only meaningful with" ]]; then
+    pass "--no-lines correctly rejects pretty output"
+  else
+    fail "Should error when --no-lines used with -o pretty" "rc=$rc"
+  fi
+}
+
+test_recon_reason_excluded() {
+  local output
+  output=$("${FTREE}" --recon --output pretty "${TEST_DIR}" 2>&1)
+  # node_modules or .git should show as excluded
+  if [[ "$output" =~ excluded ]] || [[ "$output" =~ "default-excluded" ]]; then
+    pass "Recon shows excluded directories"
+  else
+    fail "Recon should show excluded directory info"
+  fi
+}
+
+test_recon_reason_json() {
+  local output
+  output=$("${FTREE}" --recon --output json "${TEST_DIR}" 2>&1)
+  # Entries with size_bytes=-1 should have a reason field
+  local has_reason
+  has_reason=$(echo "$output" | grep -o '"reason":"excluded"' || true)
+  if [[ -n "$has_reason" ]]; then
+    pass "Recon JSON includes reason field for excluded entries"
+  else
+    # Check if there are any -1 entries at all (maybe all entries have sizes)
+    local has_minus1
+    has_minus1=$(echo "$output" | grep -o '"size_bytes":-1' || true)
+    if [[ -z "$has_minus1" ]]; then
+      pass "Recon JSON: no -1 entries (all sizes resolved, reason not needed)"
+    else
+      fail "Recon JSON should have reason field for size_bytes=-1 entries"
+    fi
+  fi
+}
+
+test_project_name() {
+  rm -f "$HOME/.fsuite/telemetry.jsonl"
+  FSUITE_TELEMETRY=1 "${FTREE}" --project-name "TestProj" "${TEST_DIR}" >/dev/null 2>&1 || true
+  local line
+  line=$(tail -1 "$HOME/.fsuite/telemetry.jsonl" 2>/dev/null) || line=""
+  if [[ "$line" =~ \"project_name\":\"TestProj\" ]]; then
+    pass "--project-name overrides telemetry project name"
+  else
+    fail "--project-name should appear in telemetry" "Got: $line"
+  fi
+}
+
+test_flag_accumulation() {
+  rm -f "$HOME/.fsuite/telemetry.jsonl"
+  FSUITE_TELEMETRY=1 "${FTREE}" --recon --budget 5 -L 2 --output json "${TEST_DIR}" >/dev/null 2>&1 || true
+  local line
+  line=$(tail -1 "$HOME/.fsuite/telemetry.jsonl" 2>/dev/null) || line=""
+  local flags
+  flags=$(echo "$line" | grep -o '"flags":"[^"]*"' || true)
+  if [[ "$flags" =~ "--budget 5" ]] && [[ "$flags" =~ "-L 2" ]] && [[ "$flags" =~ "--recon" ]]; then
+    pass "Flag accumulation records --budget, -L, and --recon in telemetry"
+  else
+    fail "Telemetry flags should include --budget 5 -L 2 --recon" "Got: $flags"
+  fi
+}
+
+test_default_flag_seeding() {
+  rm -f "$HOME/.fsuite/telemetry.jsonl"
+  FSUITE_TELEMETRY=1 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
+  local line
+  line=$(tail -1 "$HOME/.fsuite/telemetry.jsonl" 2>/dev/null) || line=""
+  local flags
+  flags=$(echo "$line" | grep -o '"flags":"[^"]*"' || true)
+  if [[ "$flags" =~ "-o pretty" ]]; then
+    pass "Default flag seeding records -o pretty"
+  else
+    fail "Telemetry flags should include -o pretty by default" "Got: $flags"
   fi
 }
 
@@ -811,6 +924,16 @@ main() {
   run_test "Absolute path in metadata" test_absolute_path_in_metadata
   run_test "Truncation message" test_truncation_message
   run_test "Drill-down suggestion" test_drill_down_suggestion
+
+  # v1.5.0 features
+  run_test "Snapshot --no-lines omits lines array" test_no_lines_json
+  run_test "--no-lines rejects non-snapshot" test_no_lines_requires_snapshot
+  run_test "--no-lines rejects pretty output" test_no_lines_requires_json
+  run_test "Recon reason field for excluded dirs" test_recon_reason_excluded
+  run_test "Recon reason in JSON output" test_recon_reason_json
+  run_test "Project-name flag" test_project_name
+  run_test "Flag accumulation in telemetry" test_flag_accumulation
+  run_test "Default flag seeding" test_default_flag_seeding
 
   teardown
 

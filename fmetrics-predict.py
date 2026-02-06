@@ -19,7 +19,7 @@ import sys
 from contextlib import closing
 from typing import Dict, List, Optional, Tuple
 
-VERSION = "1.4.0"
+VERSION = "1.5.0"
 DEFAULT_K = 5
 MIN_SAMPLES = 5
 
@@ -196,6 +196,8 @@ def main():
     parser.add_argument("--bytes", type=int, default=-1, help="Target bytes_scanned")
     parser.add_argument("--depth", type=int, default=3, help="Target depth")
     parser.add_argument("--k", type=int, default=DEFAULT_K, help="Number of neighbors")
+    parser.add_argument("--tool", choices=["ftree", "fsearch", "fcontent"], default=None,
+                        help="Predict for specific tool only")
     parser.add_argument("--output", choices=["json", "pretty"], default="json")
     parser.add_argument("--version", action="version", version=f"fmetrics-predict {VERSION}")
     args = parser.parse_args()
@@ -209,7 +211,7 @@ def main():
                 "SELECT COUNT(*) FROM telemetry WHERE exit_code=0"
             ).fetchone()[0]
 
-            tools = ["ftree", "fsearch", "fcontent"]
+            tools = [args.tool] if args.tool else ["ftree", "fsearch", "fcontent"]
             predictions = []
 
             for tool in tools:

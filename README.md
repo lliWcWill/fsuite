@@ -352,7 +352,7 @@ All three tools support three output modes via `--output` / `-o`:
   "entries": [
     {"name": "src", "type": "directory", "items_total": 234, "size_bytes": 1258291, "size_human": "1.2M", "excluded": false},
     {"name": "package.json", "type": "file", "size_bytes": 2355, "size_human": "2.3K", "excluded": false},
-    {"name": "node_modules", "type": "directory", "items_total": 1847, "size_bytes": 207618048, "size_human": "198M", "excluded": true}
+    {"name": "node_modules", "type": "directory", "items_total": 1847, "size_bytes": -1, "size_human": "?", "reason": "excluded", "excluded": true}
   ]
 }
 ```
@@ -418,6 +418,7 @@ Copy-paste ready. Every command runs headless (no prompts, no TTY needed) unless
 | `fsearch --self-check` | Show which backends are available |
 | `fsearch --install-hints` | Print install commands for `fd` and `rg` |
 | `fsearch --version` | Print version |
+| `fsearch --project-name "MyApp" '*.py' /project` | Override project name in telemetry |
 | `fsearch -q '*.py' /project` | Quiet mode — exit code only, no output |
 | `fsearch -i` | **Interactive** — prompts for pattern and path |
 
@@ -438,6 +439,7 @@ Copy-paste ready. Every command runs headless (no prompts, no TTY needed) unless
 | `fcontent --self-check` | Verify `rg` is installed |
 | `fcontent --install-hints` | Print install command for `rg` |
 | `fcontent --version` | Print version |
+| `fcontent --project-name "MyApp" "TODO" /project` | Override project name in telemetry |
 | `fcontent -q "TODO" /project` | Quiet mode — exit code only (0=found, 1=not found) |
 
 ### `ftree` — Visualize Directory Structure
@@ -466,6 +468,8 @@ Copy-paste ready. Every command runs headless (no prompts, no TTY needed) unless
 | `ftree --self-check` | Verify tree is installed, check `--gitignore` support |
 | `ftree --install-hints` | Print install command for tree |
 | `ftree --version` | Print version |
+| `ftree --snapshot --no-lines -o json /project` | Snapshot JSON without tree.lines array |
+| `ftree --project-name "MyApp" /project` | Override project name in telemetry |
 | `ftree -q /project` | Quiet mode — exit code only |
 
 ### Pipeline — Find Then Grep (the power move)
@@ -532,6 +536,7 @@ These are designed for AI agents, CI pipelines, cron jobs, and automation script
 | `--backend` | `-b` | `auto`, `find`, `fd` | `auto` |
 | `--max` | `-m` | any integer | `50` |
 | `--quiet` | `-q` | — | off |
+| `--project-name` | — | any string | auto-detected |
 | `--interactive` | `-i` | — | off |
 | `--self-check` | — | — | — |
 | `--install-hints` | — | — | — |
@@ -546,6 +551,7 @@ These are designed for AI agents, CI pipelines, cron jobs, and automation script
 | `--max-matches` | `-m` | any integer | `200` |
 | `--max-files` | `-n` | any integer | `2000` |
 | `--quiet` | `-q` | — | off |
+| `--project-name` | — | any string | auto-detected |
 | `--rg-args` | — | quoted string of rg flags | none |
 | `--self-check` | — | — | — |
 | `--install-hints` | — | — | — |
@@ -565,6 +571,8 @@ These are designed for AI agents, CI pipelines, cron jobs, and automation script
 | `--include` | — | pattern (repeatable) | — |
 | `--recon` | `-r` | — | off |
 | `--snapshot` | — | — | off |
+| `--no-lines` | — | — | off |
+| `--project-name` | — | any string | auto-detected |
 | `--recon-depth` | — | any integer | `1` (`2` in snapshot) |
 | `--hide-excluded` | — | — | off |
 | `--dirs-only` | `-d` | — | off |
@@ -655,6 +663,9 @@ fmetrics history --tool ftree --limit 10
 # Predict runtime for a directory
 fmetrics predict /project
 
+# Predict for a specific tool only
+fmetrics predict --tool ftree /project
+
 # View machine profile
 fmetrics profile
 
@@ -696,6 +707,20 @@ sudo ln -s "$(pwd)/ftree" /usr/local/bin/ftree
 ---
 
 ## Changelog
+
+### v1.5.0
+
+New features across all tools:
+
+- **`--project-name <name>`** (all 3 tools): Override project name in telemetry records
+- **`--no-lines`** (ftree): Omit the `lines` array from snapshot JSON output (only valid with `--snapshot -o json`)
+- **`--tool <name>`** (fmetrics predict): Predict for a specific tool only (`ftree`, `fsearch`, `fcontent`)
+- **Recon reason field** (ftree): Entries with `size_bytes: -1` now include a `reason` field (`excluded`, `budget_exceeded`, `timeout`, `stat_failed`)
+- **Telemetry flag accumulation**: All flags passed to tools are now recorded in telemetry (previously only mode + output format)
+- **JSONL safety**: Telemetry flags are sanitized to prevent invalid JSON in telemetry.jsonl
+- **fmetrics `--self-check` enhancement**: Reports python3, predict script, and k-NN availability separately
+- **fcontent stdin project inference**: When piped file paths, infers project from first file's directory (walks up to find .git, package.json, etc.)
+- **Packaging fix**: `fmetrics-predict.py` installs to `/usr/share/fsuite/` with multi-path resolution
 
 ### ftree v1.2.0
 

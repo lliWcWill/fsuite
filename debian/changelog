@@ -1,3 +1,16 @@
+fsuite (1.5.0-1) unstable; urgency=medium
+
+  * --project-name flag for all tools (telemetry override)
+  * --no-lines flag for ftree snapshot JSON
+  * --tool filter for fmetrics predict
+  * Recon reason field for entries with size_bytes=-1
+  * Telemetry flag accumulation with JSONL safety
+  * fmetrics --self-check enhancement (separate python3/predict reporting)
+  * fcontent stdin project inference
+  * Packaging fix: fmetrics-predict.py multi-path resolution
+
+ -- Chess Williams <chess.w.williams@gmail.com>  Fri, 06 Feb 2026 12:00:00 -0600
+
 fsuite (1.4.0-1) unstable; urgency=medium
 
   * Initial Debian packaging

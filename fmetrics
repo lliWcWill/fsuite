@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="1.4.0"
+VERSION="1.5.0"
 
 # -------------------------
 # Paths
@@ -71,6 +71,19 @@ sql_escape() {
   # Escape single quotes for SQL
   val="${val//\'/\'\'}"
   printf '%s' "$val"
+}
+
+_find_predict_script() {
+  local candidates=(
+    "$SCRIPT_DIR/fmetrics-predict.py"
+    "$SCRIPT_DIR/fmetrics-predict"
+    "/usr/share/fsuite/fmetrics-predict.py"
+    "/usr/lib/fsuite/fmetrics-predict.py"
+  )
+  for c in "${candidates[@]}"; do
+    [[ -f "$c" ]] && { printf "%s" "$c"; return 0; }
+  done
+  return 1
 }
 
 # Portable JSON field extraction (no grep -oP / PCRE dependency)
@@ -146,6 +159,9 @@ OPTIONS (history)
   --tool <name>      Filter by tool (ftree, fsearch, fcontent)
   --project <name>   Filter by project name
   --limit <N>        Max rows (default 20)
+
+OPTIONS (predict)
+  --tool <name>      Predict for specific tool only (ftree, fsearch, fcontent)
 
 OPTIONS (clean)
   --days <N>         Keep last N days (default 90)
@@ -406,6 +422,13 @@ cmd_predict() {
   local target="${PREDICT_PATH:-.}"
   [[ -d "$target" ]] || die "Not a directory: $target"
 
+  if [[ -n "${PREDICT_TOOL:-}" ]]; then
+    case "$PREDICT_TOOL" in
+      ftree|fsearch|fcontent) ;;
+      *) die "Invalid --tool for predict: $PREDICT_TOOL (use ftree, fsearch, or fcontent)" ;;
+    esac
+  fi
+
   ensure_db
 
   local count
@@ -442,10 +465,13 @@ cmd_predict() {
   fi
 
   # Check for Python predict helper
-  local predict_py="$SCRIPT_DIR/fmetrics-predict.py"
-  if [[ -f "$predict_py" ]] && has python3; then
+  local predict_py
+  predict_py=$(_find_predict_script) || predict_py=""
+  if [[ -n "$predict_py" ]] && has python3; then
+    local _tool_arg=""
+    [[ -n "${PREDICT_TOOL:-}" ]] && _tool_arg="--tool $PREDICT_TOOL"
     local pred_json
-    pred_json=$(python3 "$predict_py" --db "$DB_FILE" --items "$total_items" --bytes "$total_bytes" --depth 3 --output json 2>/dev/null) || pred_json=""
+    pred_json=$(python3 "$predict_py" --db "$DB_FILE" --items "$total_items" --bytes "$total_bytes" --depth 3 --output json $_tool_arg 2>/dev/null) || pred_json=""
 
     if [[ -n "$pred_json" ]] && ! echo "$pred_json" | grep -q '"error"' 2>/dev/null; then
       if [[ "$OUTPUT" == "json" ]]; then
@@ -460,7 +486,9 @@ cmd_predict() {
         echo ""
         echo "  Estimated Runtimes:"
         local t pred_ms std_ms conf h_pred h_std tool_block
-        for t in ftree fsearch fcontent; do
+        local _predict_tools=(ftree fsearch fcontent)
+        [[ -n "${PREDICT_TOOL:-}" ]] && _predict_tools=("$PREDICT_TOOL")
+        for t in "${_predict_tools[@]}"; do
           # Extract the JSON block for this tool, then parse fields portably
           tool_block=$(echo "$pred_json" | sed -n 's/.*\({"tool"[^}]*"'"$t"'"[^}]*}\).*/\1/p' | head -1) || continue
           [[ -n "$tool_block" ]] || continue
@@ -491,7 +519,9 @@ cmd_predict() {
     echo -n "\"features\":{\"items\":$total_items,\"bytes\":$total_bytes},"
     echo -n "\"predictions\":["
     local first=1 t avg_ms
-    for t in ftree fsearch fcontent; do
+    local _predict_tools=(ftree fsearch fcontent)
+    [[ -n "${PREDICT_TOOL:-}" ]] && _predict_tools=("$PREDICT_TOOL")
+    for t in "${_predict_tools[@]}"; do
       (( first )) || echo -n ","
       first=0
       avg_ms=$(_predict_get_avg "$t")
@@ -506,13 +536,18 @@ cmd_predict() {
     echo ""
     echo "  Estimated Runtimes - based on historical averages:"
     local t avg_ms
-    for t in ftree fsearch fcontent; do
+    local _predict_tools=(ftree fsearch fcontent)
+    [[ -n "${PREDICT_TOOL:-}" ]] && _predict_tools=("$PREDICT_TOOL")
+    for t in "${_predict_tools[@]}"; do
       avg_ms=$(_predict_get_avg "$t")
       printf "    %-12s ~%s\n" "$t" "$(human_ms "$avg_ms")"
     done
-    if ! has python3 || [[ ! -f "$SCRIPT_DIR/fmetrics-predict.py" ]]; then
+    if ! has python3; then
       echo ""
-      echo "  Note: Install python3 for k-NN predictions - more accurate."
+      echo "  Note: Install python3 for k-NN predictions (more accurate)."
+    elif ! _find_predict_script >/dev/null 2>&1; then
+      echo ""
+      echo "  Note: fmetrics-predict.py not found. Reinstall fsuite or check PATH."
     fi
     echo ""
     echo "  Based on $count historical runs"
@@ -607,13 +642,20 @@ self_check() {
   fi
   if has python3; then
     echo "  python3: $(python3 --version 2>&1)"
-    if [[ -f "$SCRIPT_DIR/fmetrics-predict.py" ]]; then
-      echo "  fmetrics-predict.py: found"
-    else
-      echo "  fmetrics-predict.py: NOT FOUND (predictions unavailable)"
-    fi
   else
     echo "  python3: NOT FOUND (predictions unavailable, basic stats still work)"
+  fi
+  local predict_path
+  predict_path=$(_find_predict_script 2>/dev/null) || predict_path=""
+  if [[ -n "$predict_path" ]]; then
+    echo "  fmetrics-predict.py: found at $predict_path"
+  else
+    echo "  fmetrics-predict.py: NOT FOUND (check installation path)"
+  fi
+  if has python3 && [[ -n "$predict_path" ]]; then
+    echo "  k-NN predictions: available"
+  else
+    echo "  k-NN predictions: unavailable"
   fi
   echo "  telemetry.jsonl: $(wc -l < "$JSONL_FILE" 2>/dev/null || echo "0") lines"
   if [[ -f "$DB_FILE" ]]; then
@@ -699,6 +741,7 @@ case "$SUBCOMMAND" in
   predict)
     PREDICT_PATH="${POSITIONAL[1]:-}"
     [[ -n "$PREDICT_PATH" ]] || die "predict requires a path argument"
+    PREDICT_TOOL="$FILTER_TOOL"
     cmd_predict ;;
   import)  cmd_import ;;
   clean)   cmd_clean ;;

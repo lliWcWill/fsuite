@@ -1,6 +1,6 @@
 # ftree — Directory Structure and Recon Tool
 
-**Version:** 1.2.0
+**Version:** 1.5.0
 **Part of:** [fsuite](../README.md)
 **Requires:** `tree` (for tree mode), `find`/`du`/`stat` (for recon mode)
 
@@ -107,6 +107,8 @@ Every command runs headless (no prompts, no TTY needed).
 | `ftree -L 1 /project` | Shallow tree (depth 1) — just top-level entries |
 | `ftree --snapshot /project` | Snapshot: recon inventory + tree excerpt in one output |
 | `ftree --snapshot -o json /project` | Snapshot JSON: combined recon + tree for agents |
+| `ftree --snapshot --no-lines -o json /project` | Snapshot JSON without tree.lines array |
+| `ftree --project-name "MyApp" /project` | Override project name in telemetry |
 
 ### Output formats
 
@@ -319,6 +321,8 @@ Notes:
 - `snapshot.recon` is the **exact same object** as standalone `ftree --recon -o json`. Agents can reuse existing parsers.
 - `snapshot.tree` is the standalone tree JSON object **plus** a `lines` array (text excerpt for LLM context / re-rendering).
 - Default `recon_depth` is 2 in snapshot mode (vs 1 in standalone recon).
+- `--no-lines` omits the `lines` array from `snapshot.tree` (only valid with `--snapshot -o json`). Useful when you only need the `tree_json` structure and want to save bandwidth.
+- Recon entries with `size_bytes: -1` now include a `reason` field explaining why (v1.5.0+).
 
 ### Key JSON fields for agents
 
@@ -331,6 +335,7 @@ Notes:
 | `tree_json` | array | Native `tree -J` output (nested directory structure) |
 | `entries[].items_total` | int | Count of all entries under a directory (-1 if unreadable) |
 | `entries[].size_bytes` | int | Size in bytes (-1 if unreadable) |
+| `entries[].reason` | string | Why `size_bytes` is -1: `excluded`, `budget_exceeded`, `timeout`, `stat_failed` (only present when size_bytes=-1) |
 | `entries[].excluded` | bool | Whether the entry matched the ignore pattern |
 
 ---
@@ -475,6 +480,20 @@ target        .gradle    .idea        .vscode     *.egg-info
 ---
 
 ## Version History
+
+### v1.5.0
+
+**New flags, telemetry improvements, and recon diagnostics.**
+
+New features:
+- `--no-lines` flag: omit the `lines` array from snapshot JSON output (only valid with `--snapshot -o json`)
+- `--project-name <name>` flag: override the project name in telemetry records
+- Recon entries with `size_bytes: -1` now include a `reason` field: `excluded`, `budget_exceeded`, `timeout`, or `stat_failed`
+
+Telemetry improvements:
+- Accumulated flags are now recorded in telemetry (previously only mode + output format)
+- Flags are sanitized for JSONL safety (stripped to alphanumeric + safe chars, capped at 200 chars)
+- Default flags (mode, output format) are always seeded even when no explicit flags are passed
 
 ### v1.2.0
 

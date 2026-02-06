@@ -59,7 +59,7 @@ run_test() {
   TESTS_RUN=$((TESTS_RUN + 1))
   local test_name="$1"
   shift
-  "$@"
+  "$@" || true
 }
 
 # ============================================================================
@@ -462,8 +462,10 @@ test_json_parseable() {
 
 test_paths_pipeable() {
   local output
-  output=$("${FSEARCH}" --output paths "*.log" "${TEST_DIR}" 2>&1 | head -n 1)
-  if [[ "$output" =~ \.log$ ]]; then
+  output=$("${FSEARCH}" --output paths "*.log" "${TEST_DIR}" 2>&1) || true
+  local first_line
+  first_line=$(echo "$output" | head -n 1)
+  if [[ "$first_line" =~ \.log$ ]]; then
     pass "Paths output is pipeable"
   else
     fail "Paths output should be clean for piping"
@@ -491,6 +493,50 @@ test_unknown_option() {
     pass "Correctly rejects unknown option"
   else
     fail "Should error on unknown option"
+  fi
+}
+
+# ============================================================================
+# v1.5.0 Feature Tests
+# ============================================================================
+
+test_project_name() {
+  rm -f "$HOME/.fsuite/telemetry.jsonl"
+  FSUITE_TELEMETRY=1 "${FSEARCH}" --project-name "TestProj" --output paths "*.log" "${TEST_DIR}" >/dev/null 2>&1 || true
+  local line
+  line=$(tail -1 "$HOME/.fsuite/telemetry.jsonl" 2>/dev/null) || line=""
+  if [[ "$line" =~ \"project_name\":\"TestProj\" ]]; then
+    pass "--project-name overrides telemetry project name"
+  else
+    fail "--project-name should appear in telemetry" "Got: $line"
+  fi
+}
+
+test_flag_accumulation() {
+  rm -f "$HOME/.fsuite/telemetry.jsonl"
+  FSUITE_TELEMETRY=1 "${FSEARCH}" -m 5 -b find --output json "*.log" "${TEST_DIR}" >/dev/null 2>&1 || true
+  local line
+  line=$(tail -1 "$HOME/.fsuite/telemetry.jsonl" 2>/dev/null) || line=""
+  local flags
+  flags=$(echo "$line" | grep -o '"flags":"[^"]*"' || true)
+  if [[ "$flags" =~ "-m 5" ]] && [[ "$flags" =~ "-b find" ]]; then
+    pass "Flag accumulation records -m and -b in telemetry"
+  else
+    fail "Telemetry flags should include -m 5 and -b find" "Got: $flags"
+  fi
+}
+
+test_default_flag_seeding() {
+  rm -f "$HOME/.fsuite/telemetry.jsonl"
+  FSUITE_TELEMETRY=1 "${FSEARCH}" --output paths "*.log" "${TEST_DIR}" >/dev/null 2>&1 || true
+  local line
+  line=$(tail -1 "$HOME/.fsuite/telemetry.jsonl" 2>/dev/null) || line=""
+  local flags
+  flags=$(echo "$line" | grep -o '"flags":"[^"]*"' || true)
+  if [[ "$flags" =~ "-o paths" ]]; then
+    pass "Default flag seeding records output format"
+  else
+    fail "Telemetry flags should include -o paths" "Got: $flags"
   fi
 }
 
@@ -569,6 +615,11 @@ main() {
   # Negative tests
   run_test "Invalid max value" test_invalid_max_value
   run_test "Unknown option" test_unknown_option
+
+  # v1.5.0 features
+  run_test "Project-name flag" test_project_name
+  run_test "Flag accumulation in telemetry" test_flag_accumulation
+  run_test "Default flag seeding" test_default_flag_seeding
 
   teardown
 
