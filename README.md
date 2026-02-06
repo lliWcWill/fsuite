@@ -571,6 +571,7 @@ These are designed for AI agents, CI pipelines, cron jobs, and automation script
 | `--include` | — | pattern (repeatable) | — |
 | `--recon` | `-r` | — | off |
 | `--snapshot` | — | — | off |
+| `--budget` | — | seconds (integer) | `30` |
 | `--no-lines` | — | — | off |
 | `--project-name` | — | any string | auto-detected |
 | `--recon-depth` | — | any integer | `1` (`2` in snapshot) |
@@ -584,6 +585,23 @@ These are designed for AI agents, CI pipelines, cron jobs, and automation script
 | `--install-hints` | — | — | — |
 
 > **Tip:** Numeric flags support combined syntax: `-L5` is equivalent to `-L 5`.
+
+**`fmetrics`**
+
+| Subcommand | Key Flags | Description |
+|------------|-----------|-------------|
+| `import` | — | Ingest `telemetry.jsonl` into SQLite |
+| `stats` | `-o json` | Usage dashboard (runtimes, reliability) |
+| `history` | `--tool <name>`, `--limit N` (default 20), `--project <name>` | Recent runs, filterable |
+| `predict <path>` | `--tool <name>` | Estimate runtime for a directory |
+| `clean` | `--days N` (default 90), `--dry-run` | Prune old telemetry |
+| `profile` | — | Show machine profile (Tier 3) |
+
+| Flag | Values | Default |
+|------|--------|---------|
+| `--output` / `-o` | `pretty`, `json` | `pretty` |
+| `--self-check` | — | — |
+| `--install-hints` | — | — |
 
 ---
 
@@ -712,6 +730,8 @@ sudo ln -s "$(pwd)/ftree" /usr/local/bin/ftree
 
 New features across all tools:
 
+- **`duration_ms`** (ftree): JSON output now includes wall-clock milliseconds for recon, tree, and snapshot modes (snapshot also has nested recon `duration_ms`)
+- **Smart project name inference** (all 3 tools): Walk-up heuristic finds `.git`, `package.json`, etc. to auto-detect the project name from any subdirectory
 - **`--project-name <name>`** (all 3 tools): Override project name in telemetry records
 - **`--no-lines`** (ftree): Omit the `lines` array from snapshot JSON output (only valid with `--snapshot -o json`)
 - **`--tool <name>`** (fmetrics predict): Predict for a specific tool only (`ftree`, `fsearch`, `fcontent`)

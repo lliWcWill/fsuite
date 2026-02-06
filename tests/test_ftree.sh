@@ -889,11 +889,11 @@ assert 'duration_ms' not in d['snapshot']['tree']
 }
 
 test_project_name_inference() {
-  rm -f /home/player3vsgpt/.fsuite/telemetry.jsonl
+  rm -f $HOME/.fsuite/telemetry.jsonl
   # Scan a SUBDIR of TEST_DIR — project name should be the TEST_DIR basename, not "src"
   FSUITE_TELEMETRY=1 "${FTREE}" --recon "${TEST_DIR}/src" >/dev/null 2>&1 || true
   local line
-  line=$(tail -1 /home/player3vsgpt/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
+  line=$(tail -1 $HOME/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
   # TEST_DIR is a temp dir like /tmp/tmp.XXXXX — its basename is the temp name
   # The walk-up should find .git in TEST_DIR and use that as project root
   local test_dir_name

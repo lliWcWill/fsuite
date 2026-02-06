@@ -520,10 +520,10 @@ test_v15_project_name_walkup() {
   echo "hello" > "${proj_dir}/src/deep/nested/file.txt"
 
   # Scan the deeply nested subdir — project name should be "myproject", not "nested"
-  rm -f /home/player3vsgpt/.fsuite/telemetry.jsonl
+  rm -f $HOME/.fsuite/telemetry.jsonl
   FSUITE_TELEMETRY=1 "${FTREE}" --recon "${proj_dir}/src/deep/nested" >/dev/null 2>&1 || true
   local line
-  line=$(tail -1 /home/player3vsgpt/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
+  line=$(tail -1 $HOME/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
   if [[ "$line" =~ \"project_name\":\"myproject\" ]]; then
     pass "ftree: walk-up finds .git and uses project root name"
   else
@@ -532,9 +532,9 @@ test_v15_project_name_walkup() {
   fi
 
   # Test fsearch on the same subdir
-  rm -f /home/player3vsgpt/.fsuite/telemetry.jsonl
+  rm -f $HOME/.fsuite/telemetry.jsonl
   FSUITE_TELEMETRY=1 "${FSEARCH}" --output paths "*.txt" "${proj_dir}/src/deep/nested" >/dev/null 2>&1 || true
-  line=$(tail -1 /home/player3vsgpt/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
+  line=$(tail -1 $HOME/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
   if [[ "$line" =~ \"project_name\":\"myproject\" ]]; then
     pass "fsearch: walk-up finds .git and uses project root name"
   else
@@ -543,9 +543,9 @@ test_v15_project_name_walkup() {
   fi
 
   # Test fcontent on the same subdir
-  rm -f /home/player3vsgpt/.fsuite/telemetry.jsonl
+  rm -f $HOME/.fsuite/telemetry.jsonl
   FSUITE_TELEMETRY=1 "${FCONTENT}" "hello" "${proj_dir}/src/deep/nested" >/dev/null 2>&1 || true
-  line=$(tail -1 /home/player3vsgpt/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
+  line=$(tail -1 $HOME/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
   if [[ "$line" =~ \"project_name\":\"myproject\" ]]; then
     pass "fcontent: walk-up finds .git and uses project root name"
   else
@@ -559,10 +559,10 @@ test_v15_project_name_fallback() {
   mkdir -p "${plain_dir}"
   echo "data" > "${plain_dir}/file.txt"
 
-  rm -f /home/player3vsgpt/.fsuite/telemetry.jsonl
+  rm -f $HOME/.fsuite/telemetry.jsonl
   FSUITE_TELEMETRY=1 "${FTREE}" --recon "${plain_dir}" >/dev/null 2>&1 || true
   local line
-  line=$(tail -1 /home/player3vsgpt/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
+  line=$(tail -1 $HOME/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
   if [[ "$line" =~ \"project_name\":\"plaindir\" ]]; then
     pass "Fallback: basename used when no project markers found"
   else
