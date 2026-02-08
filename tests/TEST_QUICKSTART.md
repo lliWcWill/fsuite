@@ -2,7 +2,7 @@
 
 ## Overview
 
-This test suite provides comprehensive coverage for all fsuite tools with 229 total test cases.
+This test suite provides comprehensive coverage for all fsuite tools with 259 total test cases across 6 suites.
 
 ## Files Created
 
@@ -163,7 +163,8 @@ bash run_all_tests.sh && echo "Ready to deploy" || echo "Tests failed"
 | fmap | 58 | Language extraction (12 langs), exact parsing, dedup regression, modes, filters, caps, pipeline |
 | ftree | 54 | Tree/recon/snapshot modes, ignore patterns, validation |
 | Integration | 33 | Pipelines, workflows, real-world use cases |
-| **Total** | **229** | **Comprehensive end-to-end coverage** |
+| Telemetry | 30 | Tiered telemetry, hardware detection, machine profile |
+| **Total** | **259** | **Comprehensive end-to-end coverage** |
 
 ## Next Steps
 

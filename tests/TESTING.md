@@ -28,7 +28,7 @@ Comprehensive test suite for the fsuite CLI tools (fsearch, fcontent, ftree).
 1. **test_fmap.sh** - Tests for fmap (code cartography tool)
    - 58 test cases covering:
      - Basic functionality (version, help, self-check, install-hints)
-     - Language extraction (Python, JS, TS, Rust, Go, Java, Ruby, Bash)
+     - Language extraction (all 12: Python, JS, TS, Rust, Go, Java, C, C++, Ruby, Lua, PHP, Bash)
      - Bash function forms (both `name()` and `function name`)
      - Single file, directory, and stdin modes
      - Output formats (pretty, paths, json)
