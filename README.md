@@ -10,17 +10,18 @@
 
 ---
 
-**A three-tool filesystem reconnaissance kit for humans and AI agents.**
+**A four-tool filesystem reconnaissance kit for humans and AI agents.**
 
-`fsuite` provides three composable CLI utilities that turn filesystem exploration into a clean, scriptable, agent-friendly pipeline:
+`fsuite` provides four composable CLI utilities that turn filesystem exploration into a clean, scriptable, agent-friendly pipeline:
 
 | Tool | Purpose |
 |------|---------|
 | **`fsearch`** | Find files by name, extension, or glob pattern |
 | **`fcontent`** | Search _inside_ files for text (powered by ripgrep) |
 | **`ftree`** | Visualize directory structure with smart defaults and recon mode |
+| **`fmap`** | Extract structural skeleton from code (code cartography) |
 
-Each tool does one thing. They work independently or together for a complete **scout-then-search** workflow with zero glue code.
+Each tool does one thing. They work independently or together for a complete **scout-then-map** workflow with zero glue code.
 
 ## Contents
 
@@ -88,7 +89,7 @@ That document is the pitch. Not because we wrote it, but because the agent did.
 # Clone and make executable
 git clone https://github.com/lliWcWill/fsuite.git
 cd fsuite
-chmod +x fsearch fcontent ftree
+chmod +x fsearch fcontent ftree fmap
 
 # Find all .log files under /var/log
 ./fsearch '*.log' /var/log
@@ -271,6 +272,51 @@ ftree -d /project
 
 See **[docs/ftree.md](docs/ftree.md)** for the full deep-dive: architecture, all flags, headless agent workflows, interactive human usage, and tandem usage with `fsearch`/`fcontent`.
 
+### `fmap` &mdash; code cartography
+
+Extracts the **structural skeleton** from source files — functions, classes, imports, types, exports, constants — without reading full file contents. Fills the gap between "found files" and "read full files."
+
+```
+fmap [OPTIONS] [path]
+```
+
+**Key features:**
+
+- Zero dependencies beyond `grep` (uses `grep -n -E -I`)
+- Three modes: directory (recursive), single file, piped file list from stdin
+- 12 languages: Python, JavaScript, TypeScript, Rust, Go, Java, C, C++, Ruby, Lua, PHP, Bash
+- Bash function detection: both `name() {` and `function name {` forms
+- Shebang fallback for extensionless files (`#!/usr/bin/env bash`)
+- Symbol type filtering (`-t function`, `-t class`, etc.)
+- Import removal (`--no-imports`) with precedence rule (`-t import` overrides)
+- Three output formats: `pretty` (default), `paths` (file list), `json`
+- Symbol and file caps (`-m`, `-n`) with truncation indicators
+
+**Examples:**
+
+```bash
+# Map a project directory
+fmap /project
+
+# Single file analysis
+fmap /project/src/auth.py
+
+# JSON output for agents
+fmap -o json /project
+
+# Pipeline: find Python files, extract structure
+fsearch -o paths '*.py' /project | fmap -o json
+
+# Functions only, no imports
+fmap -t function --no-imports /project
+
+# Force language detection
+fmap -L bash /project/scripts/deploy
+
+# Cap symbols for large projects
+fmap -m 100 /project
+```
+
 ---
 
 ## Output Formats
@@ -381,8 +427,19 @@ ftree -L 5 /project/src
 # Step 4: Find candidate files (deterministic, structured)
 fsearch --output json '*.py' /project
 
-# Step 5: Search inside candidates (structured results)
+# Step 5: Map code structure (structural skeleton)
+fsearch --output paths '*.py' /project | fmap --output json
+# → functions, classes, imports for each file
+
+# Step 6: Search inside candidates (structured results)
 fsearch --output paths '*.py' /project | fcontent --output json "import torch"
+```
+
+**The full pipeline:**
+
+```
+ftree --snapshot → fsearch -o paths → fmap -o json    → fcontent -o json
+Scout            → Find              → Map (structure) → Search (content)
 ```
 
 **Why this matters:**
@@ -472,6 +529,27 @@ Copy-paste ready. Every command runs headless (no prompts, no TTY needed) unless
 | `ftree --project-name "MyApp" /project` | Override project name in telemetry |
 | `ftree -q /project` | Quiet mode — exit code only |
 
+### `fmap` — Extract Code Structure
+
+| Command | What it does |
+|---------|-------------|
+| `fmap /project` | Map all source files under `/project` (pretty output) |
+| `fmap /project/src/auth.py` | Map a single file |
+| `fmap -o json /project` | JSON output with symbol metadata |
+| `fmap -o paths /project` | File paths that contain symbols |
+| `fmap -t function /project` | Show only function definitions |
+| `fmap -t class /project` | Show only class definitions |
+| `fmap --no-imports /project` | Skip import lines |
+| `fmap -t import --no-imports /project` | Precedence: `-t import` overrides `--no-imports` |
+| `fmap -L bash /project/scripts` | Force language to Bash |
+| `fmap -m 50 /project` | Cap shown symbols to 50 |
+| `fmap -n 100 /project` | Cap files processed to 100 |
+| `fmap --no-default-ignore /project` | Include node_modules etc. |
+| `fmap --self-check` | Verify grep is available |
+| `fmap --version` | Print version |
+| `fmap -q /project` | Quiet mode — no header |
+| `fsearch -o paths '*.py' /project \| fmap -o json` | Pipeline: find then map |
+
 ### Pipeline — Find Then Grep (the power move)
 
 | Command | What it does |
@@ -497,6 +575,9 @@ These are designed for AI agents, CI pipelines, cron jobs, and automation script
 | **Structure overview** | `ftree -o json /project` | Agent gets depth-3 tree with truncation metadata |
 | **Drill into subdirectory** | `ftree -L 5 -o json /project/src` | Agent zooms into a specific subtree |
 | **Inventory a project** | `fsearch -o json '*.py' /project` | Agent gets structured file list with count |
+| **Map code structure** | `fmap -o json /project` | Agent gets functions, classes, imports per file |
+| **Map specific files** | `fsearch -o paths '*.py' /project \| fmap -o json` | Pipeline: find then map structure |
+| **Functions only** | `fmap -t function -o json /project` | Agent gets only function definitions |
 | **Find + grep in one shot** | `fsearch -o paths '*.py' /project \| fcontent -o json "import"` | Agent gets structured match data in one pipeline |
 | **Count log files** | `fsearch -o json '*.log' /var/log \| jq .total_found` | Pull a single integer from JSON |
 | **List matched files only** | `fsearch -o paths '*.cfg' /etc \| fcontent -o paths "deprecated"` | Clean file list, no noise, one per line |
@@ -586,6 +667,24 @@ These are designed for AI agents, CI pipelines, cron jobs, and automation script
 
 > **Tip:** Numeric flags support combined syntax: `-L5` is equivalent to `-L 5`.
 
+**`fmap`**
+
+| Flag | Short | Values | Default |
+|------|-------|--------|---------|
+| `--output` | `-o` | `pretty`, `paths`, `json` | `pretty` |
+| `--max-symbols` | `-m` | any integer | `500` |
+| `--max-files` | `-n` | any integer | `500` (dir) / `2000` (stdin) |
+| `--lang` | `-L` | language name | auto-detect |
+| `--type` | `-t` | `function`, `class`, `import`, `type`, `export`, `constant` | all |
+| `--no-imports` | — | — | off |
+| `--no-default-ignore` | — | — | off |
+| `--quiet` | `-q` | — | off |
+| `--project-name` | — | any string | auto-detected |
+| `--self-check` | — | — | — |
+| `--install-hints` | — | — | — |
+
+> **Tip:** Numeric flags support combined syntax: `-m50` is equivalent to `-m 50`.
+
 **`fmetrics`**
 
 | Subcommand | Key Flags | Description |
@@ -622,6 +721,8 @@ fcontent --self-check
 fcontent --install-hints
 ftree --self-check         # Verify tree + gitignore support
 ftree --install-hints      # Print install command for tree
+fmap --self-check          # Verify grep is available
+fmap --install-hints       # Print install command for grep
 ```
 
 ---
@@ -714,12 +815,13 @@ fmetrics clean --days 30
 ```bash
 git clone https://github.com/lliWcWill/fsuite.git
 cd fsuite
-chmod +x fsearch fcontent ftree
+chmod +x fsearch fcontent ftree fmap
 
 # Optional: symlink into your PATH
 sudo ln -s "$(pwd)/fsearch" /usr/local/bin/fsearch
 sudo ln -s "$(pwd)/fcontent" /usr/local/bin/fcontent
 sudo ln -s "$(pwd)/ftree" /usr/local/bin/ftree
+sudo ln -s "$(pwd)/fmap" /usr/local/bin/fmap
 ```
 
 ---

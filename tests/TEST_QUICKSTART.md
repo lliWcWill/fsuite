@@ -2,13 +2,14 @@
 
 ## Overview
 
-This test suite provides comprehensive coverage for all fsuite tools with 171 total test cases.
+This test suite provides comprehensive coverage for all fsuite tools with 215 total test cases.
 
 ## Files Created
 
 ```
 test_fsearch.sh       - 37 tests for fsearch tool
 test_fcontent.sh      - 47 tests for fcontent tool
+test_fmap.sh          - 44 tests for fmap tool
 test_ftree.sh         - 54 tests for ftree tool
 test_integration.sh   - 33 tests for tool pipelines
 run_all_tests.sh      - Master test runner
@@ -31,6 +32,9 @@ bash test_fsearch.sh
 
 # Test content search
 bash test_fcontent.sh
+
+# Test code cartography
+bash test_fmap.sh
 
 # Test directory tree
 bash test_ftree.sh
@@ -66,6 +70,15 @@ Without optional dependencies, relevant tests will be automatically skipped.
 ✓ Query handling (case, multi-word, special chars)
 ✓ rg-args pass-through
 ✓ Limits and edge cases
+
+### fmap (58 tests)
+✓ Language extraction (all 12: Python, JS, TS, Rust, Go, Java, C, C++, Ruby, Lua, PHP, Bash)
+✓ Per-language exact parsing (type validation, symbol counts, zero-duplication)
+✓ Dedup regression (JS arrow functions, cross-language)
+✓ All three modes (directory, single file, stdin)
+✓ Output formats (pretty, paths, JSON)
+✓ Filters, caps, and precedence rules
+✓ Default ignore, shebang detection, pipeline
 
 ### ftree (54 tests)
 ✓ Tree mode with smart defaults
@@ -147,9 +160,10 @@ bash run_all_tests.sh && echo "Ready to deploy" || echo "Tests failed"
 |------|-----------|----------|
 | fsearch | 37 | Pattern matching, backends, output formats, error handling |
 | fcontent | 47 | Search modes, queries, rg-args, limits, edge cases |
+| fmap | 58 | Language extraction (12 langs), exact parsing, dedup regression, modes, filters, caps, pipeline |
 | ftree | 54 | Tree/recon/snapshot modes, ignore patterns, validation |
 | Integration | 33 | Pipelines, workflows, real-world use cases |
-| **Total** | **171** | **Comprehensive end-to-end coverage** |
+| **Total** | **229** | **Comprehensive end-to-end coverage** |
 
 ## Next Steps
 
@@ -167,17 +181,20 @@ bash run_all_tests.sh
 # Run specific test suite
 bash test_fsearch.sh
 bash test_fcontent.sh
+bash test_fmap.sh
 bash test_ftree.sh
 bash test_integration.sh
 
 # Check tool versions
 ./fsearch --version
 ./fcontent --version
+./fmap --version
 ./ftree --version
 
 # Check dependencies
 ./fsearch --self-check
 ./fcontent --self-check
+./fmap --self-check
 ./ftree --self-check
 ```
 
@@ -193,5 +210,6 @@ Run the help command for any tool:
 ```bash
 ./fsearch --help
 ./fcontent --help
+./fmap --help
 ./ftree --help
 ```

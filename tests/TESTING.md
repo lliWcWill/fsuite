@@ -25,6 +25,24 @@ Comprehensive test suite for the fsuite CLI tools (fsearch, fcontent, ftree).
      - Max matches/files limits
      - Edge cases (empty files, binary files, deep structures)
 
+1. **test_fmap.sh** - Tests for fmap (code cartography tool)
+   - 58 test cases covering:
+     - Basic functionality (version, help, self-check, install-hints)
+     - Language extraction (Python, JS, TS, Rust, Go, Java, Ruby, Bash)
+     - Bash function forms (both `name()` and `function name`)
+     - Single file, directory, and stdin modes
+     - Output formats (pretty, paths, json)
+     - Filters (--no-imports, -t function/class, -L lang, -m, -n)
+     - Precedence rule (-t import overrides --no-imports)
+     - Truncation and cap enforcement
+     - Negative tests (bad flags, bad types, non-integer args)
+     - Telemetry (tool=fmap, backend=grep)
+     - Default ignore (node_modules excluded/included)
+     - Shebang detection for extensionless files
+     - Per-language exact parsing (all 12 languages: Python, JS, TS, Rust, Go, Java, C, C++, Ruby, Lua, PHP, Bash)
+     - Dedup regression (JS arrow functions, cross-language zero-duplication)
+     - Pipeline (fsearch | fmap)
+
 1. **test_ftree.sh** - Tests for ftree (directory tree tool)
    - 54 test cases covering:
      - Basic tree mode functionality
@@ -55,7 +73,7 @@ Comprehensive test suite for the fsuite CLI tools (fsearch, fcontent, ftree).
 ### Master Test Runner
 
 1. **run_all_tests.sh** - Master script that runs all test suites
-   - Runs all four test suites in sequence
+   - Runs all six test suites in sequence
    - Provides unified summary
    - Returns appropriate exit codes
 ## Running the Tests
@@ -112,6 +130,36 @@ bash test_integration.sh
 - ✅ JSON structure validation
 - ✅ Mode detection (directory vs stdin_files)
 
+### fmap Coverage
+- ✅ Version and help output
+- ✅ Self-check and install hints
+- ✅ Language extraction (Python, JS, TS, Rust, Go, Java, Ruby, Bash)
+- ✅ Bash function forms (POSIX `name()` and `function name`)
+- ✅ Bash source/dot imports, exports, readonly constants
+- ✅ Single file mode with correct path in JSON
+- ✅ Directory mode (recursive with ignore list)
+- ✅ Stdin mode (piped file list)
+- ✅ Output formats (pretty, paths, JSON)
+- ✅ JSON structure validation (all required fields)
+- ✅ Type filtering (-t function, -t class)
+- ✅ Import removal (--no-imports)
+- ✅ Precedence rule (-t import overrides --no-imports)
+- ✅ Force language (-L)
+- ✅ Symbol cap (-m) with truncation indicator
+- ✅ File cap (-n)
+- ✅ Default ignore (node_modules excluded)
+- ✅ --no-default-ignore flag
+- ✅ Shebang detection for extensionless files
+- ✅ Quiet mode (-q)
+- ✅ Error handling (bad flags, bad types, non-integer args, non-existent paths)
+- ✅ Telemetry (tool=fmap, backend=grep)
+- ✅ Pipeline (fsearch | fmap)
+- ✅ Per-language exact parsing — all 12 languages (Python, JS, TS, Rust, Go, Java, C, C++, Ruby, Lua, PHP, Bash)
+- ✅ Per-language type validation (function, class, import, type, export, constant per language)
+- ✅ Per-language zero-duplication verification via JSON line-number checks
+- ✅ Dedup regression — JS `const fn = async () => {}` multi-pattern overlap
+- ✅ Cross-language dedup — zero duplicates across all 14 fixture files
+
 ### ftree Coverage
 - ✅ Version and help output
 - ✅ Tree mode with smart defaults
@@ -150,10 +198,11 @@ bash test_integration.sh
 
 ## Test Results Summary
 
-**Total Test Cases: 171**
+**Total Test Cases: 229**
 
 - fsearch: 37 tests
 - fcontent: 47 tests
+- fmap: 58 tests
 - ftree: 54 tests
 - Integration: 33 tests
 

@@ -8,6 +8,7 @@ override_dh_auto_install:
 	install -D -m 755 ftree $(CURDIR)/debian/fsuite/usr/bin/ftree
 	install -D -m 755 fsearch $(CURDIR)/debian/fsuite/usr/bin/fsearch
 	install -D -m 755 fcontent $(CURDIR)/debian/fsuite/usr/bin/fcontent
+	install -D -m 755 fmap $(CURDIR)/debian/fsuite/usr/bin/fmap
 	install -D -m 755 fmetrics $(CURDIR)/debian/fsuite/usr/bin/fmetrics
 	install -D -m 755 fmetrics-predict.py $(CURDIR)/debian/fsuite/usr/share/fsuite/fmetrics-predict.py
 	# Install shared library to /usr/share/fsuite
