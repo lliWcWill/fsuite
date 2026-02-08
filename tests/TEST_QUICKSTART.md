@@ -2,14 +2,14 @@
 
 ## Overview
 
-This test suite provides comprehensive coverage for all fsuite tools with 215 total test cases.
+This test suite provides comprehensive coverage for all fsuite tools with 229 total test cases.
 
 ## Files Created
 
 ```
 test_fsearch.sh       - 37 tests for fsearch tool
 test_fcontent.sh      - 47 tests for fcontent tool
-test_fmap.sh          - 44 tests for fmap tool
+test_fmap.sh          - 58 tests for fmap tool
 test_ftree.sh         - 54 tests for ftree tool
 test_integration.sh   - 33 tests for tool pipelines
 run_all_tests.sh      - Master test runner

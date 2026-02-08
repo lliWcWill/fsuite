@@ -198,13 +198,14 @@ bash test_integration.sh
 
 ## Test Results Summary
 
-**Total Test Cases: 229**
+**Total Test Cases: 259**
 
 - fsearch: 37 tests
 - fcontent: 47 tests
 - fmap: 58 tests
 - ftree: 54 tests
 - Integration: 33 tests
+- Telemetry: 30 tests
 
 ## Dependencies
 
