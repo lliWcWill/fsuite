@@ -68,7 +68,7 @@ It didn't just say "nice tools." It wrote a full self-assessment. Unprompted con
 
 **The workflow shift — before and after:**
 
-```
+```text
 BEFORE fsuite:
   Spawn Explore agent -> 10-15 internal tool calls -> still blind on structure
 
@@ -138,7 +138,7 @@ ftree --recon -o json /project | jq '.entries | sort_by(-.size_bytes) | .[:10]'
 
 Searches for files by **name or glob pattern**. Automatically picks the fastest available backend (`fd` > `find`).
 
-```
+```bash
 fsearch [OPTIONS] <pattern_or_ext> [path]
 ```
 
@@ -180,7 +180,7 @@ fsearch -i
 
 Searches **inside** files using `rg` (ripgrep). Accepts a directory _or_ a piped list of file paths from stdin.
 
-```
+```bash
 fcontent [OPTIONS] <query> [path]
 ```
 
@@ -213,7 +213,7 @@ fcontent --rg-args "-i --hidden" "secret" /home/user
 
 Wraps `tree` with smart defaults, context-budget awareness, and a **recon mode** for scouting directories before committing context window to a full tree dump.
 
-```
+```bash
 ftree [OPTIONS] [path]
 ```
 
@@ -276,7 +276,7 @@ See **[docs/ftree.md](docs/ftree.md)** for the full deep-dive: architecture, all
 
 Extracts the **structural skeleton** from source files — functions, classes, imports, types, exports, constants — without reading full file contents. Fills the gap between "found files" and "read full files."
 
-```
+```bash
 fmap [OPTIONS] [path]
 ```
 
@@ -437,7 +437,7 @@ fsearch --output paths '*.py' /project | fcontent --output json "import torch"
 
 **The full pipeline:**
 
-```
+```text
 ftree --snapshot → fsearch -o paths → fmap -o json    → fcontent -o json
 Scout            → Find              → Map (structure) → Search (content)
 ```
@@ -827,6 +827,50 @@ sudo ln -s "$(pwd)/fmap" /usr/local/bin/fmap
 ---
 
 ## Changelog
+
+### v1.6.1
+
+Hardening and review fixes for `fmap`. No new features — all changes improve robustness, safety, and correctness.
+
+- **`.h` header heuristic**: `.h` files now dispatch to C++ when C++ constructs are detected (class, template, namespace, `std::`), otherwise fall back to C
+- **Locale pinning**: `LC_ALL=C` set at script top so grep/regex character classes behave consistently across environments
+- **Performance**: replaced O(n²) string concatenation in `extract_symbols` with temp file streaming
+- **JSON escape**: handles `\b`, `\f`, and all control chars (U+0000–U+001F) via perl
+- **Safety**: `--` before filenames in grep calls; missing-value checks on all option flags (`-o`, `-m`, `-n`, `-L`, `-t`)
+- **Java regex**: access modifier now optional — captures package-private methods
+- **Paths output**: respects `--max-symbols` cap (was previously uncapped)
+- **Tests**: `_validate_lang_json` passes variables as argv (no shell interpolation); `run_test` reports crashes with exit code; truncated field uses canonical JSON booleans
+- **Docs**: fenced code blocks annotated with language specifiers (MD040); TESTING.md language list expanded to all 12; TEST_QUICKSTART.md total updated to 259
+- CodeRabbit review: **0 findings** on this release
+
+### v1.6.0
+
+**Introduces `fmap` — code cartography.** The fourth tool in the suite, completing the recon pipeline from "what's here" to "what's inside the code."
+
+```text
+ftree --snapshot → fsearch -o paths → fmap -o json → fcontent
+Scout            → Find              → Map           → Search
+```
+
+**New tool: `fmap`**
+- Extract structural skeletons (functions, classes, imports, types, exports, constants) from source files
+- **12 languages**: Python, JavaScript, TypeScript, Rust, Go, Java, C, C++, Ruby, Lua, PHP, Bash/Shell
+- **3 modes**: directory scan, single file, stdin pipe (`fsearch -o paths '*.py' | fmap -o json`)
+- **3 output formats**: pretty, paths, JSON — same as every other fsuite tool
+- **grep-only** — zero new dependencies, uses `grep -n -E -I` for extraction
+- Line-level dedup prevents multi-regex overlap false positives
+- Shebang detection for extensionless files (`#!/usr/bin/env bash`)
+- Default ignore list matches ftree (node_modules, .git, venv, etc.)
+- Filters: `-t function`, `-t class`, `--no-imports`, `-L bash`
+- Caps: `-m` (max symbols), `-n` (max files)
+- Telemetry integration (tool=fmap, backend=grep)
+
+**Suite-wide changes:**
+- All tools bumped to v1.6.0 (unified suite versioning)
+- Debian packaging updated (fsuite_1.6.0-1_all.deb includes fmap)
+- 58-test suite for fmap (per-language exact parsing for all 12 languages, dedup regression tests)
+- Full test suite: 6 suites, 259 tests
+- CodeRabbit review: 8 findings addressed (Go regex false positives, paths output cap, exit code handling, telemetry test isolation)
 
 ### v1.5.0
 

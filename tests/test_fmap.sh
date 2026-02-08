@@ -426,7 +426,11 @@ run_test() {
   TESTS_RUN=$((TESTS_RUN + 1))
   local test_name="$1"
   shift
-  "$@" || true
+  local rc=0
+  "$@" || rc=$?
+  if (( rc != 0 )); then
+    fail "$test_name (crashed with exit $rc)"
+  fi
 }
 
 # ============================================================================
@@ -511,6 +515,7 @@ test_dir_bash_both_function_forms() {
   local output
   output=$(FSUITE_TELEMETRY=0 "${FMAP}" -L bash "${TEST_DIR}/src/deploy.sh" 2>&1)
   # setup_env() form and function cleanup form
+  # shellcheck disable=SC2076 — RHS quoted intentionally to match parentheses literally
   if [[ "$output" =~ "function: setup_env()" ]] && [[ "$output" =~ "function: function cleanup" ]]; then
     pass "Bash extracts both function declaration forms"
   else
@@ -810,8 +815,9 @@ test_json_truncated_field() {
   local output
   output=$(FSUITE_TELEMETRY=0 "${FMAP}" -m 3 -o json "${TEST_DIR}/src" 2>&1)
   local truncated
-  truncated=$(echo "$output" | python3 -c "import json,sys; print(json.load(sys.stdin)['truncated'])" 2>/dev/null) || truncated="error"
-  if [[ "$truncated" == "True" ]]; then
+  # Emit canonical lowercase "true"/"false" instead of Python's "True"/"False"
+  truncated=$(echo "$output" | python3 -c "import json,sys; print('true' if json.load(sys.stdin)['truncated'] else 'false')" 2>/dev/null) || truncated="error"
+  if [[ "$truncated" == "true" ]]; then
     pass "JSON truncated=true when cap applies"
   else
     fail "JSON truncated field incorrect" "Got: $truncated"
@@ -956,38 +962,42 @@ _validate_lang_json() {
   local lang="$2"
   local expected_types="$3"  # comma-separated: function,class,import
   local min_symbols="$4"
-  local output
+  local output _tmp_json
   output=$(FSUITE_TELEMETRY=0 "${FMAP}" -o json "$file" 2>&1)
-  echo "$output" | python3 -c "
+  # Write JSON to temp file, pass all variables as argv to avoid shell interpolation
+  _tmp_json="$(mktemp)"
+  printf '%s\n' "$output" > "$_tmp_json"
+  python3 - "$_tmp_json" "$lang" "$expected_types" "$min_symbols" <<'PY'
 import json, sys
-d = json.load(sys.stdin)
+with open(sys.argv[1]) as f:
+    d = json.load(f)
+lang = sys.argv[2]
+expected_types = sys.argv[3]
+min_symbols = int(sys.argv[4])
 f = d['files'][0] if d['files'] else None
 if not f:
     print('NO_SYMBOLS')
     sys.exit(0)
-# Check language
-if f['language'] != '$lang':
-    print(f'WRONG_LANG:{f[\"language\"]}')
+if f['language'] != lang:
+    print(f'WRONG_LANG:{f["language"]}')
     sys.exit(0)
-# Check min count
-if f['symbol_count'] < $min_symbols:
-    print(f'LOW_COUNT:{f[\"symbol_count\"]}')
+if f['symbol_count'] < min_symbols:
+    print(f'LOW_COUNT:{f["symbol_count"]}')
     sys.exit(0)
-# Check no duplicate lines
 lines = [s['line'] for s in f['symbols']]
 dupes = len(lines) - len(set(lines))
 if dupes > 0:
     print(f'DUPES:{dupes}')
     sys.exit(0)
-# Check expected types
-expected = set('$expected_types'.split(','))
+expected = set(expected_types.split(','))
 found = set(s['type'] for s in f['symbols'])
 missing = expected - found
 if missing:
-    print(f'MISSING_TYPES:{\",\".join(missing)}')
+    print(f'MISSING_TYPES:{",".join(missing)}')
     sys.exit(0)
 print('OK')
-" 2>&1
+PY
+  rm -f "$_tmp_json"
 }
 
 test_parse_python_exact() {

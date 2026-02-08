@@ -2,9 +2,12 @@
 # fmap — code cartography: extract structural skeleton (functions, classes, imports, types) from source files.
 # Part of fsuite. Uses grep -n -E -I for zero-dependency extraction.
 
+# Pin locale so grep/regex character classes behave consistently across environments
+export LC_ALL=C
+
 set -euo pipefail
 
-VERSION="1.5.0"
+VERSION="1.6.1"
 
 # -------------------------
 # Source common library for tiered telemetry
@@ -114,7 +117,17 @@ die() {
 has() { command -v "$1" >/dev/null 2>&1; }
 
 json_escape() {
-  sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/\\t/g' -e 's/\r/\\r/g' -e ':a;N;$!ba;s/\n/\\n/g'
+  # Escapes \, ", \b, \t, \f, \r, \n and remaining control chars (U+0000-U+001F) as \u00XX
+  perl -0777 -pe '
+    s/\\/\\\\/g;
+    s/"/\\"/g;
+    s/\x08/\\b/g;
+    s/\t/\\t/g;
+    s/\x0c/\\f/g;
+    s/\r/\\r/g;
+    s/\n/\\n/g;
+    s/([\x00-\x1f])/sprintf("\\u%04x",ord($1))/ge;
+  '
 }
 
 name_matches_ignore() {
@@ -250,11 +263,11 @@ set -- "${_args[@]}"
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -o|--output) OUTPUT="${2:-}"; shift 2 ;;
-    -m|--max-symbols) MAX_SYMBOLS="${2:-}"; _TELEM_FLAGS+=" -m $2"; shift 2 ;;
-    -n|--max-files) MAX_FILES="${2:-}"; _TELEM_FLAGS+=" -n $2"; shift 2 ;;
-    -L|--lang) FORCE_LANG="${2:-}"; _TELEM_FLAGS+=" -L $2"; shift 2 ;;
-    -t|--type) FILTER_TYPE="${2:-}"; _TELEM_FLAGS+=" -t $2"; shift 2 ;;
+    -o|--output) [[ -n "${2:-}" ]] || die "Missing value for --output"; OUTPUT="$2"; shift 2 ;;
+    -m|--max-symbols) [[ -n "${2:-}" ]] || die "Missing value for --max-symbols"; MAX_SYMBOLS="$2"; _TELEM_FLAGS+=" -m ${2:-}"; shift 2 ;;
+    -n|--max-files) [[ -n "${2:-}" ]] || die "Missing value for --max-files"; MAX_FILES="$2"; _TELEM_FLAGS+=" -n ${2:-}"; shift 2 ;;
+    -L|--lang) [[ -n "${2:-}" ]] || die "Missing value for --lang"; FORCE_LANG="$2"; _TELEM_FLAGS+=" -L ${2:-}"; shift 2 ;;
+    -t|--type) [[ -n "${2:-}" ]] || die "Missing value for --type"; FILTER_TYPE="$2"; _TELEM_FLAGS+=" -t ${2:-}"; shift 2 ;;
     --no-imports) NO_IMPORTS=1; _TELEM_FLAGS+=" --no-imports"; shift ;;
     --no-default-ignore) NO_DEFAULT_IGNORE=1; _TELEM_FLAGS+=" --no-default-ignore"; shift ;;
     -q|--quiet) QUIET=1; _TELEM_FLAGS+=" -q"; shift ;;
@@ -433,6 +446,18 @@ SHOWN_SYMBOLS=0
 # -------------------------
 # Language detection
 # -------------------------
+
+# Heuristic for .h files: check for C++ constructs, fallback to C
+detect_header_language() {
+  local file="$1"
+  # Look for C++ indicators: class, template, namespace, public/private/protected, std::, using
+  if grep -q -E -I '(^[[:space:]]*(class|namespace|template)[[:space:]]|public:|private:|protected:|std::|using[[:space:]])' -- "$file" 2>/dev/null; then
+    echo "cpp"
+  else
+    echo "c"
+  fi
+}
+
 detect_language() {
   local file="$1"
 
@@ -457,7 +482,8 @@ detect_language() {
     rs) echo "rust"; return ;;
     go) echo "go"; return ;;
     java) echo "java"; return ;;
-    c|h) echo "c"; return ;;
+    c) echo "c"; return ;;
+    h) detect_header_language "$file"; return ;;
     cpp|cc|cxx|hpp|hxx|hh) echo "cpp"; return ;;
     rb|rake|gemspec) echo "ruby"; return ;;
     lua) echo "lua"; return ;;
@@ -569,7 +595,7 @@ extract_symbols() {
     java)
       patterns=(
         "class:^[[:space:]]*(public|private|protected)?[[:space:]]*(abstract[[:space:]]+)?(static[[:space:]]+)?(final[[:space:]]+)?(class|interface|enum)[[:space:]]"
-        "function:^[[:space:]]*(public|private|protected)[[:space:]]+(abstract[[:space:]]+)?(static[[:space:]]+)?(final[[:space:]]+)?(synchronized[[:space:]]+)?[_a-zA-Z][_a-zA-Z0-9<>,[:space:]]*[[:space:]]+[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]*\("
+        "function:^[[:space:]]*((public|private|protected)[[:space:]]+)?(abstract[[:space:]]+)?(static[[:space:]]+)?(final[[:space:]]+)?(synchronized[[:space:]]+)?[_a-zA-Z][_a-zA-Z0-9<>,[:space:]]*[[:space:]]+[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]*\("
         "import:^[[:space:]]*import[[:space:]]"
       )
       ;;
@@ -628,9 +654,10 @@ extract_symbols() {
       ;;
   esac
 
-  # Collect all matches, then deduplicate by line number (first type wins)
+  # Collect all matches to a temp file, then deduplicate by line number (first type wins)
   local sym_type regex
-  local _raw_output=""
+  local _tmp_raw
+  _tmp_raw="$(mktemp)"
   for pat_spec in "${patterns[@]}"; do
     sym_type="${pat_spec%%:*}"
     regex="${pat_spec#*:}"
@@ -653,13 +680,14 @@ extract_symbols() {
       done
       # Trim trailing whitespace from text
       text="${text%"${text##*[![:space:]]}"}"
-      _raw_output+="$(printf '%s\t%s\t%s\t%s' "$lineno" "$sym_type" "$indent" "$text")"$'\n'
-    done < <(grep -n -E -I "$regex" "$file" 2>/dev/null || true)
+      printf '%s\t%s\t%s\t%s\n' "$lineno" "$sym_type" "$indent" "$text" >> "$_tmp_raw"
+    done < <(grep -n -E -I "$regex" -- "$file" 2>/dev/null || true)
   done
   # Deduplicate: sort by line number, keep first occurrence per line
-  if [[ -n "$_raw_output" ]]; then
-    printf '%s' "$_raw_output" | sort -t$'\t' -k1,1n -s | awk -F'\t' '!seen[$1]++'
+  if [[ -s "$_tmp_raw" ]]; then
+    sort -t$'\t' -k1,1n -s "$_tmp_raw" | awk -F'\t' '!seen[$1]++'
   fi
+  rm -f "$_tmp_raw"
 }
 
 # -------------------------
@@ -741,7 +769,7 @@ fi
 # -------------------------
 if [[ "$OUTPUT" == "paths" ]]; then
   if [[ -s "$TMP_SYMBOLS" ]]; then
-    cut -f1 "$TMP_SYMBOLS" | sort -u
+    head -n "$SHOWN_SYMBOLS" "$TMP_SYMBOLS" | cut -f1 | sort -u
   fi
   exit 0
 fi
