@@ -887,20 +887,17 @@ test_nonexistent_path() {
 # ============================================================================
 
 test_telemetry_records_fmap() {
-  local telem_dir="$HOME/.fsuite"
-  local telem_file="$telem_dir/telemetry.jsonl"
-  # Clear previous entries
-  local before_count=0
-  [[ -f "$telem_file" ]] && before_count=$(wc -l < "$telem_file")
+  # Isolate telemetry writes to a temp HOME so we don't pollute user's real data
+  local fake_home
+  fake_home="$(mktemp -d)"
+  local telem_file="$fake_home/.fsuite/telemetry.jsonl"
 
-  FSUITE_TELEMETRY=1 "${FMAP}" -o json "${TEST_DIR}/src" >/dev/null 2>&1
+  HOME="$fake_home" FSUITE_TELEMETRY=1 "${FMAP}" -o json "${TEST_DIR}/src" >/dev/null 2>&1
 
   if [[ -f "$telem_file" ]]; then
-    local after_count
-    after_count=$(wc -l < "$telem_file")
     local last_line
     last_line=$(tail -1 "$telem_file")
-    if (( after_count > before_count )) && [[ "$last_line" =~ \"tool\":\"fmap\" ]] && [[ "$last_line" =~ \"backend\":\"grep\" ]]; then
+    if [[ "$last_line" =~ \"tool\":\"fmap\" ]] && [[ "$last_line" =~ \"backend\":\"grep\" ]]; then
       pass "Telemetry records tool=fmap and backend=grep"
     else
       fail "Telemetry entry incorrect" "Got: $last_line"
@@ -908,6 +905,7 @@ test_telemetry_records_fmap() {
   else
     fail "Telemetry file not created" ""
   fi
+  rm -rf "$fake_home"
 }
 
 # ============================================================================

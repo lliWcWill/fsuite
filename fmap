@@ -27,7 +27,8 @@ _TELEM_FLAGS=""
 _TELEM_PROJECT_NAME=""
 
 _fsuite_record_telemetry() {
-  _TELEM_EXIT_CODE=$?
+  # Don't clobber if trap already set the exit code
+  [[ "${_TELEM_EXIT_CODE:-}" =~ ^[0-9]+$ ]] || _TELEM_EXIT_CODE=$?
   (( _FSUITE_TELEM >= 1 )) || return 0
   [[ "$_TELEM_START_MS" != "0" ]] || return 0
   [[ "$_TELEM_START_MS" =~ ^[0-9]+$ ]] || return 0
@@ -404,7 +405,6 @@ else
   fi
 
   # Build find command with prune patterns
-  _find_args=(find "$TARGET" -type f)
   if [[ -n "$_ignore_pattern" ]]; then
     _prune_expr=""
     IFS='|' read -r -a _ignore_toks <<< "$_ignore_pattern"
@@ -562,7 +562,6 @@ extract_symbols() {
         "class:^type[[:space:]]+[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]+struct[[:space:]]"
         "class:^type[[:space:]]+[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]+interface[[:space:]]"
         "import:^import[[:space:]]"
-        "import:^[[:space:]]*\"[^\"]+\""
         "constant:^const[[:space:]]"
         "constant:^var[[:space:]]"
       )
@@ -742,7 +741,7 @@ fi
 # -------------------------
 if [[ "$OUTPUT" == "paths" ]]; then
   if [[ -s "$TMP_SYMBOLS" ]]; then
-    cut -f1 "$TMP_SYMBOLS" | sort -u | head -n "$SHOWN_SYMBOLS"
+    cut -f1 "$TMP_SYMBOLS" | sort -u
   fi
   exit 0
 fi
