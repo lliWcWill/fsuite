@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="1.6.0"
+VERSION="1.6.1"
 
 # -------------------------
 # Source common library for tiered telemetry

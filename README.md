@@ -828,6 +828,21 @@ sudo ln -s "$(pwd)/fmap" /usr/local/bin/fmap
 
 ## Changelog
 
+### v1.6.1
+
+Hardening and review fixes for `fmap`. No new features — all changes improve robustness, safety, and correctness.
+
+- **`.h` header heuristic**: `.h` files now dispatch to C++ when C++ constructs are detected (class, template, namespace, `std::`), otherwise fall back to C
+- **Locale pinning**: `LC_ALL=C` set at script top so grep/regex character classes behave consistently across environments
+- **Performance**: replaced O(n²) string concatenation in `extract_symbols` with temp file streaming
+- **JSON escape**: handles `\b`, `\f`, and all control chars (U+0000–U+001F) via perl
+- **Safety**: `--` before filenames in grep calls; missing-value checks on all option flags (`-o`, `-m`, `-n`, `-L`, `-t`)
+- **Java regex**: access modifier now optional — captures package-private methods
+- **Paths output**: respects `--max-symbols` cap (was previously uncapped)
+- **Tests**: `_validate_lang_json` passes variables as argv (no shell interpolation); `run_test` reports crashes with exit code; truncated field uses canonical JSON booleans
+- **Docs**: fenced code blocks annotated with language specifiers (MD040); TESTING.md language list expanded to all 12; TEST_QUICKSTART.md total updated to 259
+- CodeRabbit review: **0 findings** on this release
+
 ### v1.6.0
 
 **Introduces `fmap` — code cartography.** The fourth tool in the suite, completing the recon pipeline from "what's here" to "what's inside the code."
