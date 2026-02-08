@@ -1,3 +1,14 @@
+fsuite (1.6.0-1) unstable; urgency=medium
+
+  * fmap: new code cartography tool — structural skeleton extraction
+  * fmap: 12 language support (Python, JS, TS, Rust, Go, Java, C, C++, Ruby, Lua, PHP, Bash)
+  * fmap: 3 modes (directory, single file, stdin pipe), 3 output formats
+  * fmap: line-level dedup, telemetry integration, default ignore list
+  * fmap: 58-test suite with per-language exact parsing and dedup regression
+  * CodeRabbit review fixes: Go regex, paths cap, exit code, telemetry isolation
+
+ -- Chess Williams <chess.w.williams@gmail.com>  Sat, 08 Feb 2026 05:00:00 -0600
+
 fsuite (1.5.0-1) unstable; urgency=medium
 
   * --project-name flag for all tools (telemetry override)
