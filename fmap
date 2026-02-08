@@ -1,0 +1,890 @@
+#!/usr/bin/env bash
+# fmap — code cartography: extract structural skeleton (functions, classes, imports, types) from source files.
+# Part of fsuite. Uses grep -n -E -I for zero-dependency extraction.
+
+set -euo pipefail
+
+VERSION="1.5.0"
+
+# -------------------------
+# Source common library for tiered telemetry
+# -------------------------
+_FSUITE_SCRIPT_DIR="$(cd "$(dirname "$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
+_FSUITE_LIB="$_FSUITE_SCRIPT_DIR/_fsuite_common.sh"
+[[ ! -f "$_FSUITE_LIB" ]] && _FSUITE_LIB="/usr/share/fsuite/_fsuite_common.sh"
+[[ -f "$_FSUITE_LIB" ]] && source "$_FSUITE_LIB" || true
+
+# -------------------------
+# Telemetry — opt-out via FSUITE_TELEMETRY=0
+# Tiers: 0=disabled, 1=timing+bytes, 2=+hardware, 3=+profile
+# -------------------------
+_FSUITE_TELEM="${FSUITE_TELEMETRY:-1}"
+[[ "$_FSUITE_TELEM" =~ ^[0-9]+$ ]] || _FSUITE_TELEM=1
+_TELEM_START_MS=$(date +%s%3N 2>/dev/null || echo 0)
+_TELEM_EXIT_CODE=0
+_TELEM_BYTES=-1
+_TELEM_FLAGS=""
+_TELEM_PROJECT_NAME=""
+
+_fsuite_record_telemetry() {
+  _TELEM_EXIT_CODE=$?
+  (( _FSUITE_TELEM >= 1 )) || return 0
+  [[ "$_TELEM_START_MS" != "0" ]] || return 0
+  [[ "$_TELEM_START_MS" =~ ^[0-9]+$ ]] || return 0
+  local end_ms
+  end_ms=$(date +%s%3N 2>/dev/null || echo 0)
+  [[ "$end_ms" != "0" ]] || return 0
+  [[ "$end_ms" =~ ^[0-9]+$ ]] || return 0
+  local dur_ms=$(( end_ms - _TELEM_START_MS ))
+  (( dur_ms < 0 )) && dur_ms=0
+  local telem_dir="$HOME/.fsuite"
+  mkdir -p "$telem_dir" 2>/dev/null || return 0
+  local ts
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "unknown")
+  local mode="directory"
+  (( ${FILES_FROM_STDIN:-0} == 1 )) && mode="stdin_files"
+  (( ${SINGLE_FILE:-0} == 1 )) && mode="single_file"
+  local ph=""
+  if [[ -n "${SEARCH_PATH:-}" ]]; then
+    local abs_sp
+    abs_sp=$(cd "$SEARCH_PATH" 2>/dev/null && pwd) || abs_sp="$SEARCH_PATH"
+    ph=$(printf "%s" "$abs_sp" | sha256sum 2>/dev/null | cut -c1-16) || true
+    [[ -z "$ph" ]] && ph="unknown"
+  fi
+  local pn=""
+  if [[ -n "${SEARCH_PATH:-}" ]]; then
+    local abs_pn
+    abs_pn=$(cd "$SEARCH_PATH" 2>/dev/null && pwd) || abs_pn="$SEARCH_PATH"
+    if type _fsuite_infer_project_name &>/dev/null; then
+      pn=$(_fsuite_infer_project_name "$abs_pn")
+    else
+      pn=$(basename "$abs_pn" | tr -cd '[:alnum:]. _-')
+    fi
+  fi
+  if [[ -n "${_TELEM_PROJECT_NAME:-}" ]]; then
+    pn=$(printf '%s' "$_TELEM_PROJECT_NAME" | tr -cd '[:alnum:]. _-')
+  fi
+  if [[ "$_TELEM_BYTES" -eq -1 ]] && (( ${FILES_FROM_STDIN:-0} == 0 )) && [[ -d "${SEARCH_PATH:-}" ]]; then
+    local _bs=""
+    if command -v timeout >/dev/null 2>&1; then
+      _bs=$(timeout 3 du -sb "$SEARCH_PATH" 2>/dev/null | cut -f1) || _bs=""
+    else
+      _bs=$(du -sk "$SEARCH_PATH" 2>/dev/null | cut -f1) || _bs=""
+      [[ "${_bs:-}" =~ ^[0-9]+$ ]] && _bs=$(( _bs * 1024 ))
+    fi
+    [[ "${_bs:-}" =~ ^[0-9]+$ ]] && _TELEM_BYTES="$_bs"
+  fi
+  if type _fsuite_collect_hw_telemetry &>/dev/null; then
+    _fsuite_collect_hw_telemetry "$_FSUITE_TELEM" "${SEARCH_PATH:-}"
+  fi
+  local _hw_fields=""
+  if type _fsuite_hw_json_fields &>/dev/null && (( _FSUITE_TELEM >= 2 )); then
+    _hw_fields=$(_fsuite_hw_json_fields "$_FSUITE_TELEM")
+    [[ -n "$_hw_fields" ]] && _hw_fields=",${_hw_fields}"
+  fi
+  local _safe_flags
+  _safe_flags=$(printf '%s' "${_TELEM_FLAGS# }" | tr -cd '[:alnum:] _./-' | head -c 200)
+  local _telem_line="{\"timestamp\":\"$ts\",\"tool\":\"fmap\",\"version\":\"$VERSION\",\"mode\":\"$mode\",\"path_hash\":\"$ph\",\"project_name\":\"$pn\",\"duration_ms\":$dur_ms,\"exit_code\":$_TELEM_EXIT_CODE,\"depth\":-1,\"items_scanned\":${TOTAL_FILES_SCANNED:-0},\"bytes_scanned\":${_TELEM_BYTES},\"flags\":\"$_safe_flags\",\"backend\":\"grep\"${_hw_fields}}"
+  {
+    flock -x 200 2>/dev/null
+    echo "$_telem_line" >> "$telem_dir/telemetry.jsonl"
+  } 200>"$telem_dir/.telemetry.lock" 2>/dev/null || true
+}
+
+# -------------------------
+# Defaults
+# -------------------------
+DEFAULT_PATH="."
+DEFAULT_OUTPUT="pretty"
+DEFAULT_MAX_SYMBOLS=500
+DEFAULT_MAX_FILES_DIR=500
+DEFAULT_MAX_FILES_STDIN=2000
+
+DEFAULT_IGNORE="node_modules|.git|venv|.venv|__pycache__|dist|build|.next|.cache|vendor|target|.gradle|.idea|.vscode|*.egg-info|.tox|.mypy_cache|.pytest_cache|.DS_Store|.terraform"
+
+# -------------------------
+# Helpers
+# -------------------------
+die() {
+  echo "fmap: $*" >&2
+  exit 2
+}
+
+has() { command -v "$1" >/dev/null 2>&1; }
+
+json_escape() {
+  sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/\\t/g' -e 's/\r/\\r/g' -e ':a;N;$!ba;s/\n/\\n/g'
+}
+
+name_matches_ignore() {
+  local name="$1"
+  local pattern="$2"
+  [[ -z "$pattern" ]] && return 1
+  local IFS='|'
+  local tok
+  for tok in $pattern; do
+    [[ -z "$tok" ]] && continue
+    # shellcheck disable=SC2254
+    case "$name" in
+      $tok) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+usage() {
+  cat <<'EOF'
+fmap — code cartography: extract structural skeleton from source files (agent-friendly)
+
+USAGE
+  fmap [OPTIONS] [path]
+
+MODES
+  1) Directory mode:
+     fmap /project
+     - Scans all recognized source files under /project
+
+  2) Single file mode:
+     fmap /project/file.js
+     - Extracts symbols from one file
+
+  3) Piped file-list mode (best with fsearch):
+     fsearch -o paths '*.py' /project | fmap -o json
+     - Reads file paths from stdin
+
+OPTIONS
+  -o, --output pretty|paths|json
+      pretty: human-readable grouped by file (default)
+      paths:  unique file paths with symbols, one per line
+      json:   structured JSON with symbol metadata
+
+  -m, --max-symbols N
+      Cap total symbols shown. Default: 500
+
+  -n, --max-files N
+      Cap files processed. Default: 500 (directory), 2000 (stdin)
+
+  -L, --lang <lang>
+      Force language (auto-detect by default).
+      Supported: python, javascript, typescript, rust, go, java,
+                 c, cpp, ruby, lua, php, bash
+
+  -t, --type <type>
+      Filter symbol types: function, class, import, type, export, constant
+
+  --no-imports
+      Skip import lines. Overridden by -t import.
+
+  --no-default-ignore
+      Disable built-in ignore list in directory mode.
+
+  -q, --quiet
+      Suppress header lines in pretty mode.
+
+  --project-name <name>
+      Override project name in telemetry.
+
+  --self-check
+      Verify grep is available.
+
+  --install-hints
+      Print how to install grep and exit.
+
+  -h, --help
+      Show help and exit.
+
+  --version
+      Print version and exit.
+
+SUPPORTED LANGUAGES
+  Python, JavaScript, TypeScript, Rust, Go, Java, C, C++,
+  Ruby, Lua, PHP, Bash/Shell
+
+HEADLESS / AI AGENT USAGE
+  fmap -o json /project
+  fsearch -o paths '*.py' /project | fmap -o json
+  fmap -t function -o json /project
+
+EOF
+}
+
+print_install_hints() {
+  cat <<'EOF'
+Install grep (usually pre-installed):
+
+Debian/Ubuntu:
+  sudo apt update && sudo apt install -y grep
+
+Tip: authenticate once first:
+  sudo -v
+EOF
+}
+
+# -------------------------
+# Parse args
+# -------------------------
+TARGET=""
+OUTPUT="$DEFAULT_OUTPUT"
+MAX_SYMBOLS="$DEFAULT_MAX_SYMBOLS"
+MAX_FILES=""
+FORCE_LANG=""
+FILTER_TYPE=""
+NO_IMPORTS=0
+NO_DEFAULT_IGNORE=0
+INSTALL_HINTS=0
+SELF_CHECK=0
+QUIET=0
+
+# Pre-process arguments: expand combined short flags like -m5 to -m 5, -n10 to -n 10
+_args=()
+for _arg in "$@"; do
+  if [[ "$_arg" =~ ^-([mn])([0-9]+)$ ]]; then
+    _args+=("-${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
+  else
+    _args+=("$_arg")
+  fi
+done
+set -- "${_args[@]}"
+
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o|--output) OUTPUT="${2:-}"; shift 2 ;;
+    -m|--max-symbols) MAX_SYMBOLS="${2:-}"; _TELEM_FLAGS+=" -m $2"; shift 2 ;;
+    -n|--max-files) MAX_FILES="${2:-}"; _TELEM_FLAGS+=" -n $2"; shift 2 ;;
+    -L|--lang) FORCE_LANG="${2:-}"; _TELEM_FLAGS+=" -L $2"; shift 2 ;;
+    -t|--type) FILTER_TYPE="${2:-}"; _TELEM_FLAGS+=" -t $2"; shift 2 ;;
+    --no-imports) NO_IMPORTS=1; _TELEM_FLAGS+=" --no-imports"; shift ;;
+    --no-default-ignore) NO_DEFAULT_IGNORE=1; _TELEM_FLAGS+=" --no-default-ignore"; shift ;;
+    -q|--quiet) QUIET=1; _TELEM_FLAGS+=" -q"; shift ;;
+    --project-name)
+      [[ -n "${2:-}" ]] || die "Missing value for --project-name"
+      _TELEM_PROJECT_NAME="$2"; shift 2 ;;
+    --install-hints) INSTALL_HINTS=1; shift ;;
+    --self-check) SELF_CHECK=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --version) echo "fmap $VERSION"; exit 0 ;;
+    -*) die "Unknown option: $1 (try --help)" ;;
+    *) POSITIONAL+=("$1"); shift ;;
+  esac
+done
+
+TARGET="${POSITIONAL[0]:-}"
+
+if (( INSTALL_HINTS == 1 )); then
+  print_install_hints
+  exit 0
+fi
+
+if (( SELF_CHECK == 1 )); then
+  echo "Self-check:"
+  if has grep; then
+    echo "  ✓ grep available ($(command -v grep))"
+  else
+    echo "  ✗ grep not found. Run: fmap --install-hints"
+  fi
+  exit 0
+fi
+
+# Seed telemetry flags
+_TELEM_FLAGS+=" -o ${OUTPUT:-pretty}"
+
+# Validation
+case "$OUTPUT" in pretty|paths|json) ;; *) die "Invalid --output: $OUTPUT" ;; esac
+[[ "$MAX_SYMBOLS" =~ ^[0-9]+$ ]] || die "-m/--max-symbols must be an integer"
+[[ -z "$MAX_FILES" ]] || [[ "$MAX_FILES" =~ ^[0-9]+$ ]] || die "-n/--max-files must be an integer"
+if [[ -n "$FILTER_TYPE" ]]; then
+  case "$FILTER_TYPE" in
+    function|class|import|type|export|constant) ;;
+    *) die "Invalid --type: $FILTER_TYPE (valid: function, class, import, type, export, constant)" ;;
+  esac
+fi
+if [[ -n "$FORCE_LANG" ]]; then
+  case "$FORCE_LANG" in
+    python|javascript|typescript|rust|go|java|c|cpp|ruby|lua|php|bash) ;;
+    *) die "Invalid --lang: $FORCE_LANG (valid: python, javascript, typescript, rust, go, java, c, cpp, ruby, lua, php, bash)" ;;
+  esac
+fi
+
+has grep || die "grep is required. Run: fmap --install-hints"
+
+# -------------------------
+# Mode detection (matches fcontent pattern)
+# -------------------------
+EXPLICIT_PATH=0
+if [[ -n "$TARGET" ]]; then
+  EXPLICIT_PATH=1
+fi
+
+FILES_FROM_STDIN=0
+SINGLE_FILE=0
+
+if (( EXPLICIT_PATH == 1 )); then
+  if [[ -f "$TARGET" ]]; then
+    SINGLE_FILE=1
+  elif [[ -d "$TARGET" ]]; then
+    SINGLE_FILE=0
+  else
+    die "Path does not exist: $TARGET"
+  fi
+elif ! [ -t 0 ]; then
+  FILES_FROM_STDIN=1
+else
+  TARGET="$DEFAULT_PATH"
+  if [[ ! -d "$TARGET" ]]; then
+    die "No path specified and current directory not accessible"
+  fi
+fi
+
+# Resolve SEARCH_PATH for telemetry
+SEARCH_PATH="${TARGET:-.}"
+if (( SINGLE_FILE == 1 )); then
+  SEARCH_PATH="$(dirname "$TARGET")"
+fi
+
+# Set MAX_FILES default based on mode
+if [[ -z "$MAX_FILES" ]]; then
+  if (( FILES_FROM_STDIN == 1 )); then
+    MAX_FILES="$DEFAULT_MAX_FILES_STDIN"
+  else
+    MAX_FILES="$DEFAULT_MAX_FILES_DIR"
+  fi
+fi
+
+# -------------------------
+# Temp file and cleanup
+# -------------------------
+TMP_LIST=""
+TMP_SYMBOLS=""
+cleanup() {
+  [[ -n "$TMP_LIST" && -f "$TMP_LIST" ]] && rm -f "$TMP_LIST" || true
+  [[ -n "$TMP_SYMBOLS" && -f "$TMP_SYMBOLS" ]] && rm -f "$TMP_SYMBOLS" || true
+}
+trap '_exit_code=$?; _TELEM_EXIT_CODE=$_exit_code; _fsuite_record_telemetry; cleanup; exit $_exit_code' EXIT
+
+# -------------------------
+# File collection
+# -------------------------
+declare -a FILE_LIST=()
+
+if (( SINGLE_FILE == 1 )); then
+  FILE_LIST=("$TARGET")
+elif (( FILES_FROM_STDIN == 1 )); then
+  TMP_LIST="$(mktemp)"
+  awk 'NF{print}' | head -n "$MAX_FILES" > "$TMP_LIST"
+  if [[ ! -s "$TMP_LIST" ]]; then
+    die "No file paths received on stdin."
+  fi
+  mapfile -t FILE_LIST < "$TMP_LIST"
+  # Infer SEARCH_PATH from first file
+  if [[ -z "$_TELEM_PROJECT_NAME" ]] && [[ ${#FILE_LIST[@]} -gt 0 ]]; then
+    _first_file="${FILE_LIST[0]}"
+    if [[ -e "$_first_file" ]]; then
+      _infer_dir=$(cd "$(dirname "$_first_file")" 2>/dev/null && pwd) || _infer_dir=""
+      if [[ -n "$_infer_dir" ]]; then
+        _walk="$_infer_dir"
+        while [[ "$_walk" != "/" ]]; do
+          if [[ -d "$_walk/.git" ]] || [[ -f "$_walk/package.json" ]] || \
+             [[ -f "$_walk/Cargo.toml" ]] || [[ -f "$_walk/go.mod" ]] || \
+             [[ -f "$_walk/pyproject.toml" ]]; then
+            SEARCH_PATH="$_walk"
+            break
+          fi
+          _walk=$(dirname "$_walk")
+        done
+        [[ "$SEARCH_PATH" == "." ]] && SEARCH_PATH="$_infer_dir"
+      fi
+    fi
+  fi
+else
+  # Directory mode: find source files
+  _ignore_pattern=""
+  if (( NO_DEFAULT_IGNORE == 0 )); then
+    _ignore_pattern="$DEFAULT_IGNORE"
+  fi
+
+  # Build find command with prune patterns
+  _find_args=(find "$TARGET" -type f)
+  if [[ -n "$_ignore_pattern" ]]; then
+    _prune_expr=""
+    IFS='|' read -r -a _ignore_toks <<< "$_ignore_pattern"
+    _find_prune_args=("(")
+    local_first=1
+    for _tok in "${_ignore_toks[@]}"; do
+      [[ -z "$_tok" ]] && continue
+      if (( local_first == 0 )); then
+        _find_prune_args+=("-o")
+      fi
+      local_first=0
+      _find_prune_args+=("-name" "$_tok")
+    done
+    _find_prune_args+=(")" "-prune" "-o" "-type" "f" "-print")
+    mapfile -t FILE_LIST < <(find "$TARGET" "${_find_prune_args[@]}" 2>/dev/null | head -n "$MAX_FILES")
+  else
+    mapfile -t FILE_LIST < <(find "$TARGET" -type f 2>/dev/null | head -n "$MAX_FILES")
+  fi
+fi
+
+TOTAL_FILES_SCANNED=0
+TOTAL_FILES_WITH_SYMBOLS=0
+TOTAL_SYMBOLS=0
+SHOWN_SYMBOLS=0
+
+# -------------------------
+# Language detection
+# -------------------------
+detect_language() {
+  local file="$1"
+
+  if [[ -n "$FORCE_LANG" ]]; then
+    echo "$FORCE_LANG"
+    return
+  fi
+
+  local base ext
+  base="$(basename "$file")"
+  ext="${base##*.}"
+
+  # If no extension (base == ext means no dot)
+  if [[ "$base" == "$ext" ]]; then
+    ext=""
+  fi
+
+  case "$ext" in
+    py|pyw|pyi) echo "python"; return ;;
+    js|mjs|cjs|jsx) echo "javascript"; return ;;
+    ts|tsx|mts|cts) echo "typescript"; return ;;
+    rs) echo "rust"; return ;;
+    go) echo "go"; return ;;
+    java) echo "java"; return ;;
+    c|h) echo "c"; return ;;
+    cpp|cc|cxx|hpp|hxx|hh) echo "cpp"; return ;;
+    rb|rake|gemspec) echo "ruby"; return ;;
+    lua) echo "lua"; return ;;
+    php) echo "php"; return ;;
+    sh|bash) echo "bash"; return ;;
+    bashrc|bash_profile|bash_login|bash_logout|profile) echo "bash"; return ;;
+    ebuild|eclass) echo "bash"; return ;;
+  esac
+
+  # Shebang fallback for extensionless files
+  if [[ -z "$ext" ]] && [[ -f "$file" ]]; then
+    local first_line
+    first_line=$(head -1 "$file" 2>/dev/null) || true
+    if [[ "$first_line" =~ ^#!.*([ /]bash|[ /]sh|[ /]dash) ]]; then
+      echo "bash"; return
+    fi
+    if [[ "$first_line" =~ ^#!.*([ /]python) ]]; then
+      echo "python"; return
+    fi
+    if [[ "$first_line" =~ ^#!.*([ /]node) ]]; then
+      echo "javascript"; return
+    fi
+    if [[ "$first_line" =~ ^#!.*([ /]ruby) ]]; then
+      echo "ruby"; return
+    fi
+    if [[ "$first_line" =~ ^#!.*([ /]lua) ]]; then
+      echo "lua"; return
+    fi
+    if [[ "$first_line" =~ ^#!.*([ /]php) ]]; then
+      echo "php"; return
+    fi
+  fi
+
+  echo ""
+}
+
+# -------------------------
+# Symbol extraction
+# Output: tab-delimited LINENO\tTYPE\tINDENT\tTEXT per match
+# -------------------------
+extract_symbols() {
+  local file="$1"
+  local lang="$2"
+
+  [[ -z "$lang" ]] && return
+
+  local patterns=()
+
+  case "$lang" in
+    python)
+      patterns=(
+        "function:^[[:space:]]*(async[[:space:]]+)?def[[:space:]]+[_a-zA-Z]"
+        "class:^[[:space:]]*class[[:space:]]+[_a-zA-Z]"
+        "import:^[[:space:]]*(import[[:space:]]|from[[:space:]])"
+        "constant:^[A-Z][A-Z0-9_]*[[:space:]]*="
+      )
+      ;;
+    javascript)
+      patterns=(
+        "function:^[[:space:]]*(async[[:space:]]+)?function[[:space:]]"
+        "function:^[[:space:]]*(const|let|var)[[:space:]]+[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]*=[[:space:]]*(async[[:space:]]*)?\("
+        "function:^[[:space:]]*(const|let|var)[[:space:]]+[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]*=[[:space:]]*(async[[:space:]]*)?\([^)]*\)[[:space:]]*=>"
+        "class:^[[:space:]]*(export[[:space:]]+)?(default[[:space:]]+)?class[[:space:]]"
+        "import:^[[:space:]]*import[[:space:]]"
+        "import:^[[:space:]]*const[[:space:]]+.*=[[:space:]]*require\("
+        "export:^[[:space:]]*export[[:space:]]+(default[[:space:]]+)?(function|class|const|let|var|async)"
+        "export:^[[:space:]]*module\.exports"
+        "constant:^[[:space:]]*const[[:space:]]+[A-Z][A-Z0-9_]*[[:space:]]*="
+      )
+      ;;
+    typescript)
+      patterns=(
+        "function:^[[:space:]]*(async[[:space:]]+)?function[[:space:]]"
+        "function:^[[:space:]]*(const|let|var)[[:space:]]+[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]*=[[:space:]]*(async[[:space:]]*)?\("
+        "function:^[[:space:]]*(const|let|var)[[:space:]]+[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]*=[[:space:]]*(async[[:space:]]*)?\([^)]*\)[[:space:]]*=>"
+        "class:^[[:space:]]*(export[[:space:]]+)?(default[[:space:]]+)?(abstract[[:space:]]+)?class[[:space:]]"
+        "import:^[[:space:]]*import[[:space:]]"
+        "type:^[[:space:]]*(export[[:space:]]+)?interface[[:space:]]"
+        "type:^[[:space:]]*(export[[:space:]]+)?type[[:space:]]+[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]*="
+        "type:^[[:space:]]*(export[[:space:]]+)?(const[[:space:]]+)?enum[[:space:]]"
+        "export:^[[:space:]]*export[[:space:]]+(default[[:space:]]+)?(function|class|const|let|var|async|interface|type|enum|abstract)"
+        "export:^[[:space:]]*module\.exports"
+        "constant:^[[:space:]]*const[[:space:]]+[A-Z][A-Z0-9_]*[[:space:]]*[:=]"
+      )
+      ;;
+    rust)
+      patterns=(
+        "function:^[[:space:]]*(pub([[:space:]]*\([^)]*\))?[[:space:]]+)?(async[[:space:]]+)?(unsafe[[:space:]]+)?fn[[:space:]]"
+        "class:^[[:space:]]*(pub([[:space:]]*\([^)]*\))?[[:space:]]+)?struct[[:space:]]"
+        "class:^[[:space:]]*(pub([[:space:]]*\([^)]*\))?[[:space:]]+)?enum[[:space:]]"
+        "class:^[[:space:]]*(pub([[:space:]]*\([^)]*\))?[[:space:]]+)?(unsafe[[:space:]]+)?trait[[:space:]]"
+        "import:^[[:space:]]*use[[:space:]]"
+        "type:^[[:space:]]*(pub([[:space:]]*\([^)]*\))?[[:space:]]+)?type[[:space:]]"
+        "constant:^[[:space:]]*(pub([[:space:]]*\([^)]*\))?[[:space:]]+)?const[[:space:]]"
+        "constant:^[[:space:]]*(pub([[:space:]]*\([^)]*\))?[[:space:]]+)?static[[:space:]]"
+        "export:^[[:space:]]*(pub([[:space:]]*\([^)]*\))?[[:space:]]+)?mod[[:space:]]"
+      )
+      ;;
+    go)
+      patterns=(
+        "function:^func[[:space:]]"
+        "class:^type[[:space:]]+[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]+struct[[:space:]]"
+        "class:^type[[:space:]]+[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]+interface[[:space:]]"
+        "import:^import[[:space:]]"
+        "import:^[[:space:]]*\"[^\"]+\""
+        "constant:^const[[:space:]]"
+        "constant:^var[[:space:]]"
+      )
+      ;;
+    java)
+      patterns=(
+        "class:^[[:space:]]*(public|private|protected)?[[:space:]]*(abstract[[:space:]]+)?(static[[:space:]]+)?(final[[:space:]]+)?(class|interface|enum)[[:space:]]"
+        "function:^[[:space:]]*(public|private|protected)[[:space:]]+(abstract[[:space:]]+)?(static[[:space:]]+)?(final[[:space:]]+)?(synchronized[[:space:]]+)?[_a-zA-Z][_a-zA-Z0-9<>,[:space:]]*[[:space:]]+[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]*\("
+        "import:^[[:space:]]*import[[:space:]]"
+      )
+      ;;
+    c)
+      patterns=(
+        "import:^[[:space:]]*#include[[:space:]]"
+        "class:^[[:space:]]*(typedef[[:space:]]+)?(struct|enum|union)[[:space:]]"
+        "function:^[_a-zA-Z][_a-zA-Z0-9*[:space:]]+[[:space:]]+[*]*[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]*\("
+        "type:^[[:space:]]*typedef[[:space:]]"
+        "constant:^[[:space:]]*#define[[:space:]]"
+      )
+      ;;
+    cpp)
+      patterns=(
+        "import:^[[:space:]]*#include[[:space:]]"
+        "class:^[[:space:]]*(template[[:space:]]*<[^>]*>[[:space:]]*)?(class|struct|enum|union)[[:space:]]"
+        "function:^[_a-zA-Z][_a-zA-Z0-9*[:space:]:<>]+[[:space:]]+[*&]*[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]*\("
+        "type:^[[:space:]]*typedef[[:space:]]"
+        "type:^[[:space:]]*using[[:space:]]+[_a-zA-Z]"
+        "constant:^[[:space:]]*#define[[:space:]]"
+        "constant:^[[:space:]]*(constexpr|const)[[:space:]]"
+        "export:^[[:space:]]*namespace[[:space:]]"
+      )
+      ;;
+    ruby)
+      patterns=(
+        "class:^[[:space:]]*(class|module)[[:space:]]"
+        "function:^[[:space:]]*def[[:space:]]"
+        "import:^[[:space:]]*(require|require_relative|load|autoload)[[:space:]]"
+        "constant:^[[:space:]]*[A-Z][A-Z0-9_]*[[:space:]]*="
+      )
+      ;;
+    lua)
+      patterns=(
+        "function:^[[:space:]]*(local[[:space:]]+)?function[[:space:]]"
+        "function:^[[:space:]]*[_a-zA-Z][._a-zA-Z0-9]*[[:space:]]*=[[:space:]]*function"
+        "import:^[[:space:]]*(local[[:space:]]+)?[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]*=[[:space:]]*require"
+      )
+      ;;
+    php)
+      patterns=(
+        "function:^[[:space:]]*(public|private|protected)?[[:space:]]*(static[[:space:]]+)?function[[:space:]]"
+        "class:^[[:space:]]*(abstract[[:space:]]+)?(final[[:space:]]+)?(class|interface|trait)[[:space:]]"
+        "import:^[[:space:]]*(use|require|require_once|include|include_once)[[:space:]]"
+        "constant:^[[:space:]]*(const[[:space:]]|define\()"
+      )
+      ;;
+    bash)
+      patterns=(
+        "function:^[[:space:]]*[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]*\(\)[[:space:]]*\{?"
+        "function:^[[:space:]]*function[[:space:]]+[_a-zA-Z][_a-zA-Z0-9]*([[:space:]]*\(\))?[[:space:]]*\{?"
+        "import:^[[:space:]]*(source|\\.)[[:space:]]"
+        "export:^[[:space:]]*export[[:space:]]"
+        "constant:^[[:space:]]*(readonly|declare[[:space:]]+-r|typeset[[:space:]]+-r)[[:space:]]"
+      )
+      ;;
+  esac
+
+  # Collect all matches, then deduplicate by line number (first type wins)
+  local sym_type regex
+  local _raw_output=""
+  for pat_spec in "${patterns[@]}"; do
+    sym_type="${pat_spec%%:*}"
+    regex="${pat_spec#*:}"
+    # grep -n -E -I: line numbers, extended regex, skip binary
+    while IFS= read -r line; do
+      local lineno="${line%%:*}"
+      local text="${line#*:}"
+      # Calculate indent: count leading whitespace, tabs as 4 spaces
+      local stripped="${text#"${text%%[![:space:]]*}"}"
+      local leading="${text%"$stripped"}"
+      local indent=0
+      local ch
+      for (( _i=0; _i<${#leading}; _i++ )); do
+        ch="${leading:_i:1}"
+        if [[ "$ch" == $'\t' ]]; then
+          indent=$(( indent + 4 ))
+        else
+          indent=$(( indent + 1 ))
+        fi
+      done
+      # Trim trailing whitespace from text
+      text="${text%"${text##*[![:space:]]}"}"
+      _raw_output+="$(printf '%s\t%s\t%s\t%s' "$lineno" "$sym_type" "$indent" "$text")"$'\n'
+    done < <(grep -n -E -I "$regex" "$file" 2>/dev/null || true)
+  done
+  # Deduplicate: sort by line number, keep first occurrence per line
+  if [[ -n "$_raw_output" ]]; then
+    printf '%s' "$_raw_output" | sort -t$'\t' -k1,1n -s | awk -F'\t' '!seen[$1]++'
+  fi
+}
+
+# -------------------------
+# Main processing loop
+# -------------------------
+# We collect all symbols, then output
+TMP_SYMBOLS="$(mktemp)"
+
+declare -A LANG_COUNTS=()
+
+for file in "${FILE_LIST[@]}"; do
+  [[ -f "$file" ]] || continue
+  TOTAL_FILES_SCANNED=$((TOTAL_FILES_SCANNED + 1))
+
+  lang=$(detect_language "$file")
+  [[ -z "$lang" ]] && continue
+
+  # Extract symbols
+  local_symbols=$(extract_symbols "$file" "$lang") || true
+  [[ -z "$local_symbols" ]] && continue
+
+  # Apply filters
+  filtered_symbols=""
+  while IFS=$'\t' read -r lineno sym_type indent text; do
+    [[ -z "$lineno" ]] && continue
+
+    # --no-imports filter (unless -t import overrides)
+    if (( NO_IMPORTS == 1 )) && [[ "$sym_type" == "import" ]] && [[ "$FILTER_TYPE" != "import" ]]; then
+      continue
+    fi
+
+    # -t type filter
+    if [[ -n "$FILTER_TYPE" ]] && [[ "$sym_type" != "$FILTER_TYPE" ]]; then
+      continue
+    fi
+
+    filtered_symbols+="${file}"$'\t'"${lineno}"$'\t'"${sym_type}"$'\t'"${indent}"$'\t'"${text}"$'\n'
+  done <<< "$local_symbols"
+
+  [[ -z "$filtered_symbols" ]] && continue
+
+  TOTAL_FILES_WITH_SYMBOLS=$((TOTAL_FILES_WITH_SYMBOLS + 1))
+
+  # Count language
+  LANG_COUNTS[$lang]=$(( ${LANG_COUNTS[$lang]:-0} + 1 ))
+
+  printf '%s' "$filtered_symbols" >> "$TMP_SYMBOLS"
+done
+
+# Count total symbols
+if [[ -s "$TMP_SYMBOLS" ]]; then
+  TOTAL_SYMBOLS=$(wc -l < "$TMP_SYMBOLS")
+  TOTAL_SYMBOLS="${TOTAL_SYMBOLS//[[:space:]]/}"
+else
+  TOTAL_SYMBOLS=0
+fi
+
+# Apply max-symbols cap
+SHOWN_SYMBOLS="$TOTAL_SYMBOLS"
+TRUNCATED=false
+if (( TOTAL_SYMBOLS > MAX_SYMBOLS )); then
+  SHOWN_SYMBOLS="$MAX_SYMBOLS"
+  TRUNCATED=true
+fi
+
+# -------------------------
+# Resolve path for output
+# -------------------------
+if (( SINGLE_FILE == 1 )); then
+  ABS_PATH="$(cd "$(dirname "$TARGET")" 2>/dev/null && echo "$(pwd)/$(basename "$TARGET")")" || ABS_PATH="$TARGET"
+elif [[ -n "$TARGET" ]] && [[ -d "$TARGET" ]]; then
+  ABS_PATH="$(cd "$TARGET" 2>/dev/null && pwd)" || ABS_PATH="$TARGET"
+else
+  ABS_PATH=""
+fi
+
+# -------------------------
+# Output: paths
+# -------------------------
+if [[ "$OUTPUT" == "paths" ]]; then
+  if [[ -s "$TMP_SYMBOLS" ]]; then
+    cut -f1 "$TMP_SYMBOLS" | sort -u | head -n "$SHOWN_SYMBOLS"
+  fi
+  exit 0
+fi
+
+# -------------------------
+# Output: json
+# -------------------------
+if [[ "$OUTPUT" == "json" ]]; then
+  # Determine mode
+  _mode="directory"
+  (( FILES_FROM_STDIN == 1 )) && _mode="stdin_files"
+  (( SINGLE_FILE == 1 )) && _mode="single_file"
+
+  echo -n "{"
+  echo -n "\"tool\":\"fmap\","
+  echo -n "\"version\":\"$VERSION\","
+  echo -n "\"mode\":\"$_mode\","
+  if [[ -n "$ABS_PATH" ]]; then
+    echo -n "\"path\":\"$(printf "%s" "$ABS_PATH" | json_escape)\","
+  fi
+  echo -n "\"total_files_scanned\":$TOTAL_FILES_SCANNED,"
+  echo -n "\"total_files_with_symbols\":$TOTAL_FILES_WITH_SYMBOLS,"
+  echo -n "\"total_symbols\":$TOTAL_SYMBOLS,"
+  echo -n "\"shown_symbols\":$SHOWN_SYMBOLS,"
+  echo -n "\"truncated\":$TRUNCATED,"
+
+  # Languages object
+  echo -n "\"languages\":{"
+  _lang_first=1
+  for _l in "${!LANG_COUNTS[@]}"; do
+    (( _lang_first )) || echo -n ","
+    _lang_first=0
+    echo -n "\"$_l\":${LANG_COUNTS[$_l]}"
+  done
+  echo -n "},"
+
+  # Files array
+  echo -n "\"files\":["
+
+  if [[ -s "$TMP_SYMBOLS" ]]; then
+    _sym_count=0
+    _file_first=1
+    _current_file=""
+    _file_sym_count=0
+    _file_lang=""
+    _file_symbols=""
+
+    _flush_file() {
+      if [[ -n "$_current_file" ]]; then
+        (( _file_first )) || echo -n ","
+        _file_first=0
+        echo -n "{\"path\":\"$(printf "%s" "$_current_file" | json_escape)\","
+        echo -n "\"language\":\"$_file_lang\","
+        echo -n "\"symbol_count\":$_file_sym_count,"
+        echo -n "\"symbols\":[${_file_symbols}]}"
+      fi
+    }
+
+    while IFS=$'\t' read -r _f _lineno _sym_type _indent _text; do
+      [[ -z "$_f" ]] && continue
+      (( _sym_count >= SHOWN_SYMBOLS )) && break
+      _sym_count=$((_sym_count + 1))
+
+      if [[ "$_f" != "$_current_file" ]]; then
+        _flush_file
+        _current_file="$_f"
+        _file_lang=$(detect_language "$_f")
+        _file_sym_count=0
+        _file_symbols=""
+      fi
+
+      _file_sym_count=$((_file_sym_count + 1))
+      [[ -n "$_file_symbols" ]] && _file_symbols+=","
+      _escaped_text=$(printf "%s" "$_text" | json_escape)
+      _file_symbols+="{\"line\":$_lineno,\"type\":\"$_sym_type\",\"indent\":$_indent,\"text\":\"$_escaped_text\"}"
+    done < "$TMP_SYMBOLS"
+    _flush_file
+  fi
+
+  echo -n "]}"
+  echo
+  exit 0
+fi
+
+# -------------------------
+# Output: pretty
+# -------------------------
+_mode_label="directory"
+(( FILES_FROM_STDIN == 1 )) && _mode_label="stdin_files"
+(( SINGLE_FILE == 1 )) && _mode_label="single_file"
+
+if (( QUIET == 0 )); then
+  echo "fmap (${ABS_PATH:-stdin})"
+  echo "  mode: $_mode_label"
+  echo "  files_scanned: $TOTAL_FILES_SCANNED (cap=$MAX_FILES)"
+  echo "  symbols: $TOTAL_SYMBOLS (cap=$MAX_SYMBOLS)"
+
+  # Languages line
+  _lang_line=""
+  for _l in "${!LANG_COUNTS[@]}"; do
+    [[ -n "$_lang_line" ]] && _lang_line+=" "
+    _lang_line+="${_l}=${LANG_COUNTS[$_l]}"
+  done
+  if [[ -n "$_lang_line" ]]; then
+    echo "  languages: $_lang_line"
+  fi
+  echo ""
+fi
+
+# truncation warning shown after symbols
+
+if [[ -s "$TMP_SYMBOLS" ]]; then
+  _sym_count=0
+  _current_file=""
+
+  while IFS=$'\t' read -r _f _lineno _sym_type _indent _text; do
+    [[ -z "$_f" ]] && continue
+    (( _sym_count >= SHOWN_SYMBOLS )) && break
+    _sym_count=$((_sym_count + 1))
+
+    if [[ "$_f" != "$_current_file" ]]; then
+      _current_file="$_f"
+      _file_lang=$(detect_language "$_f")
+      echo ""
+      echo "  $_f ($_file_lang)"
+    fi
+
+    # Indent display: 2 spaces base + indent/4 * 2 for nesting
+    _display_indent="    "
+    if (( _indent > 0 )); then
+      _nest_level=$(( _indent / 4 ))
+      for (( _i=0; _i<_nest_level; _i++ )); do
+        _display_indent+="  "
+      done
+    fi
+    echo "${_display_indent}[$_lineno] $_sym_type: $_text"
+  done < "$TMP_SYMBOLS"
+fi
+
+if [[ "$TRUNCATED" == "true" ]]; then
+  echo ""
+  echo "  ⚠ Showing $SHOWN_SYMBOLS of $TOTAL_SYMBOLS symbols (cap=$MAX_SYMBOLS)"
+fi
+
+exit 0
