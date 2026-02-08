@@ -1,3 +1,18 @@
+fsuite (1.6.1-1) unstable; urgency=medium
+
+  * Hardening patch: LC_ALL=C locale pinning for consistent grep behavior
+  * .h header heuristic: detect C++ constructs before defaulting to C
+  * json_escape rewrite: sed → perl for full control char handling
+  * O(n²) string concat → temp file streaming for large symbol sets
+  * Safety: -- before filenames in all grep calls
+  * Java: package-private method detection (optional access modifier)
+  * Missing-value checks for all option flags
+  * Paths output respects --max-symbols cap
+  * Test robustness: canonical JSON booleans, argv passing, crash reporting
+  * docs: Episode 1 — The Fourth Drone (fmap origin story)
+
+ -- Chess Williams <chess.w.williams@gmail.com>  Sat, 08 Feb 2026 12:00:00 -0600
+
 fsuite (1.6.0-1) unstable; urgency=medium
 
   * fmap: new code cartography tool — structural skeleton extraction
