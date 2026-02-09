@@ -479,3 +479,4 @@ for line in "${MATCH_LINES[@]}"; do
 done
 # Emit metacharacter warning to stderr (pretty mode)
 (( _METACHAR_WARNING == 1 )) && echo "Warning: $_METACHAR_WARNING_MSG" >&2
+exit 0
