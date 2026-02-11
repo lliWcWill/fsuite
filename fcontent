@@ -470,11 +470,36 @@ if (( SHOWN_MATCHES == 0 )); then
   (( _METACHAR_WARNING == 1 )) && echo "Warning: $_METACHAR_WARNING_MSG" >&2
   exit 0
 fi
+declare -A _SEEN_FILES
 for line in "${MATCH_LINES[@]}"; do
-  if (( QUIET == 1 )); then
-    echo "$line"
+  if [[ "$line" =~ ^([^:]+):([0-9]+):(.*) ]]; then
+    _cur_file="${BASH_REMATCH[1]}"
+    _cur_line="${BASH_REMATCH[2]}"
+    _cur_text="${BASH_REMATCH[3]}"
+    if [[ -z "${_SEEN_FILES[$_cur_file]+x}" ]]; then
+      # First occurrence of file — show full path
+      _SEEN_FILES[$_cur_file]=1
+      if (( QUIET == 1 )); then
+        echo "$line"
+      else
+        echo "     ${_cur_file}:${_cur_line}:${_cur_text}"
+      fi
+    else
+      # File seen before — show only basename:line:content
+      _basename="${_cur_file##*/}"
+      if (( QUIET == 1 )); then
+        echo "${_basename}:${_cur_line}:${_cur_text}"
+      else
+        echo "       ${_basename}:${_cur_line}:${_cur_text}"
+      fi
+    fi
   else
-    echo "     $line"
+    # Fallback: line doesn't match expected format
+    if (( QUIET == 1 )); then
+      echo "$line"
+    else
+      echo "     $line"
+    fi
   fi
 done
 # Emit metacharacter warning to stderr (pretty mode)
