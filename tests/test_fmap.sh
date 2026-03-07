@@ -435,6 +435,13 @@ CMD ["node", "app.js"]
 EXPOSE 80
 DKPEOF
 
+  # Dockerfile extension variant (foo.Dockerfile) for suffix detection
+  cat > "${TEST_DIR}/src/api.Dockerfile" <<'DKSEOF'
+FROM alpine:3.18
+ENV SERVICE=api
+CMD ["sh", "-c", "echo ok"]
+DKSEOF
+
   # Makefile fixture
   cat > "${TEST_DIR}/src/Makefile" <<'MKEOF'
 CC = gcc
@@ -1303,6 +1310,18 @@ test_dockerfile_prod_detection() {
   fi
 }
 
+test_dockerfile_suffix_detection() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" -o json "${TEST_DIR}/src/api.Dockerfile" 2>&1)
+  local lang
+  lang=$(echo "$output" | python3 -c "import json,sys; print(json.load(sys.stdin)['files'][0]['language'])" 2>/dev/null) || lang=""
+  if [[ "$lang" == "dockerfile" ]]; then
+    pass "api.Dockerfile detected as dockerfile"
+  else
+    fail "api.Dockerfile not detected correctly" "Got lang=$lang"
+  fi
+}
+
 test_dockerfile_no_run_copy() {
   local output
   output=$(FSUITE_TELEMETRY=3 "${FMAP}" "${TEST_DIR}/src/Dockerfile" 2>&1)
@@ -1563,6 +1582,7 @@ main() {
   # Dockerfile
   run_test "Dockerfile symbols" test_dir_dockerfile_symbols
   run_test "Dockerfile.prod detection" test_dockerfile_prod_detection
+  run_test "api.Dockerfile suffix detection" test_dockerfile_suffix_detection
   run_test "Dockerfile no RUN/COPY" test_dockerfile_no_run_copy
   run_test "Dockerfile exact parse" test_parse_dockerfile_exact
   run_test "Force lang dockerfile" test_force_lang_dockerfile

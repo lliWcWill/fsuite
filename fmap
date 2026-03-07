@@ -88,7 +88,7 @@ _fsuite_record_telemetry() {
   fi
   local _safe_flags
   _safe_flags=$(printf '%s' "${_TELEM_FLAGS# }" | tr -cd '[:alnum:] _./-' | head -c 200)
-  local _telem_line="{\"timestamp\":\"$ts\",\"tool\":\"fmap\",\"version\":\"$VERSION\",\"mode\":\"$mode\",\"path_hash\":\"$ph\",\"project_name\":\"$pn\",\"duration_ms\":$dur_ms,\"exit_code\":$_TELEM_EXIT_CODE,\"depth\":-1,\"items_scanned\":${TOTAL_FILES_SCANNED:-0},\"bytes_scanned\":${_TELEM_BYTES},\"flags\":\"$_safe_flags\",\"backend\":\"grep\"${_hw_fields}}"
+  local _telem_line="{\"timestamp\":\"$ts\",\"run_id\":\"${_TELEM_START_MS}_$$\",\"tool\":\"fmap\",\"version\":\"$VERSION\",\"mode\":\"$mode\",\"path_hash\":\"$ph\",\"project_name\":\"$pn\",\"duration_ms\":$dur_ms,\"exit_code\":$_TELEM_EXIT_CODE,\"depth\":-1,\"items_scanned\":${TOTAL_FILES_SCANNED:-0},\"bytes_scanned\":${_TELEM_BYTES},\"flags\":\"$_safe_flags\",\"backend\":\"grep\"${_hw_fields}}"
   {
     flock -x 200 2>/dev/null
     echo "$_telem_line" >> "$telem_dir/telemetry.jsonl"
@@ -477,7 +477,7 @@ detect_language() {
 
   # Basename-based detection for config files without standard extensions
   case "$base" in
-    Dockerfile|Dockerfile.*|Containerfile) echo "dockerfile"; return ;;
+    Dockerfile|Dockerfile.*|Containerfile|Containerfile.*|containerfile|containerfile.*) echo "dockerfile"; return ;;
     Makefile|makefile|GNUmakefile) echo "makefile"; return ;;
   esac
 
@@ -497,7 +497,7 @@ detect_language() {
     sh|bash) echo "bash"; return ;;
     bashrc|bash_profile|bash_login|bash_logout|profile) echo "bash"; return ;;
     ebuild|eclass) echo "bash"; return ;;
-    dockerfile) echo "dockerfile"; return ;;
+    dockerfile|Dockerfile|containerfile|Containerfile) echo "dockerfile"; return ;;
     mk) echo "makefile"; return ;;
     yml|yaml) echo "yaml"; return ;;
   esac

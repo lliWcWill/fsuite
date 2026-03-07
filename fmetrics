@@ -112,7 +112,15 @@ CREATE TABLE IF NOT EXISTS telemetry (
   bytes_scanned INTEGER NOT NULL DEFAULT -1,
   flags TEXT NOT NULL DEFAULT '',
   backend TEXT NOT NULL DEFAULT '',
-  UNIQUE(timestamp, tool, path_hash)
+  cpu_temp_mc INTEGER DEFAULT -1,
+  disk_temp_mc INTEGER DEFAULT -1,
+  ram_total_kb INTEGER DEFAULT -1,
+  ram_available_kb INTEGER DEFAULT -1,
+  load_avg_1m TEXT DEFAULT '-1',
+  filesystem_type TEXT DEFAULT 'unknown',
+  storage_type TEXT DEFAULT 'unknown',
+  run_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(run_id, tool, path_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_tool ON telemetry(tool);
 CREATE INDEX IF NOT EXISTS idx_project ON telemetry(project_name);
@@ -128,6 +136,55 @@ SQL
   sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN load_avg_1m TEXT DEFAULT '-1';" 2>/dev/null || true
   sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN filesystem_type TEXT DEFAULT 'unknown';" 2>/dev/null || true
   sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN storage_type TEXT DEFAULT 'unknown';" 2>/dev/null || true
+  sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN run_id TEXT DEFAULT '';" 2>/dev/null || true
+
+  # Migrate legacy UNIQUE(timestamp,tool,path_hash) schema to run_id-based dedupe.
+  local _has_old_unique
+  _has_old_unique=$(sqlite3 "$DB_FILE" "SELECT CASE WHEN lower(replace(replace(sql,' ',''),char(10),'')) LIKE '%unique(timestamp,tool,path_hash)%' THEN 1 ELSE 0 END FROM sqlite_master WHERE type='table' AND name='telemetry';" 2>/dev/null) || _has_old_unique="0"
+  [[ -z "$_has_old_unique" ]] && _has_old_unique="0"
+  if [[ "$_has_old_unique" == "1" ]]; then
+    sqlite3 "$DB_FILE" <<'SQL' >/dev/null 2>&1 || die "telemetry schema migration failed"
+.bail on
+BEGIN IMMEDIATE;
+ALTER TABLE telemetry RENAME TO telemetry_old;
+CREATE TABLE telemetry (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp TEXT NOT NULL,
+  tool TEXT NOT NULL,
+  version TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  path_hash TEXT NOT NULL,
+  project_name TEXT NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  exit_code INTEGER NOT NULL,
+  depth INTEGER NOT NULL DEFAULT -1,
+  items_scanned INTEGER NOT NULL DEFAULT -1,
+  bytes_scanned INTEGER NOT NULL DEFAULT -1,
+  flags TEXT NOT NULL DEFAULT '',
+  backend TEXT NOT NULL DEFAULT '',
+  cpu_temp_mc INTEGER DEFAULT -1,
+  disk_temp_mc INTEGER DEFAULT -1,
+  ram_total_kb INTEGER DEFAULT -1,
+  ram_available_kb INTEGER DEFAULT -1,
+  load_avg_1m TEXT DEFAULT '-1',
+  filesystem_type TEXT DEFAULT 'unknown',
+  storage_type TEXT DEFAULT 'unknown',
+  run_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(run_id, tool, path_hash)
+);
+INSERT INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend,cpu_temp_mc,disk_temp_mc,ram_total_kb,ram_available_kb,load_avg_1m,filesystem_type,storage_type,run_id)
+  SELECT timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend,
+    COALESCE(cpu_temp_mc,-1),COALESCE(disk_temp_mc,-1),COALESCE(ram_total_kb,-1),COALESCE(ram_available_kb,-1),
+    COALESCE(load_avg_1m,'-1'),COALESCE(filesystem_type,'unknown'),COALESCE(storage_type,'unknown'),
+    timestamp || '_' || printf('%010d', id)
+  FROM telemetry_old;
+DROP TABLE telemetry_old;
+CREATE INDEX IF NOT EXISTS idx_tool ON telemetry(tool);
+CREATE INDEX IF NOT EXISTS idx_project ON telemetry(project_name);
+CREATE INDEX IF NOT EXISTS idx_timestamp ON telemetry(timestamp);
+COMMIT;
+SQL
+  fi
 }
 
 # -------------------------
@@ -199,7 +256,7 @@ cmd_import() {
     (( total++ )) || true
 
     # Parse JSON fields using portable json_get (no grep -oP / PCRE dependency)
-    local ts tool ver mode ph pn dur ec dep items bytes flags backend
+    local ts tool ver mode ph pn dur ec dep items bytes flags backend run_id
     local cpu_temp disk_temp ram_total ram_avail load_avg
     ts=$(json_get "$line" "timestamp") || true
     [[ -n "$ts" ]] || { (( errors++ )); continue; }
@@ -236,6 +293,10 @@ cmd_import() {
     [[ -z "$fs_type" ]] && fs_type="unknown"
     stor_type=$(json_get "$line" "storage_type") || stor_type="unknown"
     [[ -z "$stor_type" ]] && stor_type="unknown"
+    run_id=$(json_get "$line" "run_id") || run_id=""
+    if [[ -z "$run_id" ]]; then
+      run_id="${ts}_${dur}_${total}"
+    fi
 
     # Sanitize string fields using helper (strips unsafe chars + escapes quotes)
     ts=$(sql_escape "$ts")
@@ -249,9 +310,10 @@ cmd_import() {
     load_avg=$(sql_escape "$load_avg")
     fs_type=$(sql_escape "$fs_type")
     stor_type=$(sql_escape "$stor_type")
+    run_id=$(sql_escape "$run_id")
 
     local result
-    result=$(sqlite3 "$DB_FILE" "INSERT OR IGNORE INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend,cpu_temp_mc,disk_temp_mc,ram_total_kb,ram_available_kb,load_avg_1m,filesystem_type,storage_type) VALUES ('$ts','$tool','$ver','$mode','$ph','$pn',$dur,$ec,$dep,$items,$bytes,'$flags','$backend',$cpu_temp,$disk_temp,$ram_total,$ram_avail,'$load_avg','$fs_type','$stor_type'); SELECT changes();" 2>/dev/null) || { (( errors++ )); continue; }
+    result=$(sqlite3 "$DB_FILE" "INSERT OR IGNORE INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend,cpu_temp_mc,disk_temp_mc,ram_total_kb,ram_available_kb,load_avg_1m,filesystem_type,storage_type,run_id) VALUES ('$ts','$tool','$ver','$mode','$ph','$pn',$dur,$ec,$dep,$items,$bytes,'$flags','$backend',$cpu_temp,$disk_temp,$ram_total,$ram_avail,'$load_avg','$fs_type','$stor_type','$run_id'); SELECT changes();" 2>/dev/null) || { (( errors++ )); continue; }
 
     if [[ "$result" == "1" ]]; then
       (( inserted++ )) || true

@@ -404,6 +404,73 @@ test_recon_paths_output() {
   fi
 }
 
+test_recon_depth2_duplicate_basenames() {
+  local dup_root="${TEST_DIR}/dup_paths"
+  mkdir -p "${dup_root}/A/src" "${dup_root}/B/src"
+  touch "${dup_root}/A/src/a.js" "${dup_root}/B/src/b.js"
+  local output
+  output=$("${FTREE}" --recon --recon-depth 2 --output json "${dup_root}" 2>&1)
+  if python3 -c '
+import json,sys
+d=json.loads(sys.stdin.read())
+paths={e.get("path","") for e in d.get("entries",[])}
+assert "A/src" in paths and "B/src" in paths
+' <<< "$output" 2>/dev/null; then
+    pass "Recon depth=2 preserves duplicate basenames with distinct paths"
+  else
+    fail "Recon depth=2 should preserve A/src and B/src paths" "Got: $output"
+  fi
+}
+
+test_recon_depth2_fullpaths_correct() {
+  local dup_root="${TEST_DIR}/dup_fullpaths"
+  mkdir -p "${dup_root}/A/src" "${dup_root}/B/src"
+  local output
+  output=$("${FTREE}" --recon --recon-depth 2 --output paths -f "${dup_root}" 2>&1)
+  local want_a="${dup_root}/A/src"
+  local want_b="${dup_root}/B/src"
+  if echo "$output" | grep -Fxq "$want_a" && echo "$output" | grep -Fxq "$want_b"; then
+    pass "Recon paths full output uses correct absolute rel_paths"
+  else
+    fail "Recon full paths should include both ${want_a} and ${want_b}" "Got: $output"
+  fi
+}
+
+test_recon_json_has_path_field() {
+  local output
+  output=$("${FTREE}" --recon --output json "${TEST_DIR}" 2>&1)
+  if python3 -c '
+import json,sys
+d=json.loads(sys.stdin.read())
+entries=d.get("entries",[])
+assert entries and all(("name" in e and "path" in e) for e in entries)
+' <<< "$output" 2>/dev/null; then
+    pass "Recon JSON includes both name and path fields"
+  else
+    fail "Recon JSON entries should include both name and path" "Got: $output"
+  fi
+}
+
+test_total_size_unknown_is_negative1() {
+  local shim_dir
+  shim_dir="$(mktemp -d)"
+  cat > "${shim_dir}/timeout" <<'EOF'
+#!/usr/bin/env bash
+exit 124
+EOF
+  chmod +x "${shim_dir}/timeout"
+
+  local output
+  output=$(PATH="${shim_dir}:$PATH" "${FTREE}" --recon --output json "${TEST_DIR}" 2>&1)
+  rm -rf "${shim_dir}"
+
+  if echo "$output" | grep -q '"total_size_bytes":-1'; then
+    pass "Recon JSON preserves total_size_bytes=-1 when size unknown"
+  else
+    fail "Recon JSON should keep total_size_bytes=-1 sentinel" "Got: $output"
+  fi
+}
+
 # ============================================================================
 # Snapshot Mode Tests
 # ============================================================================
@@ -974,6 +1041,10 @@ main() {
   run_test "Recon JSON output" test_recon_json_output
   run_test "Recon JSON entry fields" test_recon_json_entry_fields
   run_test "Recon paths output" test_recon_paths_output
+  run_test "Recon depth=2 duplicate basenames keep path identity" test_recon_depth2_duplicate_basenames
+  run_test "Recon depth=2 fullpaths are correct" test_recon_depth2_fullpaths_correct
+  run_test "Recon JSON includes path field" test_recon_json_has_path_field
+  run_test "Recon total_size_bytes preserves -1 sentinel" test_total_size_unknown_is_negative1
 
   # Snapshot mode
   run_test "Basic snapshot" test_snapshot_basic

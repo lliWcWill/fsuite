@@ -216,6 +216,28 @@ test_no_matches() {
   fi
 }
 
+test_quiet_exit_code_no_match() {
+  check_rg || return
+  local rc=0
+  "${FCONTENT}" -q "NONEXISTENT_STRING" "${TEST_DIR}" >/dev/null 2>&1 || rc=$?
+  if [[ $rc -eq 1 ]]; then
+    pass "Quiet mode exits 1 on no matches"
+  else
+    fail "Quiet mode should exit 1 on no matches" "rc=$rc"
+  fi
+}
+
+test_quiet_exit_code_match() {
+  check_rg || return
+  local rc=0
+  "${FCONTENT}" -q "ERROR" "${TEST_DIR}" >/dev/null 2>&1 || rc=$?
+  if [[ $rc -eq 0 ]]; then
+    pass "Quiet mode exits 0 on match"
+  else
+    fail "Quiet mode should exit 0 when matches exist" "rc=$rc"
+  fi
+}
+
 # ============================================================================
 # Stdin Mode Tests
 # ============================================================================
@@ -771,6 +793,8 @@ main() {
   run_test "Multiple files search" test_directory_multiple_files
   run_test "Recursive search" test_recursive_search
   run_test "No matches" test_no_matches
+  run_test "Quiet no-match exit code" test_quiet_exit_code_no_match
+  run_test "Quiet match exit code" test_quiet_exit_code_match
 
   # Stdin mode
   run_test "Stdin mode" test_stdin_mode
