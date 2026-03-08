@@ -75,13 +75,16 @@ sql_escape() {
 
 _find_predict_script() {
   local candidates=(
+    "${FSUITE_SHARE_DIR:-}/fmetrics-predict.py"
     "$SCRIPT_DIR/fmetrics-predict.py"
     "$SCRIPT_DIR/fmetrics-predict"
+    "$SCRIPT_DIR/../share/fsuite/fmetrics-predict.py"
+    "/usr/local/share/fsuite/fmetrics-predict.py"
     "/usr/share/fsuite/fmetrics-predict.py"
     "/usr/lib/fsuite/fmetrics-predict.py"
   )
   for c in "${candidates[@]}"; do
-    [[ -f "$c" ]] && { printf "%s" "$c"; return 0; }
+    [[ -n "$c" && -f "$c" ]] && { printf "%s" "$c"; return 0; }
   done
   return 1
 }
@@ -127,16 +130,6 @@ CREATE INDEX IF NOT EXISTS idx_project ON telemetry(project_name);
 CREATE INDEX IF NOT EXISTS idx_timestamp ON telemetry(timestamp);
 PRAGMA journal_mode=WAL;
 SQL
-
-  # Schema migration for Tier 2 hardware columns (idempotent - errors suppressed)
-  sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN cpu_temp_mc INTEGER DEFAULT -1;" 2>/dev/null || true
-  sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN disk_temp_mc INTEGER DEFAULT -1;" 2>/dev/null || true
-  sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN ram_total_kb INTEGER DEFAULT -1;" 2>/dev/null || true
-  sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN ram_available_kb INTEGER DEFAULT -1;" 2>/dev/null || true
-  sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN load_avg_1m TEXT DEFAULT '-1';" 2>/dev/null || true
-  sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN filesystem_type TEXT DEFAULT 'unknown';" 2>/dev/null || true
-  sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN storage_type TEXT DEFAULT 'unknown';" 2>/dev/null || true
-  sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN run_id TEXT DEFAULT '';" 2>/dev/null || true
 
   # Migrate legacy UNIQUE(timestamp,tool,path_hash) schema to run_id-based dedupe.
   local _has_old_unique
@@ -184,6 +177,16 @@ CREATE INDEX IF NOT EXISTS idx_project ON telemetry(project_name);
 CREATE INDEX IF NOT EXISTS idx_timestamp ON telemetry(timestamp);
 COMMIT;
 SQL
+  else
+    # Schema backfill for existing DBs that predate newer telemetry columns.
+    sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN cpu_temp_mc INTEGER DEFAULT -1;" 2>/dev/null || true
+    sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN disk_temp_mc INTEGER DEFAULT -1;" 2>/dev/null || true
+    sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN ram_total_kb INTEGER DEFAULT -1;" 2>/dev/null || true
+    sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN ram_available_kb INTEGER DEFAULT -1;" 2>/dev/null || true
+    sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN load_avg_1m TEXT DEFAULT '-1';" 2>/dev/null || true
+    sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN filesystem_type TEXT DEFAULT 'unknown';" 2>/dev/null || true
+    sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN storage_type TEXT DEFAULT 'unknown';" 2>/dev/null || true
+    sqlite3 "$DB_FILE" "ALTER TABLE telemetry ADD COLUMN run_id TEXT DEFAULT '';" 2>/dev/null || true
   fi
 }
 

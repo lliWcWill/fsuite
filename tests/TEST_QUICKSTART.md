@@ -2,7 +2,7 @@
 
 ## Overview
 
-This test suite provides comprehensive coverage for all fsuite tools across 7 suites.
+This test suite provides comprehensive coverage for all fsuite tools across 8 suites.
 
 ## Files Created
 
@@ -11,6 +11,7 @@ test_fsearch.sh       - fsearch coverage
 test_fcontent.sh      - fcontent coverage
 test_fmap.sh          - fmap coverage
 test_fread.sh         - fread coverage
+test_install.sh       - install.sh and relocatable install coverage
 test_ftree.sh         - ftree coverage
 test_integration.sh   - pipeline coverage
 test_telemetry.sh     - telemetry coverage
@@ -25,6 +26,8 @@ TESTING.md            - Complete testing documentation
 ```bash
 bash run_all_tests.sh
 ```
+
+`run_all_tests.sh` now defaults to `FSUITE_TELEMETRY=3` unless you override it explicitly.
 
 ### Run Individual Tool Tests
 
@@ -46,6 +49,9 @@ bash test_integration.sh
 
 # Test fread
 bash test_fread.sh
+
+# Test installer
+bash test_install.sh
 
 # Test telemetry
 bash test_telemetry.sh
@@ -93,6 +99,12 @@ Without optional dependencies, relevant tests will be automatically skipped.
 ✓ JSON/pretty/paths output
 ✓ Pipeline modes (stdin paths, unified diff)
 ✓ Budget caps, truncation hints, telemetry
+
+### install.sh
+✓ Prefix installs into a clean temp directory
+✓ Copies all six tools plus shared assets
+✓ Installed tools report versions from the installed prefix
+✓ Installed fmetrics finds the packaged predict helper
 
 ### ftree
 ✓ Tree mode with smart defaults
@@ -174,6 +186,12 @@ Use in CI/CD:
 bash run_all_tests.sh && echo "Ready to deploy" || echo "Tests failed"
 ```
 
+Override telemetry tier when needed:
+```bash
+FSUITE_TELEMETRY=2 bash run_all_tests.sh
+FSUITE_TELEMETRY=3 bash run_all_tests.sh
+```
+
 ## Test Coverage
 
 | Tool | Test Cases | Coverage |
@@ -182,10 +200,11 @@ bash run_all_tests.sh && echo "Ready to deploy" || echo "Tests failed"
 | fcontent | comprehensive | Search modes, queries, rg-args, limits, edge cases |
 | fmap | comprehensive | Language extraction, exact parsing, dedup regression, modes, filters, caps, pipeline |
 | fread | comprehensive | File reads, stdin modes, truncation budgets, JSON output, telemetry |
+| install.sh | comprehensive | Prefix install, copied assets, relocatable helper lookup |
 | ftree | comprehensive | Tree/recon/snapshot modes, ignore patterns, validation |
 | Integration | comprehensive | Pipelines, workflows, real-world use cases |
 | Telemetry | comprehensive | Tiered telemetry, hardware detection, machine profile, migration |
-| **Total** | **7 suites** | **Comprehensive end-to-end coverage** |
+| **Total** | **8 suites** | **Comprehensive end-to-end coverage** |
 
 ## Next Steps
 
@@ -205,6 +224,7 @@ bash test_fsearch.sh
 bash test_fcontent.sh
 bash test_fmap.sh
 bash test_fread.sh
+bash test_install.sh
 bash test_ftree.sh
 bash test_telemetry.sh
 bash test_integration.sh

@@ -8,6 +8,13 @@
   <em>Deploy the drones. Map the terrain. Return with intel.</em>
 </p>
 
+[![Release](https://img.shields.io/github/v/release/lliWcWill/fsuite?display_name=tag)](https://github.com/lliWcWill/fsuite/releases)
+![Debian Package](https://img.shields.io/badge/deb-package%20available-A81D33)
+![Shell](https://img.shields.io/badge/Shell-Bash-4EAA25?logo=gnubash&logoColor=white)
+![Agent First](https://img.shields.io/badge/agent-first-headless-1f6feb)
+![JSON Output](https://img.shields.io/badge/output-json-0A7EA4)
+![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-444)
+
 ---
 
 **A six-tool filesystem reconnaissance and analytics kit for humans and AI agents.**
@@ -23,12 +30,23 @@
 | **`fread`** | Read files with budgets, ranges, context windows, and diff-aware input |
 | **`fmetrics`** | Analyze telemetry, history, and predicted runtime |
 
-The first five are reconnaissance drones. `fmetrics` is the flight recorder and analyst. Together they cover **scout -> map -> read -> measure** with zero glue code.
+The first five are reconnaissance drones. `fmetrics` is the flight recorder and analyst. Together they cover **scout -> find -> map -> read/search -> measure** with zero glue code.
+
+Works with **Claude Code**, **Codex**, **OpenCode**, and any shell-capable agent harness that can call local binaries.
+
+| Install Path | Best For | Status |
+|-------------|----------|--------|
+| `./install.sh --user` | Fast local install without sudo | Recommended |
+| Debian package | Linux release installs | Available |
+| Source + manual symlink | Power users and repo hacking | Available |
+| Homebrew tap | macOS-native package install | Roadmap |
+| npm wrapper | Installer/distribution wrapper, not a rewrite | Roadmap |
 
 ## Contents
 
 - [Why This Exists](#why-this-exists-the-lightbulb-moment)
 - [Quick Start](#quick-start)
+- [fsuite Help](#fsuite-help)
 - [Fast Paths](#fast-paths-copypaste)
 - [Tools](#tools)
   - [fsearch](#fsearch--filename--path-search)
@@ -71,6 +89,8 @@ It didn't just say "nice tools." It wrote a full self-assessment. Unprompted con
 | **fsearch** | *"Augment. Use alongside Glob for discovery and pipeline scenarios."* — Pattern normalization + pipeline composability. |
 | **fcontent** | *"Augment. Use for pipeline searches and scoped discovery."* — Piped mode + match caps designed for LLM context windows. |
 
+That first round exposed the real missing step: after recon and search, the agent still had to spend extra calls just to read the right slice of a file. `fmap` and `fread` close that gap. `fmetrics` closes the final loop by turning live usage into operational feedback instead of guesswork.
+
 **The workflow shift — before and after:**
 
 ```text
@@ -80,6 +100,14 @@ BEFORE fsuite:
 AFTER fsuite:
   ftree --snapshot -o json  ->  fsearch -o paths  ->  fmap -o json  ->  fread -o json
   4-5 calls. Structural context plus bounded file reads. Still dramatically fewer tool invocations.
+```
+
+And once those reads are happening in the real world:
+
+```text
+AFTER execution:
+  ... -> fcontent -o json -> fmetrics import -> fmetrics stats / predict
+  Search inside the narrowed set, then measure what actually happened and plan the next pass.
 ```
 
 The full unedited analysis is in **[AGENT-ANALYSIS.md](AGENT-ANALYSIS.md)** — the raw self-assessment, exactly as Claude Code wrote it after studying and testing every tool in this repo.
@@ -94,7 +122,9 @@ That document is the pitch. Not because we wrote it, but because the agent did.
 # Clone and make executable
 git clone https://github.com/lliWcWill/fsuite.git
 cd fsuite
-chmod +x fsearch fcontent ftree fmap fread fmetrics
+
+# Recommended: install into ~/.local/bin
+./install.sh --user
 
 # Find all .log files under /var/log
 ./fsearch '*.log' /var/log
@@ -108,18 +138,94 @@ chmod +x fsearch fcontent ftree fmap fread fmetrics
 # Show the directory tree (depth 3, smart defaults)
 ./ftree /project
 
+# Map code structure before opening files
+./fmap -o json /project/src
+
 # Read targeted context around a function or match
 ./fread /project/src/auth.py --around "def authenticate" -A 20
 
 # Combine: find logs, then grep inside them
 ./fsearch --output paths '*.log' /var/log | ./fcontent "ERROR"
+
+# Import telemetry and inspect runtime history
+./fmetrics import && ./fmetrics stats
 ```
+
+---
+
+## fsuite Help
+
+There is no single `fsuite` binary. `fsuite` is a **headless workflow contract** made of six small commands that compose cleanly.
+
+If your harness reads repo instructions automatically, use the bundled [AGENTS.md](AGENTS.md) as the suite-level operating guide.
+
+If an agent only remembers one thing, it should remember this:
+
+```text
+ftree  ->  fsearch  ->  fmap / fcontent  ->  fread  ->  fmetrics
+Scout     Find         Map / Search         Read       Measure
+```
+
+### What Each Tool Is For
+
+| Tool | Use it when you need to answer | Best output for agents |
+|------|--------------------------------|------------------------|
+| `ftree` | "What is in this project, how big is it, and where should I look first?" | `-o json` |
+| `fsearch` | "Which files match this name, extension, or glob?" | `-o paths` or `-o json` |
+| `fmap` | "What symbols exist in these source files?" | `-o json` |
+| `fcontent` | "Which files contain this text?" | `-o json` or `-o paths` |
+| `fread` | "Show me the exact lines around this function, match, or diff hunk." | `-o json` |
+| `fmetrics` | "What did these runs cost, and what will the next one cost?" | `stats -o json`, `predict` |
+
+### Headless Contract
+
+- Prefer `-o json` when the next step is programmatic decision-making.
+- Prefer `-o paths` when the next step is piping into another fsuite tool.
+- Prefer `pretty` only for human terminal use.
+- Errors go to `stderr`. Results go to `stdout`.
+- `-q` is for existence checks and silent control flow.
+- Use each tool's `--help` for the full flag breakdown. This section is the suite-level mental model, not the flag reference.
+
+### Default Agent Workflow
+
+```bash
+# 1) Scout the target once
+ftree --snapshot -o json /project
+
+# 2) Narrow to candidate files
+fsearch -o paths '*.py' /project/src
+
+# 3a) If you need structure, map the files
+fsearch -o paths '*.py' /project/src | fmap -o json
+
+# 3b) If you need text matches, search inside the files
+fsearch -o paths '*.py' /project/src | fcontent -o json "authenticate"
+
+# 4) Read the exact code neighborhood you care about
+fread -o json /project/src/auth.py --around "def authenticate" -B 5 -A 20
+
+# 5) Import telemetry and inspect the cost of what just happened
+fmetrics import
+fmetrics stats -o json
+fmetrics predict /project
+```
+
+### Decision Rule for Agents
+
+| If you need... | Use... |
+|----------------|--------|
+| project shape, size, likely hotspots | `ftree` |
+| candidate filenames | `fsearch` |
+| structural skeleton without reading full files | `fmap` |
+| content matches across files | `fcontent` |
+| bounded context from a known file | `fread` |
+| runtime history or a preflight estimate | `fmetrics` |
 
 ---
 
 ## Fast Paths (copy/paste)
 
-Three pipelines that cover 80% of what you'll ever need. Copy, paste, go.
+Four workflows that cover the common cases without improvisation. Copy, paste, go.
 
 ### 1) New repo — instant context (best default)
 ```bash
@@ -131,7 +237,13 @@ ftree --snapshot -o json /project | jq .
 fsearch -o paths '*.ts' /project/src | fcontent -o json "Auth" | jq .
 ```
 
-### 3) Triage a big project safely (no floods)
+### 3) Map structure, then read the exact neighborhood
+```bash
+fsearch -o paths '*.py' /project/src | fmap -o json | jq '.files[:5]'
+fread /project/src/auth.py --around "def authenticate" -B 5 -A 20
+```
+
+### 4) Triage a big project safely (no floods)
 ```bash
 ftree --recon -o json /project | jq '.entries | sort_by(-.size_bytes) | .[:10]'
 ```
@@ -488,6 +600,97 @@ The five reconnaissance tools (`fsearch`, `fcontent`, `ftree`, `fmap`, `fread`) 
 }
 ```
 
+### JSON schema (`fmap`)
+
+```json
+{
+  "tool": "fmap",
+  "version": "1.8.0",
+  "mode": "single_file",
+  "path": "/project/src/auth.py",
+  "total_files_scanned": 1,
+  "total_files_with_symbols": 1,
+  "total_symbols": 12,
+  "shown_symbols": 12,
+  "truncated": false,
+  "languages": {"python": 1},
+  "files": [
+    {
+      "path": "auth.py",
+      "language": "python",
+      "symbol_count": 12,
+      "symbols": [
+        {"line": 14, "type": "function", "indent": 0, "text": "def authenticate(user, token):"},
+        {"line": 47, "type": "class", "indent": 0, "text": "class AuthError(Exception):"}
+      ]
+    }
+  ]
+}
+```
+
+### JSON schema (`fread`)
+
+```json
+{
+  "tool": "fread",
+  "version": "1.8.0",
+  "mode": "around",
+  "truncated": false,
+  "truncation_reason": "none",
+  "token_estimate": 148,
+  "token_estimator": "bytes_div_3_conservative",
+  "bytes_emitted": 444,
+  "lines_emitted": 18,
+  "max_lines": 200,
+  "max_bytes": 50000,
+  "token_budget": 0,
+  "next_hint": null,
+  "chunks": [
+    {
+      "path": "/project/src/auth.py",
+      "start_line": 120,
+      "end_line": 137,
+      "match_line": 125,
+      "content": ["120  ...", "125  def authenticate(user, token):", "137  ..."]
+    }
+  ],
+  "files": [
+    {
+      "path": "/project/src/auth.py",
+      "language": "python",
+      "binary": false,
+      "binary_state": "false",
+      "file_size_bytes": 8124,
+      "file_total_lines": 244,
+      "status": "read"
+    }
+  ],
+  "warnings": [],
+  "errors": []
+}
+```
+
+### JSON schema (`fmetrics stats`)
+
+```json
+{
+  "tool": "fmetrics",
+  "version": "1.8.0",
+  "subcommand": "stats",
+  "total_runs": 24,
+  "db_path": "/home/user/.fsuite/telemetry.db",
+  "db_size_bytes": 28672,
+  "oldest_run": "2026-03-08T20:20:13Z",
+  "newest_run": "2026-03-08T20:20:14Z",
+  "tools": [
+    {"name": "ftree", "runs": 8, "avg_ms": 6, "min_ms": 6, "max_ms": 7, "success_rate": 100.0}
+  ],
+  "top_projects": [
+    {"name": "myproject", "runs": 12}
+  ]
+}
+```
+
 ---
 
 ## Agent / Headless Usage
@@ -518,13 +721,19 @@ fsearch --output paths '*.py' /project | fmap --output json
 
 # Step 6: Search inside candidates (structured results)
 fsearch --output paths '*.py' /project | fcontent --output json "import torch"
+
+# Step 7: Read the exact code neighborhood
+fread --output json /project/src/auth.py --around "def authenticate" -B 5 -A 20
+
+# Step 8: Measure and plan the next pass
+fmetrics import && fmetrics stats -o json
 ```
 
 **The full pipeline:**
 
 ```text
-ftree --snapshot → fsearch -o paths → fmap -o json    → fcontent -o json
-Scout            → Find              → Map (structure) → Search (content)
+ftree --snapshot → fsearch -o paths → fmap -o json → fread -o json → fcontent -o json → fmetrics
+Scout            → Find              → Map          → Read          → Search            → Measure
 ```
 
 **Why this matters:**
@@ -972,12 +1181,28 @@ fmetrics clean --days 30
 
 ## Installation
 
+### Run from source
+
 ```bash
 git clone https://github.com/lliWcWill/fsuite.git
 cd fsuite
+chmod +x install.sh
+./install.sh --user
+```
+
+This installs into `~/.local/bin` and `~/.local/share/fsuite`.
+
+### Alternate: source install with a custom prefix
+
+```bash
+./install.sh --prefix /opt/fsuite
+```
+
+### Alternate: manual symlink install
+
+```bash
 chmod +x fsearch fcontent ftree fmap fread fmetrics
 
-# Optional: symlink into your PATH
 sudo ln -s "$(pwd)/fsearch" /usr/local/bin/fsearch
 sudo ln -s "$(pwd)/fcontent" /usr/local/bin/fcontent
 sudo ln -s "$(pwd)/ftree" /usr/local/bin/ftree
@@ -985,6 +1210,27 @@ sudo ln -s "$(pwd)/fmap" /usr/local/bin/fmap
 sudo ln -s "$(pwd)/fread" /usr/local/bin/fread
 sudo ln -s "$(pwd)/fmetrics" /usr/local/bin/fmetrics
 ```
+
+### Build the Debian package
+
+```bash
+sudo apt install build-essential debhelper dpkg-dev
+dpkg-buildpackage -us -uc -b
+ls -lh ../fsuite_*_all.deb
+```
+
+### Install the Debian package locally
+
+```bash
+sudo dpkg -i ../fsuite_1.8.0-1_all.deb
+ftree --version
+fread --version
+fmetrics --version
+```
+
+### Agent adoption
+
+For harnesses that read repo instructions, point them at [AGENTS.md](AGENTS.md). For everyone else, the `fsuite Help` section above is the suite-level contract and each tool's `--help` remains the detailed interface.
 
 ---
 
