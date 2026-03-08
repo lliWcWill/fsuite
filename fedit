@@ -1,0 +1,1138 @@
+#!/usr/bin/env bash
+# fedit — surgical, preview-first file editing for fsuite.
+# Part of fsuite. Applies anchor-based text edits with dry-run diff previews.
+
+set -euo pipefail
+
+VERSION="1.9.0"
+
+# -------------------------
+# Source common library for tiered telemetry
+# -------------------------
+_FSUITE_SCRIPT_DIR="$(cd "$(dirname "$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
+_FSUITE_PARENT_DIR="$(cd "$_FSUITE_SCRIPT_DIR/.." 2>/dev/null && pwd || true)"
+_FSUITE_LIB_CANDIDATES=()
+[[ -n "${FSUITE_SHARE_DIR:-}" ]] && _FSUITE_LIB_CANDIDATES+=("${FSUITE_SHARE_DIR%/}/_fsuite_common.sh")
+_FSUITE_LIB_CANDIDATES+=(
+  "$_FSUITE_SCRIPT_DIR/_fsuite_common.sh"
+  "$_FSUITE_PARENT_DIR/share/fsuite/_fsuite_common.sh"
+  "/usr/local/share/fsuite/_fsuite_common.sh"
+  "/usr/share/fsuite/_fsuite_common.sh"
+)
+for _fsuite_candidate in "${_FSUITE_LIB_CANDIDATES[@]}"; do
+  if [[ -f "$_fsuite_candidate" ]]; then
+    # shellcheck disable=SC1090
+    source "$_fsuite_candidate"
+    break
+  fi
+done
+unset _fsuite_candidate
+
+# -------------------------
+# Telemetry — opt-out via FSUITE_TELEMETRY=0
+# -------------------------
+now_ms() {
+  local ms=""
+  ms=$(date +%s%3N 2>/dev/null || true)
+  if [[ "$ms" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$ms"
+    return 0
+  fi
+
+  ms=$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000' 2>/dev/null || true)
+  if [[ "$ms" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$ms"
+    return 0
+  fi
+
+  ms=$(date +%s 2>/dev/null || true)
+  if [[ "$ms" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$(( ms * 1000 ))"
+    return 0
+  fi
+
+  printf '0'
+}
+
+json_escape_str() {
+  printf '%s' "$1" | perl -0777 -pe '
+    s/\\/\\\\/g;
+    s/"/\\"/g;
+    s/\x08/\\b/g;
+    s/\t/\\t/g;
+    s/\x0c/\\f/g;
+    s/\r/\\r/g;
+    s/\n/\\n/g;
+    s/([\x00-\x1f])/sprintf("\\u%04x",ord($1))/ge;
+  '
+}
+
+_FSUITE_TELEM="${FSUITE_TELEMETRY:-1}"
+[[ "$_FSUITE_TELEM" =~ ^[0-9]+$ ]] || _FSUITE_TELEM=1
+_TELEM_START_MS=$(now_ms)
+_TELEM_EXIT_CODE=0
+_TELEM_FLAGS=""
+_TELEM_PROJECT_NAME=""
+EXPECTED_WRITE_SHA=""
+
+MODE="patch"
+TARGET_PATH=""
+TOTAL_FILES_READ=0
+TOTAL_BYTES_READ=0
+
+_fsuite_record_telemetry() {
+  _TELEM_EXIT_CODE="${1:-$?}"
+  (( _FSUITE_TELEM >= 1 )) || return 0
+  [[ "$_TELEM_START_MS" =~ ^[0-9]+$ ]] || return 0
+  local end_ms
+  end_ms=$(now_ms)
+  [[ "$end_ms" =~ ^[0-9]+$ ]] || return 0
+  local dur_ms=$(( end_ms - _TELEM_START_MS ))
+  (( dur_ms < 0 )) && dur_ms=0
+
+  local telem_dir="$HOME/.fsuite"
+  mkdir -p "$telem_dir" 2>/dev/null || return 0
+
+  local ts
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "unknown")
+
+  local ph="unknown"
+  if [[ -n "$TARGET_PATH" ]] && command -v sha256sum >/dev/null 2>&1; then
+    ph=$(printf '%s' "$TARGET_PATH" | sha256sum 2>/dev/null | cut -c1-16) || ph="unknown"
+  fi
+
+  local pn=""
+  if [[ -n "$TARGET_PATH" ]]; then
+    local path_dir
+    path_dir=$(cd "$(dirname "$TARGET_PATH")" 2>/dev/null && pwd) || path_dir="$(dirname "$TARGET_PATH")"
+    if type _fsuite_infer_project_name &>/dev/null; then
+      pn=$(_fsuite_infer_project_name "$path_dir")
+    else
+      pn=$(basename "$path_dir" | tr -cd '[:alnum:]. _-')
+    fi
+  fi
+  if [[ -n "$_TELEM_PROJECT_NAME" ]]; then
+    pn=$(printf '%s' "$_TELEM_PROJECT_NAME" | tr -cd '[:alnum:]. _-')
+  fi
+
+  if type _fsuite_collect_hw_telemetry &>/dev/null; then
+    _fsuite_collect_hw_telemetry "$_FSUITE_TELEM" "${TARGET_PATH:-}"
+  fi
+  local hw_fields=""
+  if type _fsuite_hw_json_fields &>/dev/null && (( _FSUITE_TELEM >= 2 )); then
+    hw_fields=$(_fsuite_hw_json_fields "$_FSUITE_TELEM")
+    [[ -n "$hw_fields" ]] && hw_fields=",${hw_fields}"
+  fi
+
+  local safe_flags
+  safe_flags=$(printf '%s' "${_TELEM_FLAGS# }" | tr -cd '[:alnum:] _./:=-' | head -c 200)
+  local line="{\"timestamp\":\"$ts\",\"run_id\":\"${_TELEM_START_MS}_$$\",\"tool\":\"fedit\",\"version\":\"$VERSION\",\"mode\":\"$MODE\",\"path_hash\":\"$ph\",\"project_name\":\"$pn\",\"duration_ms\":$dur_ms,\"exit_code\":$_TELEM_EXIT_CODE,\"depth\":-1,\"items_scanned\":${TOTAL_FILES_READ:-0},\"bytes_scanned\":${TOTAL_BYTES_READ:-0},\"flags\":\"$safe_flags\",\"backend\":\"perl\"${hw_fields}}"
+
+  {
+    flock -x 200 2>/dev/null
+    echo "$line" >> "$telem_dir/telemetry.jsonl"
+  } 200>"$telem_dir/.telemetry.lock" 2>/dev/null || true
+}
+
+DEFAULT_OUTPUT="pretty"
+OUTPUT="$DEFAULT_OUTPUT"
+DRY_RUN=1
+ALLOW_MULTIPLE=0
+USE_STDIN=0
+WITH_TEXT=""
+WITH_SET=0
+CONTENT_FILE=""
+EXPECT_TEXT=""
+EXPECT_TEXT_SET=0
+EXPECT_SHA256=""
+CREATE_MODE=0
+REPLACE_FILE_MODE=0
+REPLACE_TEXT=""
+AFTER_TEXT=""
+BEFORE_TEXT=""
+SYMBOL_NAME=""
+SYMBOL_TYPE=""
+FMAP_JSON_PATH=""
+ERROR_CODE=""
+ERROR_DETAIL=""
+APPLIED=false
+PRECONDITIONS_OK=true
+ANCHORS_MATCHED=0
+DIFF_OUTPUT=""
+PAYLOAD_FILE=""
+TEMP_FILES=()
+POSITIONAL=()
+
+cleanup() {
+  local tmp
+  for tmp in "${TEMP_FILES[@]}"; do
+    if [[ -n "$tmp" && -e "$tmp" ]]; then
+      rm -f "$tmp" || true
+    fi
+  done
+  return 0
+}
+
+on_exit() {
+  local exit_code=$?
+  trap - EXIT
+  cleanup
+  _fsuite_record_telemetry "$exit_code" || true
+  exit "$exit_code"
+}
+trap on_exit EXIT
+
+die() {
+  local code=2
+  if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
+    code="$1"
+    shift
+  fi
+  [[ -n "$ERROR_CODE" ]] || ERROR_CODE="invalid_args"
+  ERROR_DETAIL="$*"
+  if [[ "$OUTPUT" == "json" ]]; then
+    render_json
+  fi
+  echo "fedit: $*" >&2
+  exit "$code"
+}
+
+has() { command -v "$1" >/dev/null 2>&1; }
+
+make_temp() {
+  local tmp
+  tmp=$(mktemp)
+  TEMP_FILES+=("$tmp")
+  printf '%s' "$tmp"
+}
+
+byte_len() {
+  local s="$1"
+  local old_lc_all="__FSUITE_UNSET__"
+  if [[ -n "${LC_ALL+x}" ]]; then
+    old_lc_all="$LC_ALL"
+  fi
+  LC_ALL=C
+  local n=${#s}
+  if [[ "$old_lc_all" == "__FSUITE_UNSET__" ]]; then
+    unset LC_ALL
+  else
+    LC_ALL="$old_lc_all"
+  fi
+  printf '%s' "$n"
+}
+
+compute_sha256() {
+  local path="$1"
+  if has sha256sum; then
+    sha256sum "$path" | awk '{print $1}'
+    return 0
+  fi
+  if has shasum; then
+    shasum -a 256 "$path" | awk '{print $1}'
+    return 0
+  fi
+  return 1
+}
+
+normalize_payload_to_file_style() {
+  local payload="$1"
+  local reference="$2"
+  if [[ "$reference" == *$'\r\n'* ]] && [[ "$payload" != *$'\r\n'* ]]; then
+    payload=${payload//$'\n'/$'\r\n'}
+  fi
+  printf '%s' "$payload"
+}
+
+normalized_payload_file() {
+  local reference_content="$1"
+  local payload_path
+  payload_path=$(make_temp)
+  if [[ "$reference_content" == *$'\r\n'* ]]; then
+    perl -e '
+      use strict;
+      use warnings;
+      my ($src, $dst) = @ARGV;
+      open my $sf, "<", $src or die;
+      local $/;
+      my $payload = <$sf>;
+      $payload =~ s/\n/\r\n/g unless $payload =~ /\r\n/;
+      open my $df, ">", $dst or die;
+      print {$df} $payload;
+    ' "$PAYLOAD_FILE" "$payload_path"
+  else
+    cat "$PAYLOAD_FILE" > "$payload_path"
+  fi
+  printf '%s' "$payload_path"
+}
+
+contains_nul_bytes() {
+  local path="$1"
+  perl -e '
+    use strict;
+    use warnings;
+    open my $fh, "<:raw", $ARGV[0] or exit 2;
+    local $/;
+    my $content = <$fh>;
+    exit(index($content, "\0") >= 0 ? 0 : 1);
+  ' "$path" >/dev/null 2>&1
+}
+
+preserve_mode() {
+  local src="$1"
+  local dst="$2"
+  local mode=""
+  mode=$(stat -c %a "$src" 2>/dev/null || stat -f %Lp "$src" 2>/dev/null || true)
+  [[ "$mode" =~ ^[0-9]+$ ]] && chmod "$mode" "$dst" 2>/dev/null || true
+}
+
+usage() {
+  cat <<'EOF'
+fedit — surgical, preview-first file editing for fsuite.
+
+USAGE
+  fedit <file> --replace OLD --with NEW [--apply]
+  fedit <file> --after TEXT --content-file patch.txt [--apply]
+  fedit <file> --before TEXT --stdin [--apply]
+  fedit --create <file> --content-file newfile.txt [--apply]
+  fedit --replace-file <file> --content-file rewritten.txt [--apply]
+
+OPTIONS
+  --replace TEXT              Replace an exact text block
+  --with TEXT                 Replacement or insertion payload
+  --after TEXT                Insert payload after exact anchor text
+  --before TEXT               Insert payload before exact anchor text
+  --content-file PATH         Read payload from file
+  --stdin                     Read payload from stdin
+  --expect TEXT               Require existing file to contain this text
+  --expect-sha256 HASH        Require existing file hash to match
+  --symbol NAME               Scope patching to one fmap-resolved symbol
+  --symbol-type TYPE          Restrict symbol match (function, class, import, ...)
+  --fmap-json PATH            Reuse existing fmap JSON instead of running fmap
+  --allow-multiple            Allow all matches for replace/anchor operations
+  --apply                     Write the edited file
+  --dry-run                   Preview diff only (default)
+  --create                    Create a new file (fails if file exists)
+  --replace-file              Replace the entire target file from payload
+  -o, --output FMT            pretty (default), json, paths
+  --project-name NAME         Override telemetry project name
+  --self-check                Verify dependencies
+  --install-hints             Print install commands
+  --version                   Print version
+  -h, --help                  Show help
+
+BEHAVIOR
+  - Dry-run is the default. Nothing mutates unless --apply is present.
+  - Patch operations fail closed when anchors are missing or ambiguous.
+  - --symbol scopes patch operations to the chosen fmap symbol block.
+  - JSON output is intended for agent/harness consumption.
+
+HEADLESS / AI AGENT USAGE
+  fedit -o json file.ts --replace "old" --with "new"
+  fedit -o json file.ts --symbol authenticate --replace "return False" --with "return deny()"
+  fedit -o json file.ts --after "function x() {" --content-file patch.txt --apply
+EOF
+}
+
+self_check() {
+  local ok=1
+  echo "fedit dependency check:"
+  for cmd in perl diff mktemp; do
+    if has "$cmd"; then
+      echo "  $cmd: $(command -v "$cmd")"
+    else
+      echo "  $cmd: NOT FOUND"
+      ok=0
+    fi
+  done
+  if has sha256sum; then
+    echo "  sha256: $(command -v sha256sum)"
+  elif has shasum; then
+    echo "  sha256: $(command -v shasum)"
+  else
+    echo "  sha256: NOT FOUND"
+    ok=0
+  fi
+  if (( ok )); then
+    echo "All dependencies satisfied."
+    exit 0
+  fi
+  echo "Some dependencies missing. Run: fedit --install-hints"
+  exit 1
+}
+
+install_hints() {
+  cat <<'EOF'
+fedit requires: perl, diffutils, coreutils
+
+  Debian/Ubuntu: sudo apt install perl diffutils coreutils
+  Fedora/RHEL:   sudo dnf install perl diffutils coreutils
+  macOS:         brew install perl diffutils coreutils
+EOF
+  exit 0
+}
+
+load_payload() {
+  local sources=0
+  (( WITH_SET == 1 )) && sources=$((sources + 1))
+  [[ -n "$CONTENT_FILE" ]] && sources=$((sources + 1))
+  (( USE_STDIN == 1 )) && sources=$((sources + 1))
+
+  if (( sources > 1 )); then
+    ERROR_CODE="invalid_args"
+    die "Choose only one payload source: --with, --content-file, or --stdin"
+  fi
+
+  PAYLOAD_FILE=$(make_temp)
+  if (( WITH_SET == 1 )); then
+    printf '%s' "$WITH_TEXT" > "$PAYLOAD_FILE"
+    contains_nul_bytes "$PAYLOAD_FILE" && { ERROR_CODE="invalid_args"; die "Binary payloads are not supported by fedit"; }
+    return 0
+  fi
+  if [[ -n "$CONTENT_FILE" ]]; then
+    [[ -r "$CONTENT_FILE" ]] || { ERROR_CODE="invalid_args"; die "Payload file not readable: $CONTENT_FILE"; }
+    cat "$CONTENT_FILE" > "$PAYLOAD_FILE"
+    contains_nul_bytes "$PAYLOAD_FILE" && { ERROR_CODE="invalid_args"; die "Binary payloads are not supported by fedit"; }
+    return 0
+  fi
+  if (( USE_STDIN == 1 )); then
+    cat > "$PAYLOAD_FILE"
+    contains_nul_bytes "$PAYLOAD_FILE" && { ERROR_CODE="invalid_args"; die "Binary payloads are not supported by fedit"; }
+    return 0
+  fi
+  : > "$PAYLOAD_FILE"
+  return 0
+}
+
+match_count() {
+  local haystack_path="$1"
+  local needle_path="$2"
+  perl -e '
+    use strict;
+    use warnings;
+    use bytes;
+    my ($haystack_path, $needle_path) = @ARGV;
+    open my $hf, "<:raw", $haystack_path or exit 91;
+    open my $nf, "<:raw", $needle_path or exit 92;
+    local $/;
+    my $haystack = <$hf>;
+    my $needle = <$nf>;
+    if (!defined $needle || $needle eq q{}) {
+      print "0";
+      exit 0;
+    }
+    my $count = 0;
+    my $pos = 0;
+    while (($pos = index($haystack, $needle, $pos)) != -1) {
+      $count++;
+      $pos += length($needle) || 1;
+    }
+    print $count;
+  ' "$haystack_path" "$needle_path"
+}
+
+render_diff() {
+  local old_file="$1"
+  local new_file="$2"
+  local old_label="$3"
+  local new_label="$4"
+  DIFF_OUTPUT=$(diff -u --label "$old_label" --label "$new_label" "$old_file" "$new_file" || true)
+}
+
+render_pretty() {
+  printf 'fedit %s %s\n' "$MODE" "$TARGET_PATH"
+  if (( DRY_RUN == 1 )); then
+    echo "status: dry-run"
+  else
+    echo "status: applied"
+  fi
+  if [[ -n "$DIFF_OUTPUT" ]]; then
+    echo "$DIFF_OUTPUT"
+  else
+    echo "(no diff)"
+  fi
+}
+
+render_json() {
+  printf '{'
+  printf '"tool":"fedit",'
+  printf '"version":"%s",' "$VERSION"
+  printf '"mode":"%s",' "$MODE"
+  printf '"path":"%s",' "$(json_escape_str "$TARGET_PATH")"
+  printf '"applied":%s,' "$APPLIED"
+  if (( DRY_RUN == 1 )); then
+    printf '"dry_run":true,'
+  else
+    printf '"dry_run":false,'
+  fi
+  if [[ "$PRECONDITIONS_OK" == "true" ]]; then
+    printf '"preconditions_ok":true,'
+  else
+    printf '"preconditions_ok":false,'
+  fi
+  printf '"anchors_matched":%s,' "$ANCHORS_MATCHED"
+  printf '"diff":"%s",' "$(json_escape_str "$DIFF_OUTPUT")"
+  if [[ -n "$ERROR_CODE" ]]; then
+    printf '"error_code":"%s",' "$(json_escape_str "$ERROR_CODE")"
+  else
+    printf '"error_code":null,'
+  fi
+  if [[ -n "$ERROR_DETAIL" ]]; then
+    printf '"error_detail":"%s"' "$(json_escape_str "$ERROR_DETAIL")"
+  else
+    printf '"error_detail":null'
+  fi
+  printf '}\n'
+}
+
+render_paths() {
+  if [[ "$APPLIED" == "true" ]]; then
+    echo "$TARGET_PATH"
+  fi
+}
+
+ensure_target_parent() {
+  local parent
+  parent=$(dirname "$TARGET_PATH")
+  [[ -d "$parent" ]] || { ERROR_CODE="not_found"; die 1 "Parent directory does not exist: $parent"; }
+  [[ -w "$parent" ]] || { ERROR_CODE="permission"; die 1 "Parent directory is not writable: $parent"; }
+}
+
+validate_target_existing() {
+  [[ -e "$TARGET_PATH" ]] || { ERROR_CODE="not_found"; die 1 "File does not exist: $TARGET_PATH"; }
+  [[ -f "$TARGET_PATH" ]] || { ERROR_CODE="not_regular"; die 1 "Not a regular file: $TARGET_PATH"; }
+  [[ -r "$TARGET_PATH" ]] || { ERROR_CODE="permission"; die 1 "File is not readable: $TARGET_PATH"; }
+}
+
+normalize_target_path() {
+  local parent base
+  parent=$(dirname "$TARGET_PATH")
+  base=$(basename "$TARGET_PATH")
+  if [[ -e "$TARGET_PATH" ]]; then
+    TARGET_PATH=$(realpath -e "$TARGET_PATH" 2>/dev/null || { cd "$parent" && printf '%s/%s' "$(pwd)" "$base"; })
+  else
+    TARGET_PATH=$(cd "$parent" 2>/dev/null && printf '%s/%s' "$(pwd)" "$base")
+  fi
+}
+
+write_content_file() {
+  local dst="$1"
+  local content="$2"
+  printf '%s' "$content" > "$dst"
+}
+
+resolve_symbol_scope() {
+  local fmap_json_file total_lines result scope_start scope_end
+  [[ -n "$SYMBOL_NAME" ]] || { printf '0\t0'; return 0; }
+
+  if [[ -n "$FMAP_JSON_PATH" ]]; then
+    [[ -r "$FMAP_JSON_PATH" ]] || { ERROR_CODE="invalid_args"; die 1 "fmap JSON file not readable: $FMAP_JSON_PATH"; }
+    fmap_json_file="$FMAP_JSON_PATH"
+  else
+    local fmap_bin
+    fmap_bin="${_FSUITE_SCRIPT_DIR}/fmap"
+    [[ -x "$fmap_bin" ]] || fmap_bin="$(command -v fmap 2>/dev/null || true)"
+    [[ -n "$fmap_bin" ]] || { ERROR_CODE="invalid_args"; die 1 "fmap is required for --symbol but was not found"; }
+    fmap_json_file=$(make_temp)
+    FSUITE_TELEMETRY=0 "$fmap_bin" -o json "$TARGET_PATH" > "$fmap_json_file"
+  fi
+
+  result=$(perl -MJSON::PP -MCwd=abs_path,getcwd -MFile::Spec -e '
+    use strict;
+    use warnings;
+    my ($json_path, $target_path, $symbol_name, $symbol_type) = @ARGV;
+    open my $jf, "<:raw", $json_path or exit 90;
+    local $/;
+    my $json = <$jf>;
+    my $data = JSON::PP::decode_json($json);
+    my $json_dir = do {
+      my @parts = File::Spec->splitpath($json_path);
+      $parts[1] || q{.};
+    };
+    my $target_abs = abs_path($target_path) || File::Spec->rel2abs($target_path);
+    my @files = @{ $data->{files} || [] };
+    my $target;
+    for my $file (@files) {
+      next unless defined $file->{path};
+      my $candidate = $file->{path};
+      my $candidate_abs;
+      if (File::Spec->file_name_is_absolute($candidate)) {
+        $candidate_abs = abs_path($candidate) || $candidate;
+      } else {
+        $candidate_abs = abs_path(File::Spec->rel2abs($candidate, $json_dir))
+          || File::Spec->rel2abs($candidate, $json_dir);
+      }
+      next unless $candidate_abs eq $target_abs;
+      $target = $file;
+      last;
+    }
+    exit 20 unless $target;
+    my @symbols = @{ $target->{symbols} || [] };
+    my @matches;
+    for my $idx (0 .. $#symbols) {
+      my $sym = $symbols[$idx];
+      next if $symbol_type && (($sym->{type} // q{}) ne $symbol_type);
+      my $text = $sym->{text} // q{};
+      next unless $text =~ /\b\Q$symbol_name\E\b/;
+      push @matches, $idx;
+    }
+    exit 20 unless @matches;
+    exit 21 if @matches > 1;
+    my $idx = $matches[0];
+    my $start = $symbols[$idx]{line};
+    my $indent = $symbols[$idx]{indent};
+    my $end = 0;
+    for my $next ($idx + 1 .. $#symbols) {
+      next unless ($symbols[$next]{line} // 0) > $start;
+      if (($symbols[$next]{indent} // 0) <= $indent) {
+        $end = $symbols[$next]{line} - 1;
+        last;
+      }
+    }
+    print join("\t", $start, $end);
+  ' "$fmap_json_file" "$TARGET_PATH" "$SYMBOL_NAME" "$SYMBOL_TYPE") || {
+    case $? in
+      20) ERROR_CODE="symbol_missing"; die 1 "Symbol not found: $SYMBOL_NAME" ;;
+      21) ERROR_CODE="symbol_ambiguous"; die 1 "Symbol matched multiple entries: $SYMBOL_NAME" ;;
+      *) ERROR_CODE="invalid_args"; die 1 "Failed to resolve symbol scope from fmap JSON" ;;
+    esac
+  }
+
+  scope_start="${result%%$'\t'*}"
+  scope_end="${result#*$'\t'}"
+  total_lines=$(perl -ne 'END{print $.}' "$TARGET_PATH" 2>/dev/null || true)
+  [[ "$total_lines" =~ ^[0-9]+$ ]] || total_lines=0
+  [[ "$scope_end" =~ ^[0-9]+$ ]] || scope_end=0
+  (( scope_end > 0 )) || scope_end="$total_lines"
+  printf '%s\t%s' "$scope_start" "$scope_end"
+}
+
+extract_line_range() {
+  local src="$1" start="$2" end="$3" out="$4"
+  perl -e '
+    use strict;
+    use warnings;
+    open my $sf, "<:raw", $ARGV[0] or die;
+    open my $of, ">:raw", $ARGV[3] or die;
+    my ($src, $start, $end, $out) = @ARGV;
+    my $line = 0;
+    while (my $chunk = <$sf>) {
+      $line++;
+      next if $line < $start;
+      last if $line > $end;
+      print {$of} $chunk;
+    }
+  ' "$src" "$start" "$end" "$out"
+}
+
+splice_line_range() {
+  local src="$1" start="$2" end="$3" replacement="$4" out="$5"
+  perl -e '
+    use strict;
+    use warnings;
+    my ($src, $start, $end, $replacement, $out) = @ARGV;
+    open my $sf, "<:raw", $src or die;
+    open my $rf, "<:raw", $replacement or die;
+    open my $of, ">:raw", $out or die;
+    my $line = 0;
+    my $inserted = 0;
+    while (my $chunk = <$sf>) {
+      $line++;
+      if ($line == $start) {
+        local $/;
+        my $replacement_text = <$rf>;
+        print {$of} $replacement_text;
+        $inserted = 1;
+      }
+      next if $line >= $start && $line <= $end;
+      print {$of} $chunk;
+    }
+    exit 12 if !$inserted;
+  ' "$src" "$start" "$end" "$replacement" "$out"
+}
+
+apply_patch_operation() {
+  local source_file="$1" candidate_file="$2"
+  local original_content target_count target_text=""
+  local target_file payload_file
+
+  original_content=$(cat "$source_file")
+  payload_file=$(normalized_payload_file "$original_content")
+
+  if [[ -n "$REPLACE_TEXT" ]]; then
+    target_text="$REPLACE_TEXT"
+  elif [[ -n "$AFTER_TEXT" ]]; then
+    target_text="$AFTER_TEXT"
+  else
+    target_text="$BEFORE_TEXT"
+  fi
+
+  target_file=$(make_temp)
+  printf '%s' "$target_text" > "$target_file"
+  if [[ -n "$REPLACE_TEXT" ]]; then
+    target_count=$(match_count "$source_file" "$target_file") || target_count="0"
+  else
+    target_count=$(perl -e '
+      use strict;
+      use warnings;
+      my ($source_path, $target_path) = @ARGV;
+      open my $tf, "<", $target_path or die;
+      open my $sf, "<", $source_path or die;
+      local $/;
+      my $target = <$tf>;
+      my $count = 0;
+      while (my $line = <$sf>) {
+        $count++ if index($line, $target) != -1;
+      }
+      print $count;
+    ' "$source_file" "$target_file" 2>/dev/null) || target_count="0"
+  fi
+  ANCHORS_MATCHED="$target_count"
+
+  if [[ "$target_count" == "0" ]]; then
+    if [[ -n "$REPLACE_TEXT" ]]; then
+      ERROR_CODE="replace_missing"
+      die 1 "--replace text not found"
+    fi
+    ERROR_CODE="anchor_missing"
+    die 1 "Anchor text not found"
+  fi
+  if (( ALLOW_MULTIPLE == 0 )) && [[ "$target_count" != "1" ]]; then
+    if [[ -n "$REPLACE_TEXT" ]]; then
+      ERROR_CODE="replace_ambiguous"
+      die 1 "--replace matched ${target_count} locations; use --allow-multiple to proceed"
+    fi
+    ERROR_CODE="anchor_ambiguous"
+    die 1 "Anchor matched ${target_count} locations; use --allow-multiple to proceed"
+  fi
+
+  if [[ -n "$REPLACE_TEXT" ]]; then
+    perl -e '
+      use strict;
+      use warnings;
+      use bytes;
+      my ($allow_multiple, $target_path, $payload_path, $original_path, $out_path) = @ARGV;
+      open my $tf, "<:raw", $target_path or die;
+      open my $pf, "<:raw", $payload_path or die;
+      open my $of, "<:raw", $original_path or die;
+      local $/;
+      my $target = <$tf>;
+      my $payload = <$pf>;
+      my $content = <$of>;
+      my $out = q{};
+      my $pos = 0;
+      my $count = 0;
+      while ((my $match = index($content, $target, $pos)) != -1) {
+        $out .= substr($content, $pos, $match - $pos);
+        $out .= $payload;
+        $pos = $match + length($target);
+        $count++;
+        last if $allow_multiple ne q{1};
+      }
+      $out .= substr($content, $pos);
+      open my $out_fh, ">:raw", $out_path or die;
+      print {$out_fh} $out;
+    ' "$ALLOW_MULTIPLE" "$target_file" "$payload_file" "$source_file" "$candidate_file"
+  elif [[ -n "$AFTER_TEXT" ]]; then
+    perl -e '
+      use strict;
+      use warnings;
+      my ($allow_multiple, $target_path, $payload_path, $original_path, $out_path) = @ARGV;
+      open my $tf, "<:raw", $target_path or die;
+      open my $pf, "<:raw", $payload_path or die;
+      open my $of, "<:raw", $original_path or die;
+      my $target = <$tf>;
+      local $/;
+      my $payload = <$pf>;
+      local $/ = "\n";
+      my @lines = <$of>;
+      if ($allow_multiple eq q{1}) {
+        open my $out, ">:raw", $out_path or die;
+        for my $line (@lines) {
+          print {$out} $line;
+          print {$out} $payload if index($line, $target) != -1;
+        }
+      } else {
+        my $done = 0;
+        open my $out, ">:raw", $out_path or die;
+        for my $line (@lines) {
+          print {$out} $line;
+          if (!$done && index($line, $target) != -1) {
+            print {$out} $payload;
+            $done = 1;
+          }
+        }
+      }
+    ' "$ALLOW_MULTIPLE" "$target_file" "$payload_file" "$source_file" "$candidate_file"
+  else
+    perl -e '
+      use strict;
+      use warnings;
+      my ($allow_multiple, $target_path, $payload_path, $original_path, $out_path) = @ARGV;
+      open my $tf, "<:raw", $target_path or die;
+      open my $pf, "<:raw", $payload_path or die;
+      open my $of, "<:raw", $original_path or die;
+      my $target = <$tf>;
+      local $/;
+      my $payload = <$pf>;
+      local $/ = "\n";
+      my @lines = <$of>;
+      if ($allow_multiple eq q{1}) {
+        open my $out, ">:raw", $out_path or die;
+        for my $line (@lines) {
+          print {$out} $payload if index($line, $target) != -1;
+          print {$out} $line;
+        }
+      } else {
+        my $done = 0;
+        open my $out, ">:raw", $out_path or die;
+        for my $line (@lines) {
+          if (!$done && index($line, $target) != -1) {
+            print {$out} $payload;
+            $done = 1;
+          }
+          print {$out} $line;
+        }
+      }
+    ' "$ALLOW_MULTIPLE" "$target_file" "$payload_file" "$source_file" "$candidate_file"
+  fi
+}
+
+apply_candidate() {
+  local candidate_file="$1"
+  if (( DRY_RUN == 1 )); then
+    APPLIED=false
+    return 0
+  fi
+
+  local target_dir target_tmp
+  target_dir=$(dirname "$TARGET_PATH")
+  target_tmp=$(mktemp "${target_dir}/.fedit.XXXXXX")
+  TEMP_FILES+=("$target_tmp")
+  if [[ -n "$EXPECTED_WRITE_SHA" && -f "$TARGET_PATH" ]]; then
+    local current_hash
+    current_hash=$(compute_sha256 "$TARGET_PATH" 2>/dev/null || true)
+    if [[ -z "$current_hash" || "$current_hash" != "$EXPECTED_WRITE_SHA" ]]; then
+      ERROR_CODE="precondition_failed"
+      die 1 "Target changed after precondition check; refusing to overwrite"
+    fi
+  fi
+  cat "$candidate_file" > "$target_tmp"
+  if [[ -f "$TARGET_PATH" ]]; then
+    preserve_mode "$TARGET_PATH" "$target_tmp"
+  fi
+  mv "$target_tmp" "$TARGET_PATH"
+  APPLIED=true
+}
+
+check_preconditions() {
+  local original_file="$1"
+  if (( EXPECT_TEXT_SET == 1 )); then
+    local expect_file count
+    expect_file=$(make_temp)
+    printf '%s' "$EXPECT_TEXT" > "$expect_file"
+    count=$(match_count "$original_file" "$expect_file") || count="0"
+    if [[ "$count" == "0" ]]; then
+      PRECONDITIONS_OK=false
+      ERROR_CODE="precondition_failed"
+      die 1 "--expect text not found in target file"
+    fi
+  fi
+
+  if [[ -n "$EXPECT_SHA256" ]]; then
+    local actual_hash
+    actual_hash=$(compute_sha256 "$original_file" 2>/dev/null || true)
+    if [[ -z "$actual_hash" || "$actual_hash" != "$EXPECT_SHA256" ]]; then
+      PRECONDITIONS_OK=false
+      ERROR_CODE="precondition_failed"
+      die 1 "--expect-sha256 does not match target file"
+    fi
+    EXPECTED_WRITE_SHA="$actual_hash"
+  fi
+}
+
+build_patch_candidate() {
+  local original_file="$1"
+  local candidate_file="$2"
+
+  if [[ -n "$SYMBOL_NAME" ]]; then
+    local scope scope_start scope_end scoped_original scoped_candidate
+    scope=$(resolve_symbol_scope)
+    scope_start="${scope%%$'\t'*}"
+    scope_end="${scope#*$'\t'}"
+    [[ "$scope_start" =~ ^[0-9]+$ ]] || { ERROR_CODE="symbol_missing"; die 1 "Invalid symbol start line"; }
+    [[ "$scope_end" =~ ^[0-9]+$ ]] || { ERROR_CODE="symbol_missing"; die 1 "Invalid symbol end line"; }
+    (( scope_start >= 1 && scope_end >= scope_start )) || { ERROR_CODE="symbol_missing"; die 1 "Resolved symbol range is invalid"; }
+
+    scoped_original=$(make_temp)
+    scoped_candidate=$(make_temp)
+    extract_line_range "$original_file" "$scope_start" "$scope_end" "$scoped_original" || { ERROR_CODE="symbol_missing"; die 1 "Failed to extract symbol-scoped lines"; }
+    apply_patch_operation "$scoped_original" "$scoped_candidate"
+    splice_line_range "$original_file" "$scope_start" "$scope_end" "$scoped_candidate" "$candidate_file" || { ERROR_CODE="symbol_missing"; die 1 "Symbol scope drifted; refusing to append stale replacement"; }
+    return 0
+  fi
+
+  apply_patch_operation "$original_file" "$candidate_file"
+}
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --replace)
+        [[ -n "${2:-}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --replace"; }
+        REPLACE_TEXT="$2"
+        _TELEM_FLAGS+=" --replace"
+        shift 2
+        ;;
+      --with)
+        [[ "${2+x}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --with"; }
+        WITH_TEXT="$2"
+        WITH_SET=1
+        _TELEM_FLAGS+=" --with"
+        shift 2
+        ;;
+      --after)
+        [[ -n "${2:-}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --after"; }
+        AFTER_TEXT="$2"
+        _TELEM_FLAGS+=" --after"
+        shift 2
+        ;;
+      --before)
+        [[ -n "${2:-}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --before"; }
+        BEFORE_TEXT="$2"
+        _TELEM_FLAGS+=" --before"
+        shift 2
+        ;;
+      --content-file)
+        [[ -n "${2:-}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --content-file"; }
+        CONTENT_FILE="$2"
+        _TELEM_FLAGS+=" --content-file"
+        shift 2
+        ;;
+      --stdin)
+        USE_STDIN=1
+        _TELEM_FLAGS+=" --stdin"
+        shift
+        ;;
+      --expect)
+        [[ "${2+x}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --expect"; }
+        EXPECT_TEXT="$2"
+        EXPECT_TEXT_SET=1
+        _TELEM_FLAGS+=" --expect"
+        shift 2
+        ;;
+      --expect-sha256)
+        [[ -n "${2:-}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --expect-sha256"; }
+        EXPECT_SHA256="$2"
+        _TELEM_FLAGS+=" --expect-sha256"
+        shift 2
+        ;;
+      --symbol)
+        [[ -n "${2:-}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --symbol"; }
+        SYMBOL_NAME="$2"
+        _TELEM_FLAGS+=" --symbol"
+        shift 2
+        ;;
+      --symbol-type)
+        [[ -n "${2:-}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --symbol-type"; }
+        SYMBOL_TYPE="$2"
+        _TELEM_FLAGS+=" --symbol-type"
+        shift 2
+        ;;
+      --fmap-json)
+        [[ -n "${2:-}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --fmap-json"; }
+        FMAP_JSON_PATH="$2"
+        _TELEM_FLAGS+=" --fmap-json"
+        shift 2
+        ;;
+      --allow-multiple)
+        ALLOW_MULTIPLE=1
+        _TELEM_FLAGS+=" --allow-multiple"
+        shift
+        ;;
+      --apply)
+        DRY_RUN=0
+        _TELEM_FLAGS+=" --apply"
+        shift
+        ;;
+      --dry-run)
+        DRY_RUN=1
+        _TELEM_FLAGS+=" --dry-run"
+        shift
+        ;;
+      --create)
+        CREATE_MODE=1
+        MODE="create"
+        _TELEM_FLAGS+=" --create"
+        shift
+        ;;
+      --replace-file)
+        REPLACE_FILE_MODE=1
+        MODE="replace_file"
+        _TELEM_FLAGS+=" --replace-file"
+        shift
+        ;;
+      -o|--output)
+        [[ -n "${2:-}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --output"; }
+        OUTPUT="$2"
+        shift 2
+        ;;
+      --project-name)
+        [[ -n "${2:-}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --project-name"; }
+        _TELEM_PROJECT_NAME="$2"
+        shift 2
+        ;;
+      --self-check)
+        self_check
+        ;;
+      --install-hints)
+        install_hints
+        ;;
+      --version)
+        echo "fedit $VERSION"
+        exit 0
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        ERROR_CODE="invalid_args"
+        die "Unknown option: $1"
+        ;;
+      *)
+        POSITIONAL+=("$1")
+        shift
+        ;;
+    esac
+  done
+}
+
+validate_args() {
+  case "$OUTPUT" in
+    pretty|json|paths) ;;
+    *)
+      ERROR_CODE="invalid_args"
+      die "Invalid --output: $OUTPUT"
+      ;;
+  esac
+
+  if (( CREATE_MODE == 1 && REPLACE_FILE_MODE == 1 )); then
+    ERROR_CODE="invalid_args"
+    die "Choose only one of --create or --replace-file"
+  fi
+
+  if (( ${#POSITIONAL[@]} != 1 )); then
+    ERROR_CODE="invalid_args"
+    die "Exactly one target file path is required"
+  fi
+  TARGET_PATH="${POSITIONAL[0]}"
+
+  if (( CREATE_MODE == 1 )); then
+    MODE="create"
+    ensure_target_parent
+    normalize_target_path
+    [[ ! -e "$TARGET_PATH" ]] || { ERROR_CODE="invalid_args"; die 1 "Target already exists: $TARGET_PATH"; }
+    (( EXPECT_TEXT_SET == 0 )) || { ERROR_CODE="invalid_args"; die "--expect cannot be used with --create"; }
+    [[ -z "$EXPECT_SHA256" ]] || { ERROR_CODE="invalid_args"; die "--expect-sha256 cannot be used with --create"; }
+    [[ -z "$SYMBOL_NAME" ]] || { ERROR_CODE="invalid_args"; die "--symbol cannot be used with --create"; }
+    return 0
+  fi
+
+  validate_target_existing
+  normalize_target_path
+
+  if (( REPLACE_FILE_MODE == 1 )); then
+    MODE="replace_file"
+    [[ -z "$SYMBOL_NAME" ]] || { ERROR_CODE="invalid_args"; die "--symbol cannot be used with --replace-file"; }
+    return 0
+  fi
+
+  MODE="patch"
+  local op_count=0
+  [[ -n "$REPLACE_TEXT" ]] && op_count=$((op_count + 1))
+  [[ -n "$AFTER_TEXT" ]] && op_count=$((op_count + 1))
+  [[ -n "$BEFORE_TEXT" ]] && op_count=$((op_count + 1))
+  (( op_count == 1 )) || { ERROR_CODE="invalid_args"; die "Choose exactly one patch operation: --replace, --after, or --before"; }
+  [[ -z "$SYMBOL_TYPE" || -n "$SYMBOL_NAME" ]] || { ERROR_CODE="invalid_args"; die "--symbol-type requires --symbol"; }
+}
+
+process_edit() {
+  local original_file candidate_file
+  original_file=$(make_temp)
+  candidate_file=$(make_temp)
+
+  if [[ -f "$TARGET_PATH" ]]; then
+    cat "$TARGET_PATH" > "$original_file"
+  else
+    : > "$original_file"
+  fi
+  contains_nul_bytes "$original_file" && { ERROR_CODE="invalid_args"; die "Binary targets are not supported by fedit"; }
+
+  TOTAL_FILES_READ=1
+  TOTAL_BYTES_READ=$(wc -c < "$original_file" | tr -d '[:space:]')
+  [[ "$TOTAL_BYTES_READ" =~ ^[0-9]+$ ]] || TOTAL_BYTES_READ=0
+
+  check_preconditions "$original_file"
+
+  case "$MODE" in
+    create)
+      cat "$PAYLOAD_FILE" > "$candidate_file"
+      ;;
+    replace_file)
+      local original_content
+      original_content=$(cat "$original_file")
+      cat "$(normalized_payload_file "$original_content")" > "$candidate_file"
+      ;;
+    patch)
+      build_patch_candidate "$original_file" "$candidate_file"
+      ;;
+    *)
+      ERROR_CODE="invalid_args"
+      die "Unsupported mode: $MODE"
+      ;;
+  esac
+
+  local candidate_bytes
+  candidate_bytes=$(wc -c < "$candidate_file" | tr -d '[:space:]')
+  [[ "$candidate_bytes" =~ ^[0-9]+$ ]] || candidate_bytes=0
+  TOTAL_BYTES_READ=$(( TOTAL_BYTES_READ + candidate_bytes ))
+
+  render_diff "$original_file" "$candidate_file" "${TARGET_PATH} (old)" "${TARGET_PATH} (new)"
+  apply_candidate "$candidate_file"
+}
+
+main() {
+  parse_args "$@"
+  validate_args
+  load_payload
+
+  case "$MODE" in
+    create|replace_file)
+      if (( WITH_SET == 0 )) && [[ -z "$CONTENT_FILE" ]] && (( USE_STDIN == 0 )); then
+        ERROR_CODE="invalid_args"
+        die "This mode requires payload via --with, --content-file, or --stdin"
+      fi
+      ;;
+    patch)
+      if (( WITH_SET == 0 )) && [[ -z "$CONTENT_FILE" ]] && (( USE_STDIN == 0 )); then
+        ERROR_CODE="invalid_args"
+        die "Patch mode requires payload via --with, --content-file, or --stdin"
+      fi
+      ;;
+  esac
+
+  process_edit
+
+  case "$OUTPUT" in
+    pretty) render_pretty ;;
+    json) render_json ;;
+    paths) render_paths ;;
+  esac
+}
+
+main "$@"

@@ -1,3 +1,20 @@
+fsuite (1.9.0-1) unstable; urgency=medium
+
+  * feat(fedit): add preview-first surgical patch tool with exact replace,
+    before/after anchors, dry-run diffs, and explicit --apply writes
+  * feat(fedit): add fmap-driven symbol scoping via --symbol/--symbol-type
+    so agents can patch one resolved symbol block instead of guessing
+  * fix(fedit): preserve literal $ and backslash payloads; emit structured
+    JSON on failure paths; reject stale symbol scope and binary text inputs
+  * fix(fedit): re-check --expect-sha256 immediately before write to reduce
+    TOCTOU clobber risk
+  * packaging: install fedit in Debian package and source installer
+  * tests: add dedicated fedit suite and wire into master runner
+  * docs: promote fsuite to seven tools and document the read/edit loop
+  * release: unify all tool versions at 1.9.0
+
+ -- Chess Williams <chess.w.williams@gmail.com>  Sun, 08 Mar 2026 17:45:00 -0500
+
 fsuite (1.8.0-1) unstable; urgency=medium
 
   * feat(fread): add budgeted file reading tool with head/tail, ranges,

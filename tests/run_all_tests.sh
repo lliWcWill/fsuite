@@ -107,6 +107,15 @@ main() {
     failed_suites+=("fread")
   fi
 
+  # Run fedit tests
+  echo ""
+  if run_test_suite "${SCRIPT_DIR}/test_fedit.sh" "fedit Test Suite"; then
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+  else
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+    failed_suites+=("fedit")
+  fi
+
   # Run installer tests
   echo ""
   if run_test_suite "${SCRIPT_DIR}/test_install.sh" "install.sh Test Suite"; then

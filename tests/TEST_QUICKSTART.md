@@ -2,7 +2,7 @@
 
 ## Overview
 
-This test suite provides comprehensive coverage for all fsuite tools across 8 suites.
+This test suite provides comprehensive coverage for all fsuite tools across 9 suites.
 
 ## Files Created
 
@@ -11,6 +11,7 @@ test_fsearch.sh       - fsearch coverage
 test_fcontent.sh      - fcontent coverage
 test_fmap.sh          - fmap coverage
 test_fread.sh         - fread coverage
+test_fedit.sh         - fedit coverage
 test_install.sh       - install.sh and relocatable install coverage
 test_ftree.sh         - ftree coverage
 test_integration.sh   - pipeline coverage
@@ -49,6 +50,9 @@ bash test_integration.sh
 
 # Test fread
 bash test_fread.sh
+
+# Test fedit
+bash test_fedit.sh
 
 # Test installer
 bash test_install.sh
@@ -100,9 +104,15 @@ Without optional dependencies, relevant tests will be automatically skipped.
 ✓ Pipeline modes (stdin paths, unified diff)
 ✓ Budget caps, truncation hints, telemetry
 
+### fedit
+✓ Dry-run-first patching and `--apply` semantics
+✓ Exact replacement, before/after anchors, and ambiguity rejection
+✓ Symbol-scoped edits via `fmap` JSON
+✓ Preconditions, JSON output, and telemetry
+
 ### install.sh
 ✓ Prefix installs into a clean temp directory
-✓ Copies all six tools plus shared assets
+✓ Copies all seven tools plus shared assets
 ✓ Installed tools report versions from the installed prefix
 ✓ Installed fmetrics finds the packaged predict helper
 
@@ -200,11 +210,12 @@ FSUITE_TELEMETRY=3 bash run_all_tests.sh
 | fcontent | comprehensive | Search modes, queries, rg-args, limits, edge cases |
 | fmap | comprehensive | Language extraction, exact parsing, dedup regression, modes, filters, caps, pipeline |
 | fread | comprehensive | File reads, stdin modes, truncation budgets, JSON output, telemetry |
+| fedit | comprehensive | Patch safety, symbol scoping, preconditions, dry-run/apply, telemetry |
 | install.sh | comprehensive | Prefix install, copied assets, relocatable helper lookup |
 | ftree | comprehensive | Tree/recon/snapshot modes, ignore patterns, validation |
 | Integration | comprehensive | Pipelines, workflows, real-world use cases |
 | Telemetry | comprehensive | Tiered telemetry, hardware detection, machine profile, migration |
-| **Total** | **8 suites** | **Comprehensive end-to-end coverage** |
+| **Total** | **9 suites** | **Comprehensive end-to-end coverage** |
 
 ## Next Steps
 
@@ -224,6 +235,7 @@ bash test_fsearch.sh
 bash test_fcontent.sh
 bash test_fmap.sh
 bash test_fread.sh
+bash test_fedit.sh
 bash test_install.sh
 bash test_ftree.sh
 bash test_telemetry.sh
@@ -234,6 +246,7 @@ bash test_integration.sh
 ./fcontent --version
 ./fmap --version
 ./fread --version
+./fedit --version
 ./ftree --version
 
 # Check dependencies
@@ -241,6 +254,7 @@ bash test_integration.sh
 ./fcontent --self-check
 ./fmap --self-check
 ./fread --self-check
+./fedit --self-check
 ./ftree --self-check
 ```
 
@@ -258,5 +272,6 @@ Run the help command for any tool:
 ./fcontent --help
 ./fmap --help
 ./fread --help
+./fedit --help
 ./ftree --help
 ```

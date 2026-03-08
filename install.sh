@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-VERSION="1.8.0"
+VERSION="1.9.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_PREFIX="${HOME}/.local"
 PREFIX="$DEFAULT_PREFIX"
@@ -11,7 +11,7 @@ MODE="source"
 PACKAGE_PATH=""
 VERIFY=1
 
-TOOLS=(ftree fsearch fcontent fmap fread fmetrics)
+TOOLS=(ftree fsearch fcontent fmap fread fedit fmetrics)
 SHARE_FILES=(_fsuite_common.sh fmetrics-predict.py)
 
 die() {
@@ -43,7 +43,7 @@ EXAMPLES
   ./install.sh
   ./install.sh --system
   ./install.sh --prefix /opt/fsuite
-  ./install.sh --package ../fsuite_1.8.0-1_all.deb
+  ./install.sh --package ../fsuite_1.9.0-1_all.deb
 EOF
 }
 

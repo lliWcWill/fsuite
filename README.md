@@ -17,9 +17,9 @@
 
 ---
 
-**A six-tool filesystem reconnaissance and analytics kit for humans and AI agents.**
+**A seven-tool filesystem reconnaissance, patching, and analytics kit for humans and AI agents.**
 
-`fsuite` provides six composable CLI tools that turn filesystem exploration into a clean, scriptable, agent-friendly pipeline:
+`fsuite` provides seven composable CLI tools that turn filesystem exploration into a clean, scriptable, agent-friendly pipeline:
 
 | Tool | Purpose |
 |------|---------|
@@ -28,9 +28,10 @@
 | **`ftree`** | Visualize directory structure with smart defaults and recon mode |
 | **`fmap`** | Extract structural skeleton from code (code cartography) |
 | **`fread`** | Read files with budgets, ranges, context windows, and diff-aware input |
+| **`fedit`** | Apply surgical text patches with dry-run diffs, preconditions, and symbol scoping |
 | **`fmetrics`** | Analyze telemetry, history, and predicted runtime |
 
-The first five are reconnaissance drones. `fmetrics` is the flight recorder and analyst. Together they cover **scout -> find -> map -> read/search -> measure** with zero glue code.
+The first five are reconnaissance drones. `fedit` is the surgical patch arm. `fmetrics` is the flight recorder and analyst. Together they cover **scout -> find -> map -> read/search -> edit -> measure** with zero glue code.
 
 Works with **Claude Code**, **Codex**, **OpenCode**, and any shell-capable agent harness that can call local binaries.
 
@@ -54,6 +55,7 @@ Works with **Claude Code**, **Codex**, **OpenCode**, and any shell-capable agent
   - [ftree](#ftree--directory-structure-visualization)
   - [fmap](#fmap--code-cartography)
   - [fread](#fread--budgeted-file-reading)
+  - [fedit](#fedit--surgical-patching)
   - [fmetrics](#fmetrics--telemetry-analytics)
 - [Output Formats](#output-formats)
 - [Agent / Headless Usage](#agent--headless-usage)
@@ -89,7 +91,7 @@ It didn't just say "nice tools." It wrote a full self-assessment. Unprompted con
 | **fsearch** | *"Augment. Use alongside Glob for discovery and pipeline scenarios."* — Pattern normalization + pipeline composability. |
 | **fcontent** | *"Augment. Use for pipeline searches and scoped discovery."* — Piped mode + match caps designed for LLM context windows. |
 
-That first round exposed the real missing step: after recon and search, the agent still had to spend extra calls just to read the right slice of a file. `fmap` and `fread` close that gap. `fmetrics` closes the final loop by turning live usage into operational feedback instead of guesswork.
+That first round exposed the real missing step: after recon and search, the agent still had to spend extra calls just to read the right slice of a file. `fmap` and `fread` close that gap. `fedit` turns that bounded context into a safe patch surface. `fmetrics` closes the final loop by turning live usage into operational feedback instead of guesswork.
 
 **The workflow shift — before and after:**
 
@@ -98,16 +100,16 @@ BEFORE fsuite:
   Spawn Explore agent -> 10-15 internal tool calls -> still blind on structure
 
 AFTER fsuite:
-  ftree --snapshot -o json  ->  fsearch -o paths  ->  fmap -o json  ->  fread -o json
-  4-5 calls. Structural context plus bounded file reads. Still dramatically fewer tool invocations.
+  ftree --snapshot -o json  ->  fsearch -o paths  ->  fmap -o json  ->  fread -o json  ->  fedit -o json
+  5-6 calls. Structural context, bounded file reads, and previewable edits. Still dramatically fewer tool invocations.
 ```
 
 And once those reads are happening in the real world:
 
 ```text
 AFTER execution:
-  ... -> fcontent -o json -> fmetrics import -> fmetrics stats / predict
-  Search inside the narrowed set, then measure what actually happened and plan the next pass.
+  ... -> fcontent -o json -> fedit -o json -> fmetrics import -> fmetrics stats / predict
+  Search inside the narrowed set, patch surgically, then measure what actually happened and plan the next pass.
 ```
 
 The full unedited analysis is in **[AGENT-ANALYSIS.md](AGENT-ANALYSIS.md)** — the raw self-assessment, exactly as Claude Code wrote it after studying and testing every tool in this repo.
@@ -155,15 +157,15 @@ cd fsuite
 
 ## fsuite Help
 
-There is no single `fsuite` binary. `fsuite` is a **headless workflow contract** made of six small commands that compose cleanly.
+There is no single `fsuite` binary. `fsuite` is a **headless workflow contract** made of seven small commands that compose cleanly.
 
 If your harness reads repo instructions automatically, use the bundled [AGENTS.md](AGENTS.md) as the suite-level operating guide.
 
 If an agent only remembers one thing, it should remember this:
 
 ```text
-ftree  ->  fsearch  ->  fmap / fcontent  ->  fread  ->  fmetrics
-Scout     Find         Map / Search         Read       Measure
+ftree  ->  fsearch  ->  fmap / fcontent  ->  fread  ->  fedit  ->  fmetrics
+Scout     Find         Map / Search         Read       Edit       Measure
 ```
 
 ### What Each Tool Is For
@@ -175,6 +177,7 @@ Scout     Find         Map / Search         Read       Measure
 | `fmap` | "What symbols exist in these source files?" | `-o json` |
 | `fcontent` | "Which files contain this text?" | `-o json` or `-o paths` |
 | `fread` | "Show me the exact lines around this function, match, or diff hunk." | `-o json` |
+| `fedit` | "Preview and apply a surgical patch against the exact symbol or anchor I just inspected." | `-o json` |
 | `fmetrics` | "What did these runs cost, and what will the next one cost?" | `stats -o json`, `predict` |
 
 ### Headless Contract
@@ -204,7 +207,11 @@ fsearch -o paths '*.py' /project/src | fcontent -o json "authenticate"
 # 4) Read the exact code neighborhood you care about
 fread -o json /project/src/auth.py --around "def authenticate" -B 5 -A 20
 
-# 5) Import telemetry and inspect the cost of what just happened
+# 5) Preview and then apply the patch
+fedit -o json /project/src/auth.py --symbol authenticate --replace "return False" --with "return deny()"
+fedit -o json /project/src/auth.py --symbol authenticate --replace "return False" --with "return deny()" --apply
+
+# 6) Import telemetry and inspect the cost of what just happened
 fmetrics import
 fmetrics stats -o json
 fmetrics predict /project
@@ -219,6 +226,7 @@ fmetrics predict /project
 | structural skeleton without reading full files | `fmap` |
 | content matches across files | `fcontent` |
 | bounded context from a known file | `fread` |
+| safe patch application against inspected context | `fedit` |
 | runtime history or a preflight estimate | `fmetrics` |
 
 ---
@@ -482,6 +490,37 @@ git diff | fread --from-stdin --stdin-format=unified-diff -B 3 -A 10
 fsearch -o paths '*.py' /project | fread --from-stdin --stdin-format=paths --max-files 5 -o json
 ```
 
+### `fedit` &mdash; surgical patching
+
+Applies **preview-first text patches** after you have already narrowed the target with `fsearch`, `fread`, and `fmap`. It defaults to dry-run, emits a unified diff, and only mutates the file when `--apply` is present.
+
+```bash
+fedit [OPTIONS] <file>
+```
+
+**Key features:**
+
+- Dry-run by default; `--apply` is required to write
+- Exact replacement plus `--after` / `--before` anchor insertion
+- Preconditions with `--expect` and `--expect-sha256`
+- `--symbol` / `--symbol-type` scope a patch to one `fmap`-resolved symbol block
+- Three output formats: `pretty` (default), `paths`, `json`
+
+**Examples:**
+
+```bash
+# Preview a direct replacement
+fedit /project/src/auth.py --replace 'return False' --with 'return deny()'
+
+# Apply the replacement only inside one symbol
+fedit /project/src/auth.py --symbol authenticate --symbol-type function \
+  --replace 'return False' --with 'return deny()' --apply
+
+# Insert after an anchor
+fedit /project/src/auth.py --after 'def authenticate(user):' \
+  --content-file patch.txt --apply
+```
+
 ### `fmetrics` &mdash; telemetry analytics
 
 Closes the loop after reconnaissance. `fmetrics` ingests local telemetry, shows dashboards and history, and predicts how long scans will take on a target before you launch them.
@@ -518,7 +557,7 @@ fmetrics predict /project
 
 ## Output Formats
 
-The five reconnaissance tools (`fsearch`, `fcontent`, `ftree`, `fmap`, `fread`) support three output modes via `--output` / `-o`:
+The six operational tools (`fsearch`, `fcontent`, `ftree`, `fmap`, `fread`, `fedit`) support three output modes via `--output` / `-o`:
 
 | Mode | Description | Best for |
 |------|-------------|----------|
@@ -531,7 +570,7 @@ The five reconnaissance tools (`fsearch`, `fcontent`, `ftree`, `fmap`, `fread`) 
 ```json
 {
   "tool": "fsearch",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "pattern": "*token*",
   "name_glob": "*token*",
   "path": "/home/user",
@@ -547,7 +586,7 @@ The five reconnaissance tools (`fsearch`, `fcontent`, `ftree`, `fmap`, `fread`) 
 ```json
 {
   "tool": "fcontent",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "query": "ERROR",
   "mode": "directory",
   "path": "/var/log",
@@ -563,7 +602,7 @@ The five reconnaissance tools (`fsearch`, `fcontent`, `ftree`, `fmap`, `fread`) 
 ```json
 {
   "tool": "ftree",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "mode": "tree",
   "backend": "tree",
   "path": "/project",
@@ -584,7 +623,7 @@ The five reconnaissance tools (`fsearch`, `fcontent`, `ftree`, `fmap`, `fread`) 
 ```json
 {
   "tool": "ftree",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "mode": "recon",
   "backend": "find/du/stat",
   "path": "/project",
@@ -605,7 +644,7 @@ The five reconnaissance tools (`fsearch`, `fcontent`, `ftree`, `fmap`, `fread`) 
 ```json
 {
   "tool": "fmap",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "mode": "single_file",
   "path": "/project/src/auth.py",
   "total_files_scanned": 1,
@@ -633,7 +672,7 @@ The five reconnaissance tools (`fsearch`, `fcontent`, `ftree`, `fmap`, `fread`) 
 ```json
 {
   "tool": "fread",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "mode": "around",
   "truncated": false,
   "truncation_reason": "none",
@@ -675,7 +714,7 @@ The five reconnaissance tools (`fsearch`, `fcontent`, `ftree`, `fmap`, `fread`) 
 ```json
 {
   "tool": "fmetrics",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "subcommand": "stats",
   "total_runs": 24,
   "db_path": "/home/user/.fsuite/telemetry.db",
@@ -864,6 +903,22 @@ Copy-paste ready. Every command runs headless (no prompts, no TTY needed) unless
 | `fread --self-check` | Verify dependencies (`sed`, `awk`, `grep`, `wc`, `od`, `perl`) |
 | `fread --version` | Print version |
 
+### `fedit` — Apply Surgical Patches
+
+| Command | What it does |
+|---------|-------------|
+| `fedit /project/src/auth.py --replace 'old' --with 'new'` | Preview an exact replacement |
+| `fedit /project/src/auth.py --replace 'old' --with 'new' --apply` | Apply the exact replacement |
+| `fedit /project/src/auth.py --after 'def authenticate(user):' --content-file patch.txt` | Preview an insertion after an anchor |
+| `fedit /project/src/auth.py --before 'return True' --stdin --apply` | Insert payload from stdin before an anchor |
+| `fedit /project/src/auth.py --symbol authenticate --replace 'return False' --with 'return deny()'` | Scope the patch to one `fmap`-resolved symbol |
+| `fedit /project/src/auth.py --expect 'def authenticate' --replace 'old' --with 'new'` | Require expected text before patching |
+| `fedit /project/src/auth.py --expect-sha256 HASH --replace 'old' --with 'new' --apply` | Guard the write with a content hash |
+| `fedit --create /project/src/new_file.py --content-file body.txt --apply` | Create a new file from payload |
+| `fedit --replace-file /project/src/auth.py --content-file rewrite.txt --apply` | Replace an entire file from payload |
+| `fedit --self-check` | Verify perl, diff, mktemp, and SHA tooling |
+| `fedit --version` | Print version |
+
 ### `fmetrics` — Analyze and Predict
 
 | Command | What it does |
@@ -908,6 +963,8 @@ These are designed for AI agents, CI pipelines, cron jobs, and automation script
 | **Map code structure** | `fmap -o json /project` | Agent gets functions, classes, imports per file |
 | **Map specific files** | `fsearch -o paths '*.py' /project \| fmap -o json` | Pipeline: find then map structure |
 | **Read targeted context** | `fread -o json /project/src/auth.py --around "def authenticate" -A 20` | Agent reads one function neighborhood without flooding context |
+| **Preview a patch** | `fedit -o json /project/src/auth.py --symbol authenticate --replace "return False" --with "return deny()"` | Agent gets a structured diff before changing code |
+| **Apply a patch** | `fedit -o json /project/src/auth.py --symbol authenticate --replace "return False" --with "return deny()" --apply` | Agent mutates only after it has inspected the diff |
 | **Read changed code** | `git diff \| fread --from-stdin --stdin-format=unified-diff -o json` | Agent turns a patch into contextual file reads |
 | **Budgeted follow-up reads** | `fsearch -o paths '*.py' /project \| fread --from-stdin --stdin-format=paths --max-files 5 --token-budget 2000 -o json` | Agent keeps reading within a controlled context budget |
 | **Functions only** | `fmap -t function -o json /project` | Agent gets only function definitions |
@@ -1020,6 +1077,31 @@ These are designed for AI agents, CI pipelines, cron jobs, and automation script
 | `--install-hints` | — | — | — |
 
 > **Tip:** Numeric flags support combined syntax: `-m50` is equivalent to `-m 50`.
+
+**`fedit`**
+
+| Flag | Short | Values | Default |
+|------|-------|--------|---------|
+| `--output` | `-o` | `pretty`, `paths`, `json` | `pretty` |
+| `--replace` | — | exact text block | — |
+| `--with` | — | payload text | — |
+| `--after` | — | exact anchor text | — |
+| `--before` | — | exact anchor text | — |
+| `--content-file` | — | readable file path | — |
+| `--stdin` | — | — | off |
+| `--expect` | — | exact text block | — |
+| `--expect-sha256` | — | SHA-256 hex digest | — |
+| `--symbol` | — | symbol name | — |
+| `--symbol-type` | — | `function`, `class`, `import`, `type`, `export`, `constant` | any |
+| `--fmap-json` | — | path to prior `fmap -o json` output | auto-run `fmap` |
+| `--allow-multiple` | — | — | off |
+| `--apply` | — | — | off |
+| `--dry-run` | — | — | on |
+| `--create` | — | — | off |
+| `--replace-file` | — | — | off |
+| `--project-name` | — | any string | auto-detected |
+| `--self-check` | — | — | — |
+| `--install-hints` | — | — | — |
 
 **`fread`**
 
@@ -1201,13 +1283,14 @@ This installs into `~/.local/bin` and `~/.local/share/fsuite`.
 ### Alternate: manual symlink install
 
 ```bash
-chmod +x fsearch fcontent ftree fmap fread fmetrics
+chmod +x fsearch fcontent ftree fmap fread fedit fmetrics
 
 sudo ln -s "$(pwd)/fsearch" /usr/local/bin/fsearch
 sudo ln -s "$(pwd)/fcontent" /usr/local/bin/fcontent
 sudo ln -s "$(pwd)/ftree" /usr/local/bin/ftree
 sudo ln -s "$(pwd)/fmap" /usr/local/bin/fmap
 sudo ln -s "$(pwd)/fread" /usr/local/bin/fread
+sudo ln -s "$(pwd)/fedit" /usr/local/bin/fedit
 sudo ln -s "$(pwd)/fmetrics" /usr/local/bin/fmetrics
 ```
 
@@ -1222,9 +1305,10 @@ ls -lh ../fsuite_*_all.deb
 ### Install the Debian package locally
 
 ```bash
-sudo dpkg -i ../fsuite_1.8.0-1_all.deb
+sudo dpkg -i ../fsuite_1.9.0-1_all.deb
 ftree --version
 fread --version
+fedit --version
 fmetrics --version
 ```
 
@@ -1236,11 +1320,23 @@ For harnesses that read repo instructions, point them at [AGENTS.md](AGENTS.md).
 
 ## Changelog
 
+### v1.9.0
+
+The missing modification step is now part of the suite. `fedit` turns `fsuite` from scout-map-read-measure into scout-map-read-edit-measure, and the entire release is unified at `1.9.0`.
+
+**New tool:**
+- **`fedit`**: preview-first surgical patching with exact replace, before/after anchors, and dry-run diffs by default
+- **`fedit`**: preconditions (`--expect`, `--expect-sha256`), structured JSON error output, and binary-target rejection for safe headless use
+- **`fedit`**: `fmap`-driven `--symbol` / `--symbol-type` scoping so agents patch one symbol block instead of guessing with raw text alone
+
+**Release hardening:**
+- **Packaging**: Debian package and installer now install `fedit`
+- **Tests**: dedicated `fedit` suite added and wired into the master runner; full suite now runs across 9 test suites
+- **Docs**: README promoted from a six-tool recon kit to the seven-tool inspect/edit loop
+
 ### v1.8.0
 
 The missing read step is now part of the suite. `fread` turns `fsuite` from scout-and-map into scout-map-read-measure, and the entire release is unified at `1.8.0`.
-
-**New tool:**
 - **`fread`**: budgeted file reading with range, head/tail, around-line, around-pattern, stdin path mode, and unified-diff mode
 - **`fread`**: token estimation, binary detection, truncation `next_hint`, and structured JSON output for agents
 

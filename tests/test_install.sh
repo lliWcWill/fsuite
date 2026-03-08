@@ -66,6 +66,7 @@ test_prefix_install_copies_tools_and_assets() {
     "${prefix}/bin/fcontent" \
     "${prefix}/bin/fmap" \
     "${prefix}/bin/fread" \
+    "${prefix}/bin/fedit" \
     "${prefix}/bin/fmetrics" \
     "${prefix}/share/fsuite/_fsuite_common.sh" \
     "${prefix}/share/fsuite/fmetrics-predict.py"; do
@@ -93,6 +94,7 @@ test_prefix_install_versions_work() {
     FSUITE_TELEMETRY=0 "${prefix}/bin/fcontent" --version
     FSUITE_TELEMETRY=0 "${prefix}/bin/fmap" --version
     FSUITE_TELEMETRY=0 "${prefix}/bin/fread" --version
+    FSUITE_TELEMETRY=0 "${prefix}/bin/fedit" --version
     FSUITE_TELEMETRY=0 "${prefix}/bin/fmetrics" --version
   )
 
@@ -101,6 +103,7 @@ test_prefix_install_versions_work() {
      [[ "$output" =~ fcontent\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
      [[ "$output" =~ fmap\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
      [[ "$output" =~ fread\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
+     [[ "$output" =~ fedit\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
      [[ "$output" =~ fmetrics\ [0-9]+\.[0-9]+\.[0-9]+ ]]; then
     pass "Installed tools report versions from the prefix"
   else
