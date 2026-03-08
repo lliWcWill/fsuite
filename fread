@@ -1,0 +1,1178 @@
+#!/usr/bin/env bash
+# fread — budgeted file reading with line numbers, token estimates, and pipeline integration.
+# Part of fsuite. Reads files intelligently so agents don't waste context.
+
+set -euo pipefail
+
+VERSION="1.8.0"
+
+# -------------------------
+# Source common library for tiered telemetry
+# -------------------------
+_FSUITE_SCRIPT_DIR="$(cd "$(dirname "$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
+_FSUITE_PARENT_DIR="$(cd "$_FSUITE_SCRIPT_DIR/.." 2>/dev/null && pwd || true)"
+_FSUITE_LIB_CANDIDATES=()
+[[ -n "${FSUITE_SHARE_DIR:-}" ]] && _FSUITE_LIB_CANDIDATES+=("${FSUITE_SHARE_DIR%/}/_fsuite_common.sh")
+_FSUITE_LIB_CANDIDATES+=(
+  "$_FSUITE_SCRIPT_DIR/_fsuite_common.sh"
+  "$_FSUITE_PARENT_DIR/share/fsuite/_fsuite_common.sh"
+  "/usr/local/share/fsuite/_fsuite_common.sh"
+  "/usr/share/fsuite/_fsuite_common.sh"
+)
+for _fsuite_candidate in "${_FSUITE_LIB_CANDIDATES[@]}"; do
+  if [[ -f "$_fsuite_candidate" ]]; then
+    # shellcheck disable=SC1090
+    source "$_fsuite_candidate"
+    break
+  fi
+done
+unset _fsuite_candidate
+
+# -------------------------
+# Telemetry — opt-out via FSUITE_TELEMETRY=0
+# -------------------------
+now_ms() {
+  local ms=""
+  ms=$(date +%s%3N 2>/dev/null || true)
+  if [[ "$ms" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$ms"
+    return 0
+  fi
+
+  ms=$(perl -MTime::HiRes=time -e 'printf "%.0f\n", time() * 1000' 2>/dev/null || true)
+  if [[ "$ms" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$ms"
+    return 0
+  fi
+
+  ms=$(date +%s 2>/dev/null || true)
+  if [[ "$ms" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$(( ms * 1000 ))"
+    return 0
+  fi
+
+  printf '0'
+}
+
+_FSUITE_TELEM="${FSUITE_TELEMETRY:-1}"
+[[ "$_FSUITE_TELEM" =~ ^[0-9]+$ ]] || _FSUITE_TELEM=1
+_TELEM_START_MS=$(now_ms)
+_TELEM_EXIT_CODE=0
+_TELEM_FLAGS=""
+_TELEM_PROJECT_NAME=""
+_TELEM_PATH_HINT=""
+
+# -------------------------
+# Defaults
+# -------------------------
+DEFAULT_OUTPUT="pretty"
+DEFAULT_MAX_LINES=200
+DEFAULT_MAX_BYTES=50000
+DEFAULT_BEFORE=5
+DEFAULT_AFTER=10
+DEFAULT_MAX_FILES=10
+TOKEN_ESTIMATOR="bytes_div_3_conservative"
+
+# -------------------------
+# Binary extension denylist
+# -------------------------
+_BINARY_EXT_RE='(pyc|pyo|so|o|a|dylib|dll|exe|com|class|jar|war|ear|zip|gz|bz2|xz|zst|lz4|tar|7z|rar|png|jpg|jpeg|gif|bmp|ico|tiff|webp|mp3|mp4|avi|mkv|mov|flv|wav|ogg|flac|aac|woff|woff2|ttf|otf|eot|pdf|doc|docx|xls|xlsx|ppt|pptx|sqlite|db|wasm)$'
+
+# -------------------------
+# Global state
+# -------------------------
+MODE="file"
+OUTPUT="$DEFAULT_OUTPUT"
+MAX_LINES=$DEFAULT_MAX_LINES
+MAX_BYTES=$DEFAULT_MAX_BYTES
+TOKEN_BUDGET=0
+MAX_FILES=$DEFAULT_MAX_FILES
+BEFORE=$DEFAULT_BEFORE
+AFTER=$DEFAULT_AFTER
+QUIET=0
+FORCE_TEXT=0
+FROM_STDIN=0
+STDIN_FORMAT=""
+
+TARGET_PATH=""
+NEXT_HINT=""
+
+TOTAL_LINES_READ=0
+TOTAL_BYTES_READ=0
+TOTAL_FILES_READ=0
+TRUNCATED=false
+TRUNCATION_REASON="none"
+
+CHUNK_COUNT=0
+declare -a CHUNK_PATHS CHUNK_STARTS CHUNK_ENDS CHUNK_MATCH_LINES CHUNK_CONTENTS CHUNK_BYTES CHUNK_LINES
+
+FILE_COUNT=0
+declare -a FILE_PATHS FILE_LANGS FILE_BINARY_STATE FILE_SIZES FILE_TOTALLINES FILE_STATUSES
+declare -a READ_FILE_PATHS
+READ_FILE_COUNT=0
+
+WARN_COUNT=0
+ERR_COUNT=0
+declare -a WARN_MSGS ERR_PATHS ERR_CODES ERR_DETAILS
+
+_RR_CONTENT=""
+_RR_BYTES=0
+_RR_LINES=0
+_RR_END_LINE=0
+
+# -------------------------
+# Helpers
+# -------------------------
+die() {
+  local code=2
+  if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
+    code="$1"
+    shift
+  fi
+  echo "fread: $*" >&2
+  exit "$code"
+}
+
+has() { command -v "$1" >/dev/null 2>&1; }
+
+json_escape_str() {
+  printf '%s' "$1" | perl -0777 -pe '
+    s/\\/\\\\/g;
+    s/"/\\"/g;
+    s/\x08/\\b/g;
+    s/\t/\\t/g;
+    s/\x0c/\\f/g;
+    s/\r/\\r/g;
+    s/\n/\\n/g;
+    s/([\x00-\x1f])/sprintf("\\u%04x",ord($1))/ge;
+  '
+}
+
+byte_len() {
+  local s="$1"
+  local old_lc_all="__FSUITE_UNSET__"
+  if [[ -n "${LC_ALL+x}" ]]; then
+    old_lc_all="$LC_ALL"
+  fi
+  LC_ALL=C
+  local n=${#s}
+  if [[ "$old_lc_all" == "__FSUITE_UNSET__" ]]; then
+    unset LC_ALL
+  else
+    LC_ALL="$old_lc_all"
+  fi
+  printf '%s' "$n"
+}
+
+token_estimate_from_bytes() {
+  local bytes="${1:-0}"
+  (( bytes < 0 )) && bytes=0
+  echo $(( (bytes + 2) / 3 ))
+}
+
+file_bytes() {
+  if stat -c %s "$1" 2>/dev/null; then
+    return
+  fi
+  stat -f %z "$1" 2>/dev/null || echo "0"
+}
+
+count_file_lines() {
+  wc -l < "$1" 2>/dev/null | tr -d '[:space:]'
+}
+
+normalize_abs_path() {
+  local p="$1"
+  if abs="$(realpath -e "$p" 2>/dev/null)"; then
+    printf '%s' "$abs"
+    return 0
+  fi
+  if abs="$(cd "$(dirname "$p")" 2>/dev/null && printf '%s/%s' "$(pwd)" "$(basename "$p")")"; then
+    printf '%s' "$abs"
+    return 0
+  fi
+  printf '%s' "$p"
+}
+
+detect_language() {
+  local file="$1"
+  local base ext
+  base="$(basename "$file")"
+  ext="${base##*.}"
+  [[ "$base" == "$ext" ]] && ext=""
+
+  case "$base" in
+    Dockerfile|Dockerfile.*|Containerfile|Containerfile.*) echo "dockerfile"; return ;;
+    Makefile|makefile|GNUmakefile) echo "makefile"; return ;;
+  esac
+
+  case "$ext" in
+    py|pyw|pyi) echo "python" ;;
+    js|mjs|cjs|jsx) echo "javascript" ;;
+    ts|tsx|mts|cts) echo "typescript" ;;
+    rs) echo "rust" ;;
+    go) echo "go" ;;
+    java) echo "java" ;;
+    c) echo "c" ;;
+    h|cpp|cc|cxx|hpp|hxx|hh) echo "cpp" ;;
+    rb|rake|gemspec) echo "ruby" ;;
+    lua) echo "lua" ;;
+    php) echo "php" ;;
+    sh|bash|zsh) echo "bash" ;;
+    yml|yaml) echo "yaml" ;;
+    md|markdown) echo "markdown" ;;
+    json) echo "json" ;;
+    toml) echo "toml" ;;
+    xml) echo "xml" ;;
+    html|htm) echo "html" ;;
+    css|scss|sass|less) echo "css" ;;
+    sql) echo "sql" ;;
+    swift) echo "swift" ;;
+    kt|kts) echo "kotlin" ;;
+    scala) echo "scala" ;;
+    pl|pm) echo "perl" ;;
+    ex|exs) echo "elixir" ;;
+    erl|hrl) echo "erlang" ;;
+    hs) echo "haskell" ;;
+    ml|mli) echo "ocaml" ;;
+    txt|text|log) echo "text" ;;
+    cfg|conf|ini|env) echo "config" ;;
+    csv|tsv) echo "data" ;;
+    *) echo "unknown" ;;
+  esac
+}
+
+is_binary_extension() {
+  local base lower
+  base="$(basename "$1")"
+  lower="$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')"
+
+  # Common packed/minified assets first
+  if [[ "$lower" == *.min.js ]] || [[ "$lower" == *.min.css ]] || [[ "$lower" == *.map ]]; then
+    return 0
+  fi
+
+  [[ "$lower" =~ \.${_BINARY_EXT_RE} ]]
+}
+
+is_binary_file() {
+  local f="$1"
+  is_binary_extension "$f" && return 0
+
+  if [[ -f "$f" ]] && [[ -r "$f" ]]; then
+    # Portable NUL-byte sniff in first 8KB.
+    if od -An -tx1 -N 8192 "$f" 2>/dev/null | grep -Eq '(^|[[:space:]])00([[:space:]]|$)'; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+normalize_diff_path() {
+  local raw="$1"
+  raw="${raw%%$'\t'*}"
+  raw="${raw#\"}"
+  raw="${raw%\"}"
+  [[ "$raw" == "/dev/null" ]] && { echo "__DEV_NULL__"; return; }
+  raw="${raw#a/}"
+  raw="${raw#b/}"
+  echo "$raw"
+}
+
+shell_quote() {
+  printf '%q' "$1"
+}
+
+mark_truncated() {
+  local reason="$1"
+  if [[ "$TRUNCATED" != "true" ]]; then
+    TRUNCATED=true
+    TRUNCATION_REASON="$reason"
+  fi
+}
+
+check_budget_preadd() {
+  local add_lines="${1:-0}"
+  local add_bytes="${2:-0}"
+  local projected_lines=$((TOTAL_LINES_READ + add_lines))
+  local projected_bytes=$((TOTAL_BYTES_READ + add_bytes))
+
+  if (( TOKEN_BUDGET > 0 )); then
+    local projected_tokens
+    projected_tokens=$(token_estimate_from_bytes "$projected_bytes")
+    if (( projected_tokens > TOKEN_BUDGET )); then
+      mark_truncated "token_budget"
+      return 1
+    fi
+  fi
+
+  if (( MAX_BYTES > 0 )) && (( projected_bytes > MAX_BYTES )); then
+    mark_truncated "max_bytes"
+    return 1
+  fi
+
+  if (( MAX_LINES > 0 )) && (( projected_lines > MAX_LINES )); then
+    mark_truncated "max_lines"
+    return 1
+  fi
+
+  return 0
+}
+
+mark_file_read() {
+  local path="$1"
+  local i
+  for (( i=0; i<READ_FILE_COUNT; i++ )); do
+    if [[ "${READ_FILE_PATHS[$i]}" == "$path" ]]; then
+      return 0
+    fi
+  done
+  READ_FILE_PATHS[$READ_FILE_COUNT]="$path"
+  READ_FILE_COUNT=$((READ_FILE_COUNT + 1))
+  TOTAL_FILES_READ=$((TOTAL_FILES_READ + 1))
+}
+
+find_file_summary_index() {
+  local path="$1"
+  local i
+  for (( i=0; i<FILE_COUNT; i++ )); do
+    if [[ "${FILE_PATHS[$i]}" == "$path" ]]; then
+      printf '%s' "$i"
+      return 0
+    fi
+  done
+  printf '%s' "-1"
+  return 0
+}
+
+upsert_file_summary() {
+  local path="$1" lang="$2" binary_state="$3" size="$4" total_lines="$5" status="$6"
+  local idx
+  idx="$(find_file_summary_index "$path")"
+  if (( idx < 0 )); then
+    idx="$FILE_COUNT"
+    FILE_COUNT=$((FILE_COUNT + 1))
+  fi
+  FILE_PATHS[$idx]="$path"
+  FILE_LANGS[$idx]="$lang"
+  FILE_BINARY_STATE[$idx]="$binary_state"
+  FILE_SIZES[$idx]="$size"
+  FILE_TOTALLINES[$idx]="$total_lines"
+  FILE_STATUSES[$idx]="$status"
+}
+
+add_warning() {
+  WARN_MSGS[$WARN_COUNT]="$1"
+  WARN_COUNT=$((WARN_COUNT + 1))
+}
+
+add_error() {
+  local path="$1" code="$2" detail="$3"
+  ERR_PATHS[$ERR_COUNT]="$path"
+  ERR_CODES[$ERR_COUNT]="$code"
+  ERR_DETAILS[$ERR_COUNT]="$detail"
+  ERR_COUNT=$((ERR_COUNT + 1))
+}
+
+add_chunk() {
+  local path="$1" start="$2" end="$3" match_line="$4" content="$5" bytes="$6" lines="$7"
+  CHUNK_PATHS[$CHUNK_COUNT]="$path"
+  CHUNK_STARTS[$CHUNK_COUNT]="$start"
+  CHUNK_ENDS[$CHUNK_COUNT]="$end"
+  CHUNK_MATCH_LINES[$CHUNK_COUNT]="$match_line"
+  CHUNK_CONTENTS[$CHUNK_COUNT]="$content"
+  CHUNK_BYTES[$CHUNK_COUNT]="$bytes"
+  CHUNK_LINES[$CHUNK_COUNT]="$lines"
+  CHUNK_COUNT=$((CHUNK_COUNT + 1))
+}
+
+read_range_chunk() {
+  local file="$1" start="$2" end="$3"
+
+  _RR_CONTENT=""
+  _RR_BYTES=0
+  _RR_LINES=0
+  _RR_END_LINE=$((start - 1))
+
+  (( start > end )) && return 0
+
+  local rec line_no line display_line line_bytes
+  while IFS= read -r rec || [[ -n "$rec" ]]; do
+    [[ -z "$rec" ]] && continue
+    line_no="${rec%%$'\x1f'*}"
+    line="${rec#*$'\x1f'}"
+
+    if (( ${#line} > 2000 )); then
+      line="${line:0:2000} [truncated_line]"
+    fi
+
+    display_line="${line_no}  ${line}"
+    line_bytes=$(byte_len "${display_line}"$'\n')
+
+    if ! check_budget_preadd "$((_RR_LINES + 1))" "$((_RR_BYTES + line_bytes))"; then
+      break
+    fi
+
+    _RR_CONTENT+="${display_line}"$'\n'
+    _RR_BYTES=$((_RR_BYTES + line_bytes))
+    _RR_LINES=$((_RR_LINES + 1))
+    _RR_END_LINE="$line_no"
+  done < <(awk -v s="$start" -v e="$end" 'NR>=s && NR<=e { printf "%d\037%s\n", NR, $0 }' "$file" 2>/dev/null)
+
+  if (( _RR_LINES > 0 )); then
+    _RR_CONTENT="${_RR_CONTENT%$'\n'}"
+  fi
+}
+
+process_single_file() {
+  local file="$1"
+  local start="${2:-1}"
+  local end="${3:-}"
+  local match_line="${4:-}"
+  local total_lines_hint="${5:-}"
+  local abs_path lang size_bytes total_lines
+  local binary_state="unknown"
+
+  abs_path="$(normalize_abs_path "$file")"
+  [[ -z "$_TELEM_PATH_HINT" ]] && _TELEM_PATH_HINT="$abs_path"
+
+  if [[ ! -e "$abs_path" ]]; then
+    add_error "$abs_path" "not_found" "file does not exist"
+    upsert_file_summary "$abs_path" "unknown" "unknown" "0" "" "not_found"
+    return 0
+  fi
+  if [[ ! -f "$abs_path" ]]; then
+    add_error "$abs_path" "not_regular" "not a regular file"
+    upsert_file_summary "$abs_path" "unknown" "unknown" "0" "" "not_regular"
+    return 0
+  fi
+  if [[ ! -r "$abs_path" ]]; then
+    add_error "$abs_path" "permission" "permission denied"
+    upsert_file_summary "$abs_path" "unknown" "unknown" "0" "" "skipped_permission"
+    return 0
+  fi
+
+  lang="$(detect_language "$abs_path")"
+  size_bytes="$(file_bytes "$abs_path" 2>/dev/null || echo 0)"
+  size_bytes="${size_bytes//[[:space:]]/}"
+  [[ "$size_bytes" =~ ^[0-9]+$ ]] || size_bytes=0
+
+  if (( FORCE_TEXT == 0 )) && is_binary_file "$abs_path"; then
+    binary_state="true"
+    upsert_file_summary "$abs_path" "$lang" "$binary_state" "$size_bytes" "" "skipped_binary"
+    add_warning "binary file skipped: $abs_path"
+    return 0
+  fi
+  binary_state="false"
+
+  if [[ -n "$total_lines_hint" ]] && [[ "$total_lines_hint" =~ ^[0-9]+$ ]]; then
+    total_lines="$total_lines_hint"
+  else
+    total_lines="$(count_file_lines "$abs_path" 2>/dev/null || echo 0)"
+    [[ "$total_lines" =~ ^[0-9]+$ ]] || total_lines=0
+  fi
+
+  [[ -z "$end" ]] && end="$total_lines"
+  (( start < 1 )) && start=1
+  (( end > total_lines )) && end="$total_lines"
+
+  if (( start > end )) || (( total_lines == 0 )); then
+    upsert_file_summary "$abs_path" "$lang" "$binary_state" "$size_bytes" "$total_lines" "read_empty"
+    return 0
+  fi
+
+  local before_chunks="$CHUNK_COUNT"
+  read_range_chunk "$abs_path" "$start" "$end"
+
+  if (( _RR_LINES > 0 )); then
+    add_chunk "$abs_path" "$start" "$_RR_END_LINE" "$match_line" "$_RR_CONTENT" "$_RR_BYTES" "$_RR_LINES"
+    TOTAL_LINES_READ=$((TOTAL_LINES_READ + _RR_LINES))
+    TOTAL_BYTES_READ=$((TOTAL_BYTES_READ + _RR_BYTES))
+    mark_file_read "$abs_path"
+    upsert_file_summary "$abs_path" "$lang" "$binary_state" "$size_bytes" "$total_lines" "read"
+  else
+    if [[ "$TRUNCATED" == "true" ]]; then
+      upsert_file_summary "$abs_path" "$lang" "$binary_state" "$size_bytes" "$total_lines" "budget_skipped"
+    else
+      upsert_file_summary "$abs_path" "$lang" "$binary_state" "$size_bytes" "$total_lines" "read_empty"
+    fi
+  fi
+
+  # If no chunk was added and truncation is set, this file was blocked by budget.
+  if (( CHUNK_COUNT == before_chunks )) && [[ "$TRUNCATED" == "true" ]]; then
+    :
+  fi
+}
+
+process_around_line() {
+  local file="$1" center="$2" before="$3" after="$4"
+  local abs_path total_lines start end
+  abs_path="$(normalize_abs_path "$file")"
+  total_lines="$(count_file_lines "$abs_path" 2>/dev/null || echo 0)"
+  [[ "$total_lines" =~ ^[0-9]+$ ]] || total_lines=0
+
+  start=$((center - before))
+  end=$((center + after))
+  (( start < 1 )) && start=1
+  (( end > total_lines )) && end="$total_lines"
+  process_single_file "$abs_path" "$start" "$end" "$center" "$total_lines"
+}
+
+process_around_pattern() {
+  local file="$1" pattern="$2" before="$3" after="$4" all_matches="$5"
+  local abs_path total_lines found=0
+  abs_path="$(normalize_abs_path "$file")"
+
+  if [[ ! -f "$abs_path" ]] || [[ ! -r "$abs_path" ]]; then
+    process_single_file "$abs_path"
+    return 0
+  fi
+
+  total_lines="$(count_file_lines "$abs_path" 2>/dev/null || echo 0)"
+  [[ "$total_lines" =~ ^[0-9]+$ ]] || total_lines=0
+
+  local mline start end
+  while IFS= read -r mline || [[ -n "$mline" ]]; do
+    [[ -z "$mline" ]] && continue
+    [[ "$mline" =~ ^[0-9]+$ ]] || continue
+    found=1
+
+    start=$((mline - before))
+    end=$((mline + after))
+    (( start < 1 )) && start=1
+    (( end > total_lines )) && end="$total_lines"
+
+    process_single_file "$abs_path" "$start" "$end" "$mline" "$total_lines"
+    [[ "$TRUNCATED" == "true" ]] && break
+    (( all_matches == 0 )) && break
+  done < <(grep -nF -- "$pattern" "$abs_path" 2>/dev/null | cut -d: -f1 || true)
+
+  if (( found == 0 )); then
+    add_error "$abs_path" "pattern_not_found" "pattern '$pattern' not found"
+    local _fb
+    _fb=$(file_bytes "$abs_path")
+    _fb="${_fb//[^0-9]/}"
+    [[ "$_fb" =~ ^[0-9]+$ ]] || _fb=0
+    upsert_file_summary "$abs_path" "$(detect_language "$abs_path")" "false" "$_fb" "$total_lines" "pattern_not_found"
+  fi
+}
+
+process_stdin_paths() {
+  local max_files="$1"
+  local p count=0
+
+  while IFS= read -r p || [[ -n "$p" ]]; do
+    [[ -z "$p" ]] && continue
+    count=$((count + 1))
+
+    if (( count > max_files )); then
+      mark_truncated "max_files"
+      add_warning "stdin path limit reached: max_files=$max_files"
+      break
+    fi
+
+    process_single_file "$p"
+    [[ "$TRUNCATED" == "true" ]] && break
+  done
+
+  if (( count == 0 )); then
+    die "No file paths received on stdin."
+  fi
+}
+
+process_stdin_unified_diff() {
+  local before="$1" after="$2"
+  local line raw_path current_file="" current_file_has_hunks=0
+  local any_hunks=0
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$line" =~ ^diff[[:space:]]--git[[:space:]] ]]; then
+      if [[ -n "$current_file" ]] && (( current_file_has_hunks == 0 )); then
+        add_warning "diff file has no hunks (skipped): $current_file"
+      fi
+      current_file=""
+      current_file_has_hunks=0
+      continue
+    fi
+
+    if [[ "$line" == "GIT binary patch" ]] || [[ "$line" == Binary\ files* ]]; then
+      add_warning "binary patch skipped"
+      current_file=""
+      current_file_has_hunks=0
+      continue
+    fi
+
+    if [[ "$line" =~ ^\+\+\+[[:space:]](.+)$ ]]; then
+      raw_path="${BASH_REMATCH[1]}"
+      current_file="$(normalize_diff_path "$raw_path")"
+      current_file_has_hunks=0
+      if [[ "$current_file" == "__DEV_NULL__" ]]; then
+        add_warning "deleted file in diff skipped"
+        current_file=""
+      fi
+      continue
+    fi
+
+    if [[ -n "$current_file" ]] && [[ "$line" =~ ^@@[[:space:]]-[0-9]+(,[0-9]+)?[[:space:]]\+([0-9]+)(,([0-9]+))?[[:space:]]@@ ]]; then
+      local new_start new_count start end
+      new_start="${BASH_REMATCH[2]}"
+      new_count="${BASH_REMATCH[4]:-1}"
+
+      start=$((new_start - before))
+      end=$((new_start + new_count - 1 + after))
+      (( start < 1 )) && start=1
+
+      if [[ ! -f "$current_file" ]]; then
+        add_error "$current_file" "not_found" "diff references file not present in working tree"
+        continue
+      fi
+
+      process_single_file "$current_file" "$start" "$end" "$new_start"
+      current_file_has_hunks=1
+      any_hunks=1
+      [[ "$TRUNCATED" == "true" ]] && break
+    fi
+  done
+
+  if [[ -n "$current_file" ]] && (( current_file_has_hunks == 0 )); then
+    add_warning "diff file has no hunks (skipped): $current_file"
+  fi
+
+  if (( any_hunks == 0 )) && (( ERR_COUNT == 0 )); then
+    add_warning "no unified diff hunks found on stdin"
+  fi
+}
+
+compute_next_hint() {
+  [[ "$TRUNCATED" == "true" ]] || return 0
+  (( CHUNK_COUNT > 0 )) || return 0
+
+  local idx=$((CHUNK_COUNT - 1))
+  local last_path="${CHUNK_PATHS[$idx]}"
+  local last_end="${CHUNK_ENDS[$idx]}"
+  local file_total=""
+  local file_idx
+  file_idx="$(find_file_summary_index "$last_path")"
+  if (( file_idx >= 0 )); then
+    file_total="${FILE_TOTALLINES[$file_idx]}"
+  fi
+
+  if [[ -n "$file_total" ]] && [[ "$file_total" =~ ^[0-9]+$ ]] && (( last_end < file_total )); then
+    local qpath
+    qpath="$(shell_quote "$last_path")"
+    NEXT_HINT="fread $qpath -r $((last_end + 1)):$file_total --max-lines $MAX_LINES --max-bytes $MAX_BYTES"
+    (( TOKEN_BUDGET > 0 )) && NEXT_HINT="$NEXT_HINT --token-budget $TOKEN_BUDGET"
+    return 0
+  fi
+
+  case "$MODE" in
+    stdin_paths)
+      NEXT_HINT="fread --from-stdin --stdin-format=paths --max-files $MAX_FILES --max-lines $MAX_LINES --max-bytes $MAX_BYTES"
+      (( TOKEN_BUDGET > 0 )) && NEXT_HINT="$NEXT_HINT --token-budget $TOKEN_BUDGET"
+      ;;
+    stdin_unified_diff)
+      NEXT_HINT="git diff | fread --from-stdin --stdin-format=unified-diff -B $BEFORE -A $AFTER"
+      ;;
+  esac
+}
+
+render_pretty() {
+  local i path start end lines bytes content
+
+  for (( i=0; i<CHUNK_COUNT; i++ )); do
+    path="${CHUNK_PATHS[$i]}"
+    start="${CHUNK_STARTS[$i]}"
+    end="${CHUNK_ENDS[$i]}"
+    lines="${CHUNK_LINES[$i]}"
+    bytes="${CHUNK_BYTES[$i]}"
+    content="${CHUNK_CONTENTS[$i]}"
+
+    if (( QUIET == 0 )); then
+      echo "Read($path)"
+      echo "  ⎿ lines $start-$end | $lines lines | $bytes bytes | ~$(token_estimate_from_bytes "$bytes") tokens"
+    fi
+    [[ -n "$content" ]] && printf '%s\n' "$content"
+  done
+
+  if [[ "$TRUNCATED" == "true" ]] && (( QUIET == 0 )); then
+    echo ""
+    echo "  ... truncated (reason: $TRUNCATION_REASON)"
+    [[ -n "$NEXT_HINT" ]] && echo "  Next: $NEXT_HINT"
+  fi
+
+  for (( i=0; i<WARN_COUNT; i++ )); do
+    echo "fread: warning: ${WARN_MSGS[$i]}" >&2
+  done
+  for (( i=0; i<ERR_COUNT; i++ )); do
+    echo "fread: ${ERR_CODES[$i]}: ${ERR_PATHS[$i]} — ${ERR_DETAILS[$i]}" >&2
+  done
+}
+
+render_paths() {
+  local i status
+  for (( i=0; i<FILE_COUNT; i++ )); do
+    status="${FILE_STATUSES[$i]}"
+    if [[ "$status" == "read" ]] || [[ "$status" == "read_empty" ]]; then
+      printf '%s\n' "${FILE_PATHS[$i]}"
+    fi
+  done
+}
+
+render_json() {
+  local total_token_est i content cl first_line
+  total_token_est="$(token_estimate_from_bytes "$TOTAL_BYTES_READ")"
+
+  echo -n "{"
+  echo -n "\"tool\":\"fread\","
+  echo -n "\"version\":\"$VERSION\","
+  echo -n "\"mode\":\"$MODE\","
+  echo -n "\"truncated\":$TRUNCATED,"
+  echo -n "\"truncation_reason\":\"$TRUNCATION_REASON\","
+  echo -n "\"token_estimate\":$total_token_est,"
+  echo -n "\"token_estimator\":\"$TOKEN_ESTIMATOR\","
+  echo -n "\"bytes_emitted\":$TOTAL_BYTES_READ,"
+  echo -n "\"lines_emitted\":$TOTAL_LINES_READ,"
+  echo -n "\"max_lines\":$MAX_LINES,"
+  echo -n "\"max_bytes\":$MAX_BYTES,"
+  echo -n "\"token_budget\":$TOKEN_BUDGET,"
+  if [[ -n "$NEXT_HINT" ]]; then
+    echo -n "\"next_hint\":\"$(json_escape_str "$NEXT_HINT")\","
+  else
+    echo -n "\"next_hint\":null,"
+  fi
+
+  echo -n "\"chunks\":["
+  for (( i=0; i<CHUNK_COUNT; i++ )); do
+    (( i > 0 )) && echo -n ","
+    echo -n "{\"path\":\"$(json_escape_str "${CHUNK_PATHS[$i]}")\","
+    echo -n "\"start_line\":${CHUNK_STARTS[$i]},"
+    echo -n "\"end_line\":${CHUNK_ENDS[$i]},"
+    if [[ -n "${CHUNK_MATCH_LINES[$i]}" ]]; then
+      echo -n "\"match_line\":${CHUNK_MATCH_LINES[$i]},"
+    else
+      echo -n "\"match_line\":null,"
+    fi
+    echo -n "\"content\":["
+    first_line=1
+    content="${CHUNK_CONTENTS[$i]}"
+    if [[ -n "$content" ]]; then
+      while IFS= read -r cl || [[ -n "$cl" ]]; do
+        (( first_line )) || echo -n ","
+        first_line=0
+        echo -n "\"$(json_escape_str "$cl")\""
+      done < <(printf '%s' "$content")
+    fi
+    echo -n "]}"
+  done
+  echo -n "],"
+
+  echo -n "\"files\":["
+  for (( i=0; i<FILE_COUNT; i++ )); do
+    (( i > 0 )) && echo -n ","
+    echo -n "{\"path\":\"$(json_escape_str "${FILE_PATHS[$i]}")\","
+    echo -n "\"language\":\"$(json_escape_str "${FILE_LANGS[$i]}")\","
+    case "${FILE_BINARY_STATE[$i]}" in
+      true|false)
+        echo -n "\"binary\":${FILE_BINARY_STATE[$i]},"
+        ;;
+      *)
+        echo -n "\"binary\":null,"
+        ;;
+    esac
+    echo -n "\"binary_state\":\"$(json_escape_str "${FILE_BINARY_STATE[$i]}")\","
+    echo -n "\"file_size_bytes\":${FILE_SIZES[$i]},"
+    if [[ -n "${FILE_TOTALLINES[$i]}" ]]; then
+      echo -n "\"file_total_lines\":${FILE_TOTALLINES[$i]},"
+    else
+      echo -n "\"file_total_lines\":null,"
+    fi
+    echo -n "\"status\":\"$(json_escape_str "${FILE_STATUSES[$i]}")\"}"
+  done
+  echo -n "],"
+
+  echo -n "\"warnings\":["
+  for (( i=0; i<WARN_COUNT; i++ )); do
+    (( i > 0 )) && echo -n ","
+    echo -n "\"$(json_escape_str "${WARN_MSGS[$i]}")\""
+  done
+  echo -n "],"
+
+  echo -n "\"errors\":["
+  for (( i=0; i<ERR_COUNT; i++ )); do
+    (( i > 0 )) && echo -n ","
+    echo -n "{\"path\":\"$(json_escape_str "${ERR_PATHS[$i]}")\","
+    echo -n "\"error_code\":\"$(json_escape_str "${ERR_CODES[$i]}")\","
+    echo -n "\"error_detail\":\"$(json_escape_str "${ERR_DETAILS[$i]}")\"}"
+  done
+  echo -n "]}"
+  echo
+}
+
+self_check() {
+  local ok=1 cmd
+  echo "fread dependency check:"
+  for cmd in sed awk grep wc od perl; do
+    if has "$cmd"; then
+      echo "  $cmd: $(command -v "$cmd")"
+    else
+      echo "  $cmd: NOT FOUND"
+      ok=0
+    fi
+  done
+  if (( ok == 1 )); then
+    echo "All dependencies satisfied."
+    exit 0
+  fi
+  echo "Some dependencies missing. Run: fread --install-hints"
+  exit 1
+}
+
+install_hints() {
+  cat <<'EOF'
+fread requires: sed, awk, grep, wc, od, perl
+
+Debian/Ubuntu:
+  sudo apt update && sudo apt install -y coreutils perl
+
+Fedora/RHEL:
+  sudo dnf install -y coreutils perl
+
+macOS (Homebrew):
+  brew install coreutils perl
+EOF
+  exit 0
+}
+
+usage() {
+  cat <<'EOF'
+fread — budgeted file reading with line numbers, token estimates, and pipeline integration.
+
+USAGE
+  fread <file>                                   Read file (capped)
+  fread <file> -r 120:220                        Line range
+  fread <file> --head 50                         First N lines
+  fread <file> --tail 30                         Last N lines
+  fread <file> --around-line 150 -B 5 -A 10      Context around line
+  fread <file> --around "pattern" -B 5 -A 10     Context around literal pattern
+  ... | fread --from-stdin --stdin-format=paths
+  git diff | fread --from-stdin --stdin-format=unified-diff -B 3 -A 10
+
+OPTIONS
+  -r, --lines START:END       Line range (1-based, inclusive)
+  --head N                    Read first N lines
+  --tail N                    Read last N lines
+  --around-line N             Context around specific line number
+  --around PATTERN            Context around first literal pattern match
+  --all-matches               With --around: include all matches up to caps
+  -B, --before N              Lines before (default 5)
+  -A, --after N               Lines after (default 10)
+  --max-lines N               Cap total emitted lines (default 200)
+  --max-bytes N               Cap total emitted bytes (default 50000)
+  --token-budget N            Cap by estimated tokens (conservative bytes/3)
+  --max-files N               Cap files from stdin paths mode (default 10)
+  --from-stdin                Read input from stdin
+  --stdin-format FMT          Required with --from-stdin: paths|unified-diff
+  --force-text                Read even if binary is detected
+  -o, --output FMT            pretty (default), json, paths
+  -q, --quiet                 Suppress pretty headers
+  --project-name NAME         Override telemetry project name
+  --self-check                Verify dependencies
+  --install-hints             Print install commands
+  --version                   Print version
+  -h, --help                  Show help
+
+NOTES
+  Budget precedence: token_budget > max_bytes > max_lines
+  --stdin-format=unified-diff reads NEW-side hunk ranges from +++ path and @@ +start,count
+EOF
+}
+
+_fsuite_record_telemetry() {
+  _TELEM_EXIT_CODE=$?
+  (( _FSUITE_TELEM >= 1 )) || return 0
+  [[ "$_TELEM_START_MS" != "0" ]] || return 0
+  [[ "$_TELEM_START_MS" =~ ^[0-9]+$ ]] || return 0
+
+  local end_ms dur_ms telem_dir ts mode_hint
+  end_ms=$(now_ms)
+  [[ "$end_ms" =~ ^[0-9]+$ ]] || return 0
+  dur_ms=$(( end_ms - _TELEM_START_MS ))
+  (( dur_ms < 0 )) && dur_ms=0
+
+  telem_dir="$HOME/.fsuite"
+  mkdir -p "$telem_dir" 2>/dev/null || return 0
+  ts=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "unknown")
+
+  local ph="unknown" pn="" abs_hint=""
+  mode_hint="${MODE:-file}"
+  [[ -n "$_TELEM_PATH_HINT" ]] || _TELEM_PATH_HINT="${TARGET_PATH:-}"
+  if [[ -n "$_TELEM_PATH_HINT" ]]; then
+    abs_hint="$(normalize_abs_path "$_TELEM_PATH_HINT")"
+    ph=$(printf '%s' "$abs_hint" | sha256sum 2>/dev/null | cut -c1-16) || ph="unknown"
+    [[ -z "$ph" ]] && ph="unknown"
+    if type _fsuite_infer_project_name &>/dev/null; then
+      pn=$(_fsuite_infer_project_name "$(dirname "$abs_hint")")
+    else
+      pn=$(basename "$(dirname "$abs_hint")" | tr -cd '[:alnum:]. _-')
+    fi
+  fi
+  if [[ -n "${_TELEM_PROJECT_NAME:-}" ]]; then
+    pn=$(printf '%s' "$_TELEM_PROJECT_NAME" | tr -cd '[:alnum:]. _-')
+  fi
+
+  if type _fsuite_collect_hw_telemetry &>/dev/null; then
+    _fsuite_collect_hw_telemetry "$_FSUITE_TELEM" "${_TELEM_PATH_HINT:-}"
+  fi
+  local _hw_fields=""
+  if type _fsuite_hw_json_fields &>/dev/null && (( _FSUITE_TELEM >= 2 )); then
+    _hw_fields=$(_fsuite_hw_json_fields "$_FSUITE_TELEM")
+    [[ -n "$_hw_fields" ]] && _hw_fields=",${_hw_fields}"
+  fi
+
+  local _safe_flags
+  _safe_flags=$(printf '%s' "${_TELEM_FLAGS# }" | tr -cd '[:alnum:] _./:=-' | head -c 200)
+  local _telem_line
+  _telem_line="{\"timestamp\":\"$ts\",\"run_id\":\"${_TELEM_START_MS}_$$\",\"tool\":\"fread\",\"version\":\"$VERSION\",\"mode\":\"$mode_hint\",\"path_hash\":\"$ph\",\"project_name\":\"$pn\",\"duration_ms\":$dur_ms,\"exit_code\":$_TELEM_EXIT_CODE,\"depth\":-1,\"items_scanned\":${TOTAL_FILES_READ:-0},\"bytes_scanned\":${TOTAL_BYTES_READ:-0},\"flags\":\"$_safe_flags\",\"backend\":\"read\"${_hw_fields}}"
+
+  {
+    flock -x 200 2>/dev/null
+    echo "$_telem_line" >> "$telem_dir/telemetry.jsonl"
+  } 200>"$telem_dir/.telemetry.lock" 2>/dev/null || true
+}
+trap '_fsuite_record_telemetry' EXIT
+
+# -------------------------
+# Parse args
+# -------------------------
+RANGE_SPEC=""
+HEAD_N=0
+TAIL_N=0
+AROUND_LINE=0
+AROUND_PATTERN=""
+ALL_MATCHES=0
+POSITIONAL=()
+
+_args=()
+for _arg in "$@"; do
+  if [[ "$_arg" =~ ^-([BA])([0-9]+)$ ]]; then
+    _args+=("-${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
+  else
+    _args+=("$_arg")
+  fi
+done
+set -- ${_args[@]+"${_args[@]}"}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -r|--lines)
+      [[ -n "${2:-}" ]] || die "Missing value for --lines"
+      [[ "$2" =~ ^[0-9]+:[0-9]+$ ]] || die "Invalid --lines format: $2 (expected START:END)"
+      RANGE_SPEC="$2"
+      _TELEM_FLAGS+=" -r $2"
+      shift 2
+      ;;
+    --head)
+      [[ -n "${2:-}" ]] || die "Missing value for --head"
+      [[ "$2" =~ ^[0-9]+$ ]] || die "--head must be an integer"
+      HEAD_N="$2"
+      _TELEM_FLAGS+=" --head $2"
+      shift 2
+      ;;
+    --tail)
+      [[ -n "${2:-}" ]] || die "Missing value for --tail"
+      [[ "$2" =~ ^[0-9]+$ ]] || die "--tail must be an integer"
+      TAIL_N="$2"
+      _TELEM_FLAGS+=" --tail $2"
+      shift 2
+      ;;
+    --around-line)
+      [[ -n "${2:-}" ]] || die "Missing value for --around-line"
+      [[ "$2" =~ ^[0-9]+$ ]] || die "--around-line must be an integer"
+      AROUND_LINE="$2"
+      _TELEM_FLAGS+=" --around-line $2"
+      shift 2
+      ;;
+    --around)
+      [[ -n "${2:-}" ]] || die "Missing value for --around"
+      AROUND_PATTERN="$2"
+      _TELEM_FLAGS+=" --around"
+      shift 2
+      ;;
+    --all-matches)
+      ALL_MATCHES=1
+      _TELEM_FLAGS+=" --all-matches"
+      shift
+      ;;
+    -B|--before)
+      [[ -n "${2:-}" ]] || die "Missing value for --before"
+      [[ "$2" =~ ^[0-9]+$ ]] || die "--before must be an integer"
+      BEFORE="$2"
+      _TELEM_FLAGS+=" -B $2"
+      shift 2
+      ;;
+    -A|--after)
+      [[ -n "${2:-}" ]] || die "Missing value for --after"
+      [[ "$2" =~ ^[0-9]+$ ]] || die "--after must be an integer"
+      AFTER="$2"
+      _TELEM_FLAGS+=" -A $2"
+      shift 2
+      ;;
+    --max-lines)
+      [[ -n "${2:-}" ]] || die "Missing value for --max-lines"
+      [[ "$2" =~ ^[0-9]+$ ]] || die "--max-lines must be an integer"
+      MAX_LINES="$2"
+      _TELEM_FLAGS+=" --max-lines $2"
+      shift 2
+      ;;
+    --max-bytes)
+      [[ -n "${2:-}" ]] || die "Missing value for --max-bytes"
+      [[ "$2" =~ ^[0-9]+$ ]] || die "--max-bytes must be an integer"
+      MAX_BYTES="$2"
+      _TELEM_FLAGS+=" --max-bytes $2"
+      shift 2
+      ;;
+    --token-budget)
+      [[ -n "${2:-}" ]] || die "Missing value for --token-budget"
+      [[ "$2" =~ ^[0-9]+$ ]] || die "--token-budget must be an integer"
+      TOKEN_BUDGET="$2"
+      _TELEM_FLAGS+=" --token-budget $2"
+      shift 2
+      ;;
+    --max-files)
+      [[ -n "${2:-}" ]] || die "Missing value for --max-files"
+      [[ "$2" =~ ^[0-9]+$ ]] || die "--max-files must be an integer"
+      MAX_FILES="$2"
+      _TELEM_FLAGS+=" --max-files $2"
+      shift 2
+      ;;
+    --from-stdin)
+      FROM_STDIN=1
+      _TELEM_FLAGS+=" --from-stdin"
+      shift
+      ;;
+    --stdin-format)
+      [[ -n "${2:-}" ]] || die "Missing value for --stdin-format"
+      STDIN_FORMAT="$2"
+      _TELEM_FLAGS+=" --stdin-format=$2"
+      shift 2
+      ;;
+    --stdin-format=*)
+      STDIN_FORMAT="${1#*=}"
+      _TELEM_FLAGS+=" --stdin-format=$STDIN_FORMAT"
+      shift
+      ;;
+    --force-text)
+      FORCE_TEXT=1
+      _TELEM_FLAGS+=" --force-text"
+      shift
+      ;;
+    -o|--output)
+      [[ -n "${2:-}" ]] || die "Missing value for --output"
+      OUTPUT="$2"
+      shift 2
+      ;;
+    -q|--quiet)
+      QUIET=1
+      _TELEM_FLAGS+=" -q"
+      shift
+      ;;
+    --project-name)
+      [[ -n "${2:-}" ]] || die "Missing value for --project-name"
+      _TELEM_PROJECT_NAME="$2"
+      shift 2
+      ;;
+    --self-check) self_check ;;
+    --install-hints) install_hints ;;
+    --version) echo "fread $VERSION"; exit 0 ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; break ;;
+    -*) die "Unknown option: $1 (try --help)" ;;
+    *) POSITIONAL+=("$1"); shift ;;
+  esac
+done
+while [[ $# -gt 0 ]]; do POSITIONAL+=("$1"); shift; done
+
+_TELEM_FLAGS+=" -o ${OUTPUT}"
+
+case "$OUTPUT" in
+  pretty|json|paths) ;;
+  *) die "Invalid --output: $OUTPUT" ;;
+esac
+
+if (( ALL_MATCHES == 1 )) && [[ -z "$AROUND_PATTERN" ]]; then
+  die "--all-matches is only valid with --around"
+fi
+
+selector_count=0
+[[ -n "$RANGE_SPEC" ]] && selector_count=$((selector_count + 1))
+(( HEAD_N > 0 )) && selector_count=$((selector_count + 1))
+(( TAIL_N > 0 )) && selector_count=$((selector_count + 1))
+(( AROUND_LINE > 0 )) && selector_count=$((selector_count + 1))
+[[ -n "$AROUND_PATTERN" ]] && selector_count=$((selector_count + 1))
+(( selector_count > 1 )) && die "Choose only one of: --lines, --head, --tail, --around-line, --around"
+
+TARGET_PATH="${POSITIONAL[0]:-}"
+
+if (( FROM_STDIN == 1 )); then
+  [[ -n "$STDIN_FORMAT" ]] || die "--from-stdin requires --stdin-format=paths|unified-diff"
+  case "$STDIN_FORMAT" in
+    paths) MODE="stdin_paths" ;;
+    unified-diff) MODE="stdin_unified_diff" ;;
+    *) die "Invalid --stdin-format: $STDIN_FORMAT (expected paths or unified-diff)" ;;
+  esac
+  if (( selector_count > 0 )) || [[ -n "$TARGET_PATH" ]]; then
+    die "File selectors and positional path are not valid with --from-stdin"
+  fi
+else
+  [[ -n "$TARGET_PATH" ]] || die "Missing file argument. Try: fread --help"
+fi
+
+# -------------------------
+# Dispatch
+# -------------------------
+if (( FROM_STDIN == 1 )); then
+  if [[ "$STDIN_FORMAT" == "paths" ]]; then
+    process_stdin_paths "$MAX_FILES"
+  else
+    process_stdin_unified_diff "$BEFORE" "$AFTER"
+  fi
+elif [[ -n "$AROUND_PATTERN" ]]; then
+  MODE="around"
+  process_around_pattern "$TARGET_PATH" "$AROUND_PATTERN" "$BEFORE" "$AFTER" "$ALL_MATCHES"
+elif (( AROUND_LINE > 0 )); then
+  MODE="around_line"
+  process_around_line "$TARGET_PATH" "$AROUND_LINE" "$BEFORE" "$AFTER"
+elif [[ -n "$RANGE_SPEC" ]]; then
+  MODE="range"
+  range_start="${RANGE_SPEC%%:*}"
+  range_end="${RANGE_SPEC##*:}"
+  process_single_file "$TARGET_PATH" "$range_start" "$range_end"
+elif (( HEAD_N > 0 )); then
+  MODE="head"
+  process_single_file "$TARGET_PATH" 1 "$HEAD_N"
+elif (( TAIL_N > 0 )); then
+  MODE="tail"
+  total="$(count_file_lines "$TARGET_PATH" 2>/dev/null || echo 0)"
+  [[ "$total" =~ ^[0-9]+$ ]] || total=0
+  tail_start=$((total - TAIL_N + 1))
+  (( tail_start < 1 )) && tail_start=1
+  process_single_file "$TARGET_PATH" "$tail_start" "$total" "" "$total"
+else
+  MODE="file"
+  process_single_file "$TARGET_PATH"
+fi
+
+compute_next_hint
+
+if [[ "$OUTPUT" == "json" ]]; then
+  render_json
+elif [[ "$OUTPUT" == "paths" ]]; then
+  render_paths
+else
+  render_pretty
+fi
+
+if (( ERR_COUNT > 0 )) && (( CHUNK_COUNT == 0 )); then
+  exit 1
+fi
+exit 0

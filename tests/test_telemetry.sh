@@ -72,6 +72,10 @@ run_test() {
   "$@" || true
 }
 
+run_fmetrics() {
+  FSUITE_TELEMETRY=0 "${FMETRICS}" "$@"
+}
+
 # ============================================================================
 # bytes_scanned Tests (Phase 1)
 # ============================================================================
@@ -264,8 +268,8 @@ test_schema_migration_idempotent() {
   rm -f "$HOME/.fsuite/telemetry.db"
   # Run fmetrics import twice (which runs ensure_db twice)
   FSUITE_TELEMETRY=1 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
-  "${FMETRICS}" import >/dev/null 2>&1 || true
-  "${FMETRICS}" import >/dev/null 2>&1 || true
+  run_fmetrics import >/dev/null 2>&1 || true
+  run_fmetrics import >/dev/null 2>&1 || true
 
   # Check that db exists and has the new columns
   local cols
@@ -298,7 +302,7 @@ test_burst_runs_not_dropped() {
   rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
   FSUITE_TELEMETRY=1 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
   FSUITE_TELEMETRY=1 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
-  "${FMETRICS}" import >/dev/null 2>&1 || true
+  run_fmetrics import >/dev/null 2>&1 || true
   local count
   count=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM telemetry WHERE tool='ftree';" 2>/dev/null) || count=0
   if [[ "$count" =~ ^[0-9]+$ ]] && (( count >= 2 )); then
@@ -317,7 +321,7 @@ test_legacy_import_backfill_run_id() {
   cat > "$HOME/.fsuite/telemetry.jsonl" <<'EOF'
 {"timestamp":"2026-03-07T00:00:00Z","tool":"ftree","version":"1.6.2","mode":"tree","path_hash":"abc123def456","project_name":"legacyproj","duration_ms":42,"exit_code":0,"depth":1,"items_scanned":3,"bytes_scanned":2048,"flags":"-o pretty","backend":"tree"}
 EOF
-  "${FMETRICS}" import >/dev/null 2>&1 || true
+  run_fmetrics import >/dev/null 2>&1 || true
   local run_id
   run_id=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT run_id FROM telemetry WHERE tool='ftree' LIMIT 1;" 2>/dev/null) || run_id=""
   if [[ -n "$run_id" ]]; then
@@ -368,7 +372,7 @@ SQL
   # should cause SQLite to roll back, leaving original table intact.
   rm -f "$HOME/.fsuite/telemetry.jsonl"
   echo '{}' > "$HOME/.fsuite/telemetry.jsonl"
-  "${FMETRICS}" import >/dev/null 2>&1 || true
+  run_fmetrics import >/dev/null 2>&1 || true
 
   # Verify: original telemetry table still exists with all rows intact
   local post_count schema_sql
@@ -392,7 +396,7 @@ SQL
 
 test_metachar_warning_parens() {
   local output
-  output=$("${FCONTENT}" "foo(bar)" "${TEST_DIR}" 2>&1)
+  output=$(FSUITE_TELEMETRY=0 "${FCONTENT}" "foo(bar)" "${TEST_DIR}" 2>&1)
   if [[ "$output" == *"regex metacharacters"* ]]; then
     pass "Metacharacter warning fires on ()"
   else
@@ -402,7 +406,7 @@ test_metachar_warning_parens() {
 
 test_metachar_warning_brackets() {
   local output
-  output=$("${FCONTENT}" "test[0]" "${TEST_DIR}" 2>&1)
+  output=$(FSUITE_TELEMETRY=0 "${FCONTENT}" "test[0]" "${TEST_DIR}" 2>&1)
   if [[ "$output" == *"regex metacharacters"* ]]; then
     pass "Metacharacter warning fires on []"
   else
@@ -412,7 +416,7 @@ test_metachar_warning_brackets() {
 
 test_metachar_warning_suppressed_with_F() {
   local output
-  output=$("${FCONTENT}" "foo(bar)" "${TEST_DIR}" --rg-args "-F" 2>&1)
+  output=$(FSUITE_TELEMETRY=0 "${FCONTENT}" "foo(bar)" "${TEST_DIR}" --rg-args "-F" 2>&1)
   if [[ "$output" != *"regex metacharacters"* ]]; then
     pass "Metacharacter warning suppressed with -F"
   else
@@ -422,7 +426,7 @@ test_metachar_warning_suppressed_with_F() {
 
 test_metachar_warning_json_field() {
   local output
-  output=$("${FCONTENT}" "foo(bar)" "${TEST_DIR}" -o json 2>&1)
+  output=$(FSUITE_TELEMETRY=0 "${FCONTENT}" "foo(bar)" "${TEST_DIR}" -o json 2>&1)
   if [[ "$output" == *'"warning":'* ]]; then
     pass "JSON output includes warning field"
   else
@@ -432,7 +436,7 @@ test_metachar_warning_json_field() {
 
 test_no_metachar_no_warning() {
   local output
-  output=$("${FCONTENT}" "hello" "${TEST_DIR}" 2>&1)
+  output=$(FSUITE_TELEMETRY=0 "${FCONTENT}" "hello" "${TEST_DIR}" 2>&1)
   if [[ "$output" != *"regex metacharacters"* ]]; then
     pass "No warning for plain text query"
   else
@@ -449,15 +453,17 @@ test_graceful_without_common_lib() {
   local lib="${FSUITE_DIR}/_fsuite_common.sh"
   if [[ -f "$lib" ]]; then
     mv "$lib" "${lib}.bak"
-    # Trap to restore lib on any exit (including abort)
-    trap 'mv "${lib}.bak" "$lib" 2>/dev/null || true' RETURN
 
     rm -f "$HOME/.fsuite/telemetry.jsonl"
 
     FSUITE_TELEMETRY=1 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
 
-    mv "${lib}.bak" "$lib"
-    trap - RETURN  # Clear trap after successful restore
+    if [[ -f "${lib}.bak" ]]; then
+      if ! mv "${lib}.bak" "$lib"; then
+        echo "Failed to restore ${lib} from ${lib}.bak" >&2
+        rm -f "${lib}.bak"
+      fi
+    fi
 
     if [[ -f "$HOME/.fsuite/telemetry.jsonl" ]]; then
       local bytes
@@ -570,7 +576,7 @@ test_v15_project_name() {
 
 test_v15_selfcheck_python3() {
   local output
-  output=$("${FMETRICS}" --self-check 2>&1) || true
+  output=$(run_fmetrics --self-check 2>&1) || true
   if [[ "$output" =~ "python3:" ]]; then
     pass "fmetrics --self-check reports python3 status"
   else
@@ -580,7 +586,7 @@ test_v15_selfcheck_python3() {
 
 test_v15_selfcheck_predict() {
   local output
-  output=$("${FMETRICS}" --self-check 2>&1) || true
+  output=$(run_fmetrics --self-check 2>&1) || true
   if [[ "$output" =~ "fmetrics-predict.py:" ]]; then
     pass "fmetrics --self-check reports predict script status"
   else
@@ -608,12 +614,12 @@ test_v15_predict_tool_filter() {
   local jsonl_lines=0
   [[ -f "$HOME/.fsuite/telemetry.jsonl" ]] && jsonl_lines=$(wc -l < "$HOME/.fsuite/telemetry.jsonl")
 
-  "${FMETRICS}" import >/dev/null 2>&1 || true
+  run_fmetrics import >/dev/null 2>&1 || true
 
   # Verify --tool flag passes through and filters output
   local output_all output_filtered
-  output_all=$("${FMETRICS}" predict "${TEST_DIR}" 2>&1) || true
-  output_filtered=$("${FMETRICS}" predict --tool ftree "${TEST_DIR}" 2>&1) || true
+  output_all=$(run_fmetrics predict "${TEST_DIR}" 2>&1) || true
+  output_filtered=$(run_fmetrics predict --tool ftree "${TEST_DIR}" 2>&1) || true
 
   if [[ "$output_filtered" =~ "ftree" ]] && ! [[ "$output_filtered" =~ "fsearch" ]] && ! [[ "$output_filtered" =~ "fcontent" ]]; then
     pass "fmetrics predict --tool ftree shows only ftree prediction"

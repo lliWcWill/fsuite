@@ -1,3 +1,18 @@
+fsuite (1.8.0-1) unstable; urgency=medium
+
+  * feat(fread): add budgeted file reading tool with head/tail, ranges,
+    around-line, around-pattern, stdin path mode, and unified-diff mode
+  * feat(fread): add binary detection, token estimation, next_hint, and
+    line-numbered JSON/pretty/paths output for agent-friendly reading
+  * fix(fread): make telemetry timestamps portable on macOS/BSD with
+    fallback millisecond clock path
+  * tests: add dedicated fread suite and wire into master runner
+  * packaging: install fread in Debian package
+  * docs: promote suite to six tools and document fread in README
+  * release: unify all tool versions at 1.8.0
+
+ -- Chess Williams <chess.w.williams@gmail.com>  Sun, 08 Mar 2026 15:20:00 -0500
+
 fsuite (1.7.0-1) unstable; urgency=medium
 
   * Unified version bump: all tools now 1.7.0

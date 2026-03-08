@@ -5,6 +5,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export FSUITE_TELEMETRY="${FSUITE_TELEMETRY:-3}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -47,6 +48,7 @@ main() {
   echo -e "${BLUE}============================================${NC}"
   echo -e "${BLUE}  fsuite Master Test Runner${NC}"
   echo -e "${BLUE}============================================${NC}"
+  echo -e "Telemetry tier: ${FSUITE_TELEMETRY}"
   echo ""
 
   local failed_suites=()
@@ -94,6 +96,24 @@ main() {
   else
     TOTAL_FAILED=$((TOTAL_FAILED + 1))
     failed_suites+=("integration")
+  fi
+
+  # Run fread tests
+  echo ""
+  if run_test_suite "${SCRIPT_DIR}/test_fread.sh" "fread Test Suite"; then
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+  else
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+    failed_suites+=("fread")
+  fi
+
+  # Run installer tests
+  echo ""
+  if run_test_suite "${SCRIPT_DIR}/test_install.sh" "install.sh Test Suite"; then
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+  else
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+    failed_suites+=("install")
   fi
 
   # Run telemetry tests

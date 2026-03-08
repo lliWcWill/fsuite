@@ -4,15 +4,29 @@
 
 set -euo pipefail
 
-VERSION="1.7.0"
+VERSION="1.8.0"
 
 # -------------------------
 # Source common library for tiered telemetry
 # -------------------------
 _FSUITE_SCRIPT_DIR="$(cd "$(dirname "$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
-_FSUITE_LIB="$_FSUITE_SCRIPT_DIR/_fsuite_common.sh"
-[[ ! -f "$_FSUITE_LIB" ]] && _FSUITE_LIB="/usr/share/fsuite/_fsuite_common.sh"
-[[ -f "$_FSUITE_LIB" ]] && source "$_FSUITE_LIB" || true
+_FSUITE_PARENT_DIR="$(cd "$_FSUITE_SCRIPT_DIR/.." 2>/dev/null && pwd || true)"
+_FSUITE_LIB_CANDIDATES=()
+[[ -n "${FSUITE_SHARE_DIR:-}" ]] && _FSUITE_LIB_CANDIDATES+=("${FSUITE_SHARE_DIR%/}/_fsuite_common.sh")
+_FSUITE_LIB_CANDIDATES+=(
+  "$_FSUITE_SCRIPT_DIR/_fsuite_common.sh"
+  "$_FSUITE_PARENT_DIR/share/fsuite/_fsuite_common.sh"
+  "/usr/local/share/fsuite/_fsuite_common.sh"
+  "/usr/share/fsuite/_fsuite_common.sh"
+)
+for _fsuite_candidate in "${_FSUITE_LIB_CANDIDATES[@]}"; do
+  if [[ -f "$_fsuite_candidate" ]]; then
+    # shellcheck disable=SC1090
+    source "$_fsuite_candidate"
+    break
+  fi
+done
+unset _fsuite_candidate
 
 # -------------------------
 # Telemetry — opt-out via FSUITE_TELEMETRY=0
