@@ -129,8 +129,8 @@ test_fcontent_stdin_mode_bytes_minus1() {
 # ============================================================================
 
 test_tier0_no_telemetry() {
-  rm -f "$HOME/.fsuite/telemetry.jsonl"
   local before=0
+  rm -f "$HOME/.fsuite/telemetry.jsonl"
   [[ -f "$HOME/.fsuite/telemetry.jsonl" ]] && before=$(wc -l < "$HOME/.fsuite/telemetry.jsonl")
 
   FSUITE_TELEMETRY=0 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
@@ -408,6 +408,19 @@ test_v15_fcontent_flags() {
   fi
 }
 
+test_v16_fsearch_filter_flags() {
+  rm -f "$HOME/.fsuite/telemetry.jsonl"
+  FSUITE_TELEMETRY=1 "${FSEARCH}" -I "src" -x "cache" -o paths "*.txt" "${TEST_DIR}" >/dev/null 2>&1 || true
+  local line flags
+  line=$(tail -1 "$HOME/.fsuite/telemetry.jsonl" 2>/dev/null) || line=""
+  flags=$(echo "$line" | grep -o '"flags":"[^"]*"' || true)
+  if [[ "$flags" =~ "-I src" ]] && [[ "$flags" =~ "-x cache" ]] && [[ "$flags" =~ "-o paths" ]]; then
+    pass "fsearch filter flags include -I and -x in telemetry"
+  else
+    fail "fsearch filter flags should include -I src, -x cache, -o paths" "Got: $flags"
+  fi
+}
+
 test_v15_jsonl_safety() {
   rm -f "$HOME/.fsuite/telemetry.jsonl"
   # Use rg-args with characters that could break JSONL (quotes, braces)
@@ -524,9 +537,7 @@ test_v15_project_name_walkup() {
   FSUITE_TELEMETRY=1 "${FTREE}" --recon "${proj_dir}/src/deep/nested" >/dev/null 2>&1 || true
   local line
   line=$(tail -1 $HOME/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
-  if [[ "$line" =~ \"project_name\":\"myproject\" ]]; then
-    pass "ftree: walk-up finds .git and uses project root name"
-  else
+  if ! [[ "$line" =~ \"project_name\":\"myproject\" ]]; then
     fail "ftree should infer project_name='myproject' from .git" "Got: $line"
     return
   fi
@@ -535,9 +546,7 @@ test_v15_project_name_walkup() {
   rm -f $HOME/.fsuite/telemetry.jsonl
   FSUITE_TELEMETRY=1 "${FSEARCH}" --output paths "*.txt" "${proj_dir}/src/deep/nested" >/dev/null 2>&1 || true
   line=$(tail -1 $HOME/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
-  if [[ "$line" =~ \"project_name\":\"myproject\" ]]; then
-    pass "fsearch: walk-up finds .git and uses project root name"
-  else
+  if ! [[ "$line" =~ \"project_name\":\"myproject\" ]]; then
     fail "fsearch should infer project_name='myproject'" "Got: $line"
     return
   fi
@@ -546,11 +555,12 @@ test_v15_project_name_walkup() {
   rm -f $HOME/.fsuite/telemetry.jsonl
   FSUITE_TELEMETRY=1 "${FCONTENT}" "hello" "${proj_dir}/src/deep/nested" >/dev/null 2>&1 || true
   line=$(tail -1 $HOME/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
-  if [[ "$line" =~ \"project_name\":\"myproject\" ]]; then
-    pass "fcontent: walk-up finds .git and uses project root name"
-  else
+  if ! [[ "$line" =~ \"project_name\":\"myproject\" ]]; then
     fail "fcontent should infer project_name='myproject'" "Got: $line"
+    return
   fi
+
+  pass "Walk-up finds .git and uses project root name (ftree, fsearch, fcontent)"
 }
 
 test_v15_project_name_fallback() {
@@ -640,6 +650,7 @@ main() {
   echo "== v1.5.0: Flag Accumulation =="
   run_test "ftree flags in telemetry" test_v15_ftree_flags
   run_test "fcontent flags in telemetry" test_v15_fcontent_flags
+  run_test "fsearch include/exclude flags in telemetry" test_v16_fsearch_filter_flags
   run_test "JSONL safety with special chars" test_v15_jsonl_safety
   run_test "Project-name override" test_v15_project_name
 

@@ -22,6 +22,8 @@ setup() {
   # Create test directory structure
   mkdir -p "${TEST_DIR}/subdir1"
   mkdir -p "${TEST_DIR}/subdir2/nested"
+  mkdir -p "${TEST_DIR}/node_modules"
+  mkdir -p "${TEST_DIR}/node_modules/cache"
   touch "${TEST_DIR}/file1.log"
   touch "${TEST_DIR}/file2.txt"
   touch "${TEST_DIR}/subdir1/test.log"
@@ -34,6 +36,8 @@ setup() {
   touch "${TEST_DIR}/upscale_video.mp4"
   touch "${TEST_DIR}/progress_bar.js"
   touch "${TEST_DIR}/test_progress.py"
+  touch "${TEST_DIR}/node_modules/cache/bundle.log"
+  touch "${TEST_DIR}/node_modules/legacy.log"
 }
 
 teardown() {
@@ -125,10 +129,10 @@ test_glob_extension() {
   output=$("${FSEARCH}" --output paths "*.log" "${TEST_DIR}" 2>&1)
   local count
   count=$(echo "$output" | grep -c "\.log$" || true)
-  if [[ $count -eq 3 ]]; then
+  if [[ $count -eq 5 ]]; then
     pass "Glob pattern *.log finds all .log files"
   else
-    fail "Glob pattern *.log should find 3 files" "Found: $count"
+    fail "Glob pattern *.log should find 5 files" "Found: $count"
   fi
 }
 
@@ -137,10 +141,10 @@ test_bare_extension() {
   output=$("${FSEARCH}" --output paths "log" "${TEST_DIR}" 2>&1)
   local count
   count=$(echo "$output" | grep -c "\.log$" || true)
-  if [[ $count -eq 3 ]]; then
+  if [[ $count -eq 5 ]]; then
     pass "Bare extension 'log' expands to *.log"
   else
-    fail "Bare extension 'log' should find 3 files" "Found: $count"
+    fail "Bare extension 'log' should find 5 files" "Found: $count"
   fi
 }
 
@@ -149,10 +153,44 @@ test_dotted_extension() {
   output=$("${FSEARCH}" --output paths ".log" "${TEST_DIR}" 2>&1)
   local count
   count=$(echo "$output" | grep -c "\.log$" || true)
-  if [[ $count -eq 3 ]]; then
+  if [[ $count -eq 5 ]]; then
     pass "Dotted extension '.log' expands to *.log"
   else
-    fail "Dotted extension '.log' should find 3 files" "Found: $count"
+    fail "Dotted extension '.log' should find 5 files" "Found: $count"
+  fi
+}
+
+test_include_pattern() {
+  local output
+  output=$("${FSEARCH}" --include "*/subdir*" --output paths "*.log" "${TEST_DIR}" 2>&1)
+  local count
+  count=$(echo "$output" | grep -c "\.log$" || true)
+  if [[ $count -eq 2 ]]; then
+    pass "--include filters results to matching paths only"
+  else
+    fail "--include should keep only matching paths" "Found: $count"
+  fi
+}
+
+test_exclude_pattern() {
+  local output
+  output=$("${FSEARCH}" --exclude "*node_modules*" --output paths "*.log" "${TEST_DIR}" 2>&1)
+  local count
+  count=$(echo "$output" | grep -c "\.log$" || true)
+  if [[ $count -eq 3 ]]; then
+    pass "--exclude removes matching paths"
+  else
+    fail "--exclude should remove node_modules logs" "Found: $count"
+  fi
+}
+
+test_include_and_exclude_combined() {
+  local output
+  output=$("${FSEARCH}" --include "*/subdir*" --exclude "*nested*" --output paths "*.log" "${TEST_DIR}" 2>&1)
+  if [[ "$output" == *"subdir1/test.log"* ]] && [[ "$output" != *"nested/deep.log"* ]]; then
+    pass "--include + --exclude combine correctly"
+  else
+    fail "Combined include/exclude should return only subdir1 logs" "Output: $output"
   fi
 }
 
@@ -247,10 +285,10 @@ test_json_output() {
 test_json_total_found() {
   local output
   output=$("${FSEARCH}" --output json "*.log" "${TEST_DIR}" 2>&1)
-  if [[ "$output" =~ \"total_found\":3 ]]; then
+  if [[ "$output" =~ \"total_found\":5 ]]; then
     pass "JSON total_found field is accurate"
   else
-    fail "JSON total_found should be 3"
+    fail "JSON total_found should be 5"
   fi
 }
 
@@ -283,11 +321,28 @@ test_max_limit() {
 test_max_limit_in_json() {
   local output
   output=$("${FSEARCH}" --output json --max 2 "*.log" "${TEST_DIR}" 2>&1)
-  if [[ "$output" =~ \"total_found\":3 ]] && [[ "$output" =~ \"shown\":2 ]]; then
+  if [[ "$output" =~ \"total_found\":5 ]] && [[ "$output" =~ \"shown\":2 ]]; then
     pass "JSON shows correct total_found vs shown with max limit"
   else
     fail "JSON max limit handling is incorrect"
   fi
+}
+
+test_max_limit_with_include_filter_total_count() {
+  local scoped="${TEST_DIR}/filter_scope_case"
+  mkdir -p "${scoped}/a" "${scoped}/z"
+  local i
+  for i in $(seq -w 1 120); do touch "${scoped}/a/a_${i}.log"; done
+  for i in $(seq -w 1 120); do touch "${scoped}/z/z_${i}.log"; done
+
+  local output
+  output=$("${FSEARCH}" --output json --max 10 --include "*/z/*" "*.log" "${scoped}" 2>&1)
+  if [[ "$output" =~ \"total_found\":120 ]] && [[ "$output" =~ \"shown\":10 ]]; then
+    pass "JSON filtered total_found stays accurate with max cap"
+  else
+    fail "Filtered max JSON count is incorrect" "Output: $output"
+  fi
+  rm -rf "${scoped}"
 }
 
 # ============================================================================
@@ -576,6 +631,9 @@ main() {
   run_test "Contains pattern" test_contains_pattern
   run_test "Ends-with pattern" test_ends_with_pattern
   run_test "Question mark wildcard" test_question_mark_wildcard
+  run_test "--include filter" test_include_pattern
+  run_test "--exclude filter" test_exclude_pattern
+  run_test "Combined include and exclude" test_include_and_exclude_combined
 
   # Output formats
   run_test "Pretty output format" test_pretty_output
@@ -587,6 +645,7 @@ main() {
   # Max limit
   run_test "Max limit pretty output" test_max_limit
   run_test "Max limit JSON output" test_max_limit_in_json
+  run_test "Max limit JSON with include filter" test_max_limit_with_include_filter_total_count
 
   # Backends
   run_test "Backend find" test_backend_find

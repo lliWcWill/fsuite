@@ -154,6 +154,7 @@ fsearch [OPTIONS] <pattern_or_ext> [path]
   - Numeric-only tokens are treated literally (e.g. `123` stays `123`).
 - Auto-selects `fd`/`fdfind` when available, falls back to POSIX `find`
 - Interactive mode (prompts for missing args) or fully headless
+- `--include/--exclude` support for post-search filtering, both repeatable and wildcard-aware
 - Quiet mode (`-q`) for existence checks — exit 0 if found, 1 if not
 - Three output formats: `pretty` (default), `paths` (one per line), `json`
 
@@ -171,6 +172,12 @@ fsearch --output json '*token*' /home/user
 
 # Force the fd backend
 fsearch --backend fd '*.rs' /opt/src
+
+# Monorepo noise reduction (skip generated dirs)
+fsearch --exclude node_modules --exclude .git '*.py' /repo
+
+# Focused scan with inclusion and exclusion
+fsearch -I 'services/*' -x '*test*' '*.go' /project/src
 
 # Interactive mode (prompts for pattern and path)
 fsearch -i
@@ -469,6 +476,8 @@ Copy-paste ready. Every command runs headless (no prompts, no TTY needed) unless
 | `fsearch '*.??' /tmp` | Files with two-character extensions (`*.js`, `*.py`, etc.) |
 | `fsearch --output paths '*.py' /project` | One path per line, no header — ideal for piping |
 | `fsearch --output json '*.conf' /etc` | Structured JSON with `total_found`, `results[]`, `backend` |
+| `fsearch --include 'src' --exclude '*test*' '*.py' /project` | Find `.py` files only under source paths, skipping tests |
+| `fsearch --exclude 'node_modules' --exclude '.git' '*.log' /repo` | Scan logs while skipping noisy directories |
 | `fsearch --max 10 '*.py' /project` | Limit pretty output to first 10 results |
 | `fsearch --backend fd '*.rs' /src` | Force `fd` backend (faster, if installed) |
 | `fsearch --backend find '*.c' /src` | Force POSIX `find` backend |
@@ -616,6 +625,8 @@ These are designed for AI agents, CI pipelines, cron jobs, and automation script
 | `--output` | `-o` | `pretty`, `paths`, `json` | `pretty` |
 | `--backend` | `-b` | `auto`, `find`, `fd` | `auto` |
 | `--max` | `-m` | any integer | `50` |
+| `--include` | `-I` | any pattern (repeatable) | — |
+| `--exclude` | `-x` | any pattern (repeatable) | — |
 | `--quiet` | `-q` | — | off |
 | `--project-name` | — | any string | auto-detected |
 | `--interactive` | `-i` | — | off |
@@ -827,6 +838,15 @@ sudo ln -s "$(pwd)/fmap" /usr/local/bin/fmap
 ---
 
 ## Changelog
+
+### v1.6.2
+
+Production-grade path filtering for `fsearch`:
+
+- Added `-I/--include` and `-x/--exclude` repeatable filters with wildcard-aware pattern matching.
+- Added filter-aware filtering pipeline: include checks run first (OR across includes), then exclude checks remove matches (OR across excludes).
+- Recorded include/exclude flags in telemetry for `fsearch`.
+- Documentation updates for `fsearch` include/exclude workflows (monorepo and test-scope triage).
 
 ### v1.6.1
 

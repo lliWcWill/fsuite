@@ -1,3 +1,11 @@
+fsuite (1.6.2-1) unstable; urgency=medium
+
+  * fsearch: add production-grade path filtering via repeatable --include/-I and --exclude/-x
+  * fsearch: add support for wildcard matching when filter pattern contains *, ?, or [] and order-preserving filtering
+  * fsearch: include include/exclude patterns in telemetry flags field
+
+ -- Chess Williams <chess.w.williams@gmail.com>  Tue, 17 Feb 2026 12:00:00 -0600
+
 fsuite (1.6.1-1) unstable; urgency=medium
 
   * Hardening patch: LC_ALL=C locale pinning for consistent grep behavior
