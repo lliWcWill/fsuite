@@ -271,11 +271,119 @@ test_schema_migration_idempotent() {
   local cols
   cols=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT sql FROM sqlite_master WHERE name='telemetry';" 2>/dev/null || true)
 
-  if [[ "$cols" == *"cpu_temp_mc"* ]] && [[ "$cols" == *"load_avg_1m"* ]]; then
+  if [[ "$cols" == *"cpu_temp_mc"* ]] && [[ "$cols" == *"load_avg_1m"* ]] && [[ "$cols" == *"run_id"* ]] && ([[ "$cols" == *"UNIQUE(run_id, tool, path_hash)"* ]] || [[ "$cols" == *"UNIQUE(run_id,tool,path_hash)"* ]]); then
     pass "Schema migration is idempotent"
   else
     fail "Schema should have hardware columns after migration" "Got: $cols"
   fi
+}
+
+test_run_id_in_jsonl() {
+  rm -f "$HOME/.fsuite/telemetry.jsonl"
+  FSUITE_TELEMETRY=1 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
+  local line
+  line=$(tail -1 "$HOME/.fsuite/telemetry.jsonl" 2>/dev/null) || line=""
+  if [[ "$line" =~ \"run_id\":\"[0-9]+_[0-9]+\" ]]; then
+    pass "Telemetry JSONL includes run_id"
+  else
+    fail "Telemetry JSONL should include run_id" "Got: $line"
+  fi
+}
+
+test_burst_runs_not_dropped() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "Burst dedupe test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+  FSUITE_TELEMETRY=1 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
+  FSUITE_TELEMETRY=1 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
+  "${FMETRICS}" import >/dev/null 2>&1 || true
+  local count
+  count=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM telemetry WHERE tool='ftree';" 2>/dev/null) || count=0
+  if [[ "$count" =~ ^[0-9]+$ ]] && (( count >= 2 )); then
+    pass "Burst runs are not dropped by dedupe"
+  else
+    fail "Expected at least 2 ftree rows after burst import" "Got count=$count"
+  fi
+}
+
+test_legacy_import_backfill_run_id() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "Legacy backfill test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+  cat > "$HOME/.fsuite/telemetry.jsonl" <<'EOF'
+{"timestamp":"2026-03-07T00:00:00Z","tool":"ftree","version":"1.6.2","mode":"tree","path_hash":"abc123def456","project_name":"legacyproj","duration_ms":42,"exit_code":0,"depth":1,"items_scanned":3,"bytes_scanned":2048,"flags":"-o pretty","backend":"tree"}
+EOF
+  "${FMETRICS}" import >/dev/null 2>&1 || true
+  local run_id
+  run_id=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT run_id FROM telemetry WHERE tool='ftree' LIMIT 1;" 2>/dev/null) || run_id=""
+  if [[ -n "$run_id" ]]; then
+    pass "Legacy JSONL import backfills run_id"
+  else
+    fail "Legacy JSONL import should backfill run_id"
+  fi
+}
+
+test_migration_atomicity() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "Migration atomicity test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.db"
+  # Create a DB with OLD schema (inline UNIQUE(timestamp,tool,path_hash))
+  # AND a blocker table 'telemetry_old' so the migration's
+  # ALTER TABLE telemetry RENAME TO telemetry_old fails mid-transaction.
+  sqlite3 "$HOME/.fsuite/telemetry.db" <<'SQL'
+CREATE TABLE telemetry (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp TEXT NOT NULL,
+  tool TEXT NOT NULL,
+  version TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  path_hash TEXT NOT NULL,
+  project_name TEXT NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  exit_code INTEGER NOT NULL,
+  depth INTEGER NOT NULL DEFAULT -1,
+  items_scanned INTEGER NOT NULL DEFAULT -1,
+  bytes_scanned INTEGER NOT NULL DEFAULT -1,
+  flags TEXT NOT NULL DEFAULT '',
+  backend TEXT NOT NULL DEFAULT '',
+  UNIQUE(timestamp, tool, path_hash)
+);
+INSERT INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code)
+  VALUES ('2026-01-01T00:00:00Z','ftree','1.6.0','tree','aabbccdd','atomtest',100,0);
+INSERT INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code)
+  VALUES ('2026-01-01T00:00:01Z','ftree','1.6.0','tree','eeff0011','atomtest',200,0);
+CREATE TABLE telemetry_old (id INTEGER PRIMARY KEY);
+SQL
+  local pre_count
+  pre_count=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM telemetry;" 2>/dev/null)
+
+  # Run fmetrics import — ensure_db triggers migration, which should fail
+  # at RENAME (telemetry_old already exists), and .bail on + BEGIN IMMEDIATE
+  # should cause SQLite to roll back, leaving original table intact.
+  rm -f "$HOME/.fsuite/telemetry.jsonl"
+  echo '{}' > "$HOME/.fsuite/telemetry.jsonl"
+  "${FMETRICS}" import >/dev/null 2>&1 || true
+
+  # Verify: original telemetry table still exists with all rows intact
+  local post_count schema_sql
+  post_count=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM telemetry;" 2>/dev/null) || post_count=0
+  schema_sql=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT sql FROM sqlite_master WHERE type='table' AND name='telemetry';" 2>/dev/null) || schema_sql=""
+
+  if (( post_count == pre_count )) && [[ "$schema_sql" == *"UNIQUE(timestamp, tool, path_hash)"* ]]; then
+    pass "Migration rollback on failure preserves data"
+  else
+    fail "Failed migration should leave original table intact" "pre=$pre_count post=$post_count schema=$schema_sql"
+  fi
+
+  # Cleanup: remove the blocker so subsequent tests aren't affected
+  sqlite3 "$HOME/.fsuite/telemetry.db" "DROP TABLE IF EXISTS telemetry_old;" 2>/dev/null || true
+  rm -f "$HOME/.fsuite/telemetry.db"
 }
 
 # ============================================================================
@@ -632,6 +740,10 @@ main() {
   echo ""
   echo "== Schema Migration =="
   run_test "Schema migration is idempotent" test_schema_migration_idempotent
+  run_test "Telemetry JSONL includes run_id" test_run_id_in_jsonl
+  run_test "Burst runs are not dropped" test_burst_runs_not_dropped
+  run_test "Legacy import backfills run_id" test_legacy_import_backfill_run_id
+  run_test "Migration rollback on failure preserves data" test_migration_atomicity
 
   echo ""
   echo "== Metacharacter Warning =="

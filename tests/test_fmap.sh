@@ -401,6 +401,110 @@ run_main() {
 }
 SEOF
   chmod +x "${TEST_DIR}/src/run-script"
+
+  # Dockerfile fixture (multi-stage, all structural directives)
+  cat > "${TEST_DIR}/src/Dockerfile" <<'DKEOF'
+FROM node:18-alpine AS builder
+FROM alpine:3.18
+
+ENV NODE_ENV=production
+ENV APP_PORT=3000
+ARG VERSION=1.0
+ARG BUILD_DATE
+
+ENTRYPOINT ["node", "server.js"]
+CMD ["npm", "start"]
+HEALTHCHECK --interval=30s CMD curl -f http://localhost/
+
+EXPOSE 3000
+EXPOSE 8080/tcp
+VOLUME /data
+VOLUME /logs
+
+WORKDIR /app
+COPY package.json .
+RUN npm install
+# FROM should-not-match
+DKEOF
+
+  # Dockerfile variant (Dockerfile.prod) for detection test
+  cat > "${TEST_DIR}/src/Dockerfile.prod" <<'DKPEOF'
+FROM node:18 AS production
+ENV NODE_ENV=production
+CMD ["node", "app.js"]
+EXPOSE 80
+DKPEOF
+
+  # Dockerfile extension variant (foo.Dockerfile) for suffix detection
+  cat > "${TEST_DIR}/src/api.Dockerfile" <<'DKSEOF'
+FROM alpine:3.18
+ENV SERVICE=api
+CMD ["sh", "-c", "echo ok"]
+DKSEOF
+
+  # Makefile fixture
+  cat > "${TEST_DIR}/src/Makefile" <<'MKEOF'
+CC = gcc
+CFLAGS := -Wall -g
+OPTIONAL_FLAG ?= -O2
+
+include config.mk
+-include optional.mk
+
+export PATH
+
+.PHONY: all clean test
+
+all: build test
+
+build:
+	$(CC) $(CFLAGS) -o app main.c
+
+clean:
+	rm -f app
+
+test:
+	./run_tests.sh
+
+install: build
+	cp app /usr/local/bin/
+MKEOF
+
+  # YAML fixture (docker-compose style)
+  cat > "${TEST_DIR}/src/compose.yml" <<'YMLEOF'
+version: "3.8"
+services:
+  web:
+    image: nginx:latest
+    ports:
+      - "80:80"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://localhost/db
+  db:
+    image: postgres:14
+    volumes:
+      - data:/var/lib/postgresql/data
+volumes:
+  data:
+YMLEOF
+
+  # YAML fixture (GitHub Actions style for uses: detection)
+  cat > "${TEST_DIR}/src/ci.yaml" <<'CIEOF'
+name: CI
+on:
+  push:
+    branches:
+      - main
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+    env:
+      CI_TOKEN: secret
+CIEOF
 }
 
 teardown() {
@@ -1181,6 +1285,172 @@ else:
 }
 
 # ============================================================================
+# Dockerfile Tests
+# ============================================================================
+
+test_dir_dockerfile_symbols() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" "${TEST_DIR}/src/Dockerfile" 2>&1)
+  if [[ "$output" =~ "import: FROM" ]] && [[ "$output" =~ "constant:" ]] && [[ "$output" =~ "function:" ]] && [[ "$output" =~ "export:" ]]; then
+    pass "Dockerfile extracts FROM, ENV/ARG, ENTRYPOINT/CMD, EXPOSE/VOLUME"
+  else
+    fail "Dockerfile missing expected symbols" "Got: $output"
+  fi
+}
+
+test_dockerfile_prod_detection() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" -o json "${TEST_DIR}/src/Dockerfile.prod" 2>&1)
+  local lang
+  lang=$(echo "$output" | python3 -c "import json,sys; print(json.load(sys.stdin)['files'][0]['language'])" 2>/dev/null) || lang=""
+  if [[ "$lang" == "dockerfile" ]]; then
+    pass "Dockerfile.prod detected as dockerfile"
+  else
+    fail "Dockerfile.prod not detected correctly" "Got lang=$lang"
+  fi
+}
+
+test_dockerfile_suffix_detection() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" -o json "${TEST_DIR}/src/api.Dockerfile" 2>&1)
+  local lang
+  lang=$(echo "$output" | python3 -c "import json,sys; print(json.load(sys.stdin)['files'][0]['language'])" 2>/dev/null) || lang=""
+  if [[ "$lang" == "dockerfile" ]]; then
+    pass "api.Dockerfile detected as dockerfile"
+  else
+    fail "api.Dockerfile not detected correctly" "Got lang=$lang"
+  fi
+}
+
+test_dockerfile_no_run_copy() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" "${TEST_DIR}/src/Dockerfile" 2>&1)
+  if [[ ! "$output" =~ "RUN " ]] && [[ ! "$output" =~ "COPY " ]] && [[ ! "$output" =~ "WORKDIR " ]]; then
+    pass "Dockerfile excludes RUN, COPY, WORKDIR noise"
+  else
+    fail "Dockerfile captured noisy directives" "Got: $output"
+  fi
+}
+
+test_parse_dockerfile_exact() {
+  local result
+  result=$(_validate_lang_json "${TEST_DIR}/src/Dockerfile" "dockerfile" "import,constant,function,export" 10)
+  if [[ "$result" == "OK" ]]; then
+    pass "Dockerfile exact parse: all types found, no dupes, 10+ symbols"
+  else
+    fail "Dockerfile exact parse failed" "$result"
+  fi
+}
+
+test_force_lang_dockerfile() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" -L dockerfile "${TEST_DIR}/src/Dockerfile" 2>&1)
+  if [[ "$output" =~ "(dockerfile)" ]]; then
+    pass "-L dockerfile forces language detection"
+  else
+    fail "-L dockerfile not effective" "Got: $output"
+  fi
+}
+
+# ============================================================================
+# Makefile Tests
+# ============================================================================
+
+test_dir_makefile_symbols() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" -L makefile "${TEST_DIR}/src/Makefile" 2>&1)
+  if [[ "$output" =~ "function:" ]] && [[ "$output" =~ "constant:" ]] && [[ "$output" =~ "import:" ]]; then
+    pass "Makefile extracts targets, variables, includes"
+  else
+    fail "Makefile missing expected symbols" "Got: $output"
+  fi
+}
+
+test_makefile_no_phony() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" -L makefile "${TEST_DIR}/src/Makefile" 2>&1)
+  if [[ ! "$output" =~ ".PHONY" ]]; then
+    pass "Makefile does not capture .PHONY"
+  else
+    fail "Makefile captured .PHONY" "Got: $output"
+  fi
+}
+
+test_parse_makefile_exact() {
+  local result
+  result=$(_validate_lang_json "${TEST_DIR}/src/Makefile" "makefile" "function,constant,import,export" 8)
+  if [[ "$result" == "OK" ]]; then
+    pass "Makefile exact parse: all types found, no dupes, 8+ symbols"
+  else
+    fail "Makefile exact parse failed" "$result"
+  fi
+}
+
+test_force_lang_makefile() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" -L makefile "${TEST_DIR}/src/Makefile" 2>&1)
+  if [[ "$output" =~ "(makefile)" ]]; then
+    pass "-L makefile forces language detection"
+  else
+    fail "-L makefile not effective" "Got: $output"
+  fi
+}
+
+# ============================================================================
+# YAML Tests
+# ============================================================================
+
+test_dir_yaml_symbols() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" "${TEST_DIR}/src/compose.yml" 2>&1)
+  if [[ "$output" =~ "class:" ]] && [[ "$output" =~ "function:" ]] && [[ "$output" =~ "import:" ]]; then
+    pass "YAML extracts top-level keys, second-level keys, image refs"
+  else
+    fail "YAML missing expected symbols" "Got: $output"
+  fi
+}
+
+test_yaml_github_actions_uses() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" "${TEST_DIR}/src/ci.yaml" 2>&1)
+  if [[ "$output" =~ "import:" ]] && [[ "$output" =~ "uses:" ]]; then
+    pass "YAML GitHub Actions 'uses:' captured as import"
+  else
+    fail "YAML missing uses: import" "Got: $output"
+  fi
+}
+
+test_parse_yaml_exact() {
+  local result
+  result=$(_validate_lang_json "${TEST_DIR}/src/compose.yml" "yaml" "class,function,import" 4)
+  if [[ "$result" == "OK" ]]; then
+    pass "YAML exact parse: all types found, no dupes, 4+ symbols"
+  else
+    fail "YAML exact parse failed" "$result"
+  fi
+}
+
+test_force_lang_yaml() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" -L yaml "${TEST_DIR}/src/compose.yml" 2>&1)
+  if [[ "$output" =~ "(yaml)" ]]; then
+    pass "-L yaml forces language detection"
+  else
+    fail "-L yaml not effective" "Got: $output"
+  fi
+}
+
+test_bad_lang_lists_new_languages() {
+  local output rc
+  output=$(FSUITE_TELEMETRY=0 "${FMAP}" -L badlang "${TEST_DIR}" 2>&1) || rc=$?
+  if [[ "${rc:-0}" -eq 2 ]] && [[ "$output" =~ "dockerfile" ]] && [[ "$output" =~ "makefile" ]] && [[ "$output" =~ "yaml" ]]; then
+    pass "Invalid --lang error lists new languages"
+  else
+    fail "Invalid --lang error missing new languages" "rc=${rc:-0}, output=$output"
+  fi
+}
+
+# ============================================================================
 # Pipeline Test
 # ============================================================================
 
@@ -1308,6 +1578,29 @@ main() {
 
   # Shebang detection
   run_test "Shebang detection" test_shebang_detection
+
+  # Dockerfile
+  run_test "Dockerfile symbols" test_dir_dockerfile_symbols
+  run_test "Dockerfile.prod detection" test_dockerfile_prod_detection
+  run_test "api.Dockerfile suffix detection" test_dockerfile_suffix_detection
+  run_test "Dockerfile no RUN/COPY" test_dockerfile_no_run_copy
+  run_test "Dockerfile exact parse" test_parse_dockerfile_exact
+  run_test "Force lang dockerfile" test_force_lang_dockerfile
+
+  # Makefile
+  run_test "Makefile symbols" test_dir_makefile_symbols
+  run_test "Makefile no .PHONY" test_makefile_no_phony
+  run_test "Makefile exact parse" test_parse_makefile_exact
+  run_test "Force lang makefile" test_force_lang_makefile
+
+  # YAML
+  run_test "YAML symbols" test_dir_yaml_symbols
+  run_test "YAML uses: import" test_yaml_github_actions_uses
+  run_test "YAML exact parse" test_parse_yaml_exact
+  run_test "Force lang yaml" test_force_lang_yaml
+
+  # New language validation
+  run_test "Invalid --lang lists new langs" test_bad_lang_lists_new_languages
 
   # Pipeline
   run_test "fsearch | fmap pipeline" test_pipeline_fsearch_to_fmap

@@ -1,5 +1,10 @@
 fsuite (1.6.2-1) unstable; urgency=medium
 
+  * fix(fcontent): add missing exit 0 in pretty output mode (PR #5, Cwilliams333)
+  * feat(fcontent): dedupe repeated file paths in output — show full path on
+    first occurrence, basename-only for subsequent same-file matches
+  * Uses declare -A associative array for robust non-contiguous dedup
+  * Regex fix: [^:]+ instead of greedy .+ for reliable path:line:content parsing
   * fsearch: add production-grade path filtering via repeatable --include/-I and --exclude/-x
   * fsearch: add support for wildcard matching when filter pattern contains *, ?, or [] and order-preserving filtering
   * fsearch: include include/exclude patterns in telemetry flags field

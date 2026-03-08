@@ -26,9 +26,9 @@ Comprehensive test suite for the fsuite CLI tools (fsearch, fcontent, ftree).
      - Edge cases (empty files, binary files, deep structures)
 
 1. **test_fmap.sh** - Tests for fmap (code cartography tool)
-   - 58 test cases covering:
+   - 72 test cases covering:
      - Basic functionality (version, help, self-check, install-hints)
-     - Language extraction (all 12: Python, JS, TS, Rust, Go, Java, C, C++, Ruby, Lua, PHP, Bash)
+     - Language extraction (all 15: Python, JS, TS, Rust, Go, Java, C, C++, Ruby, Lua, PHP, Bash, Dockerfile, Makefile, YAML)
      - Bash function forms (both `name()` and `function name`)
      - Single file, directory, and stdin modes
      - Output formats (pretty, paths, json)
@@ -39,8 +39,11 @@ Comprehensive test suite for the fsuite CLI tools (fsearch, fcontent, ftree).
      - Telemetry (tool=fmap, backend=grep)
      - Default ignore (node_modules excluded/included)
      - Shebang detection for extensionless files
-     - Per-language exact parsing (all 12 languages: Python, JS, TS, Rust, Go, Java, C, C++, Ruby, Lua, PHP, Bash)
+     - Per-language exact parsing (all 15 languages)
      - Dedup regression (JS arrow functions, cross-language zero-duplication)
+     - Dockerfile (FROM/ENV/ARG/ENTRYPOINT/CMD/EXPOSE/VOLUME, variant detection, noise exclusion)
+     - Makefile (targets, variables, includes, .PHONY exclusion)
+     - YAML (top-level/second-level keys, image/uses imports, ALL_CAPS constants)
      - Pipeline (fsearch | fmap)
 
 1. **test_ftree.sh** - Tests for ftree (directory tree tool)
@@ -133,7 +136,7 @@ bash test_integration.sh
 ### fmap Coverage
 - ✅ Version and help output
 - ✅ Self-check and install hints
-- ✅ Language extraction (Python, JS, TS, Rust, Go, Java, Ruby, Bash)
+- ✅ Language extraction (Python, JS, TS, Rust, Go, Java, Ruby, Bash, Dockerfile, Makefile, YAML)
 - ✅ Bash function forms (POSIX `name()` and `function name`)
 - ✅ Bash source/dot imports, exports, readonly constants
 - ✅ Single file mode with correct path in JSON
@@ -154,11 +157,14 @@ bash test_integration.sh
 - ✅ Error handling (bad flags, bad types, non-integer args, non-existent paths)
 - ✅ Telemetry (tool=fmap, backend=grep)
 - ✅ Pipeline (fsearch | fmap)
-- ✅ Per-language exact parsing — all 12 languages (Python, JS, TS, Rust, Go, Java, C, C++, Ruby, Lua, PHP, Bash)
+- ✅ Per-language exact parsing — all 15 languages (Python, JS, TS, Rust, Go, Java, C, C++, Ruby, Lua, PHP, Bash, Dockerfile, Makefile, YAML)
 - ✅ Per-language type validation (function, class, import, type, export, constant per language)
 - ✅ Per-language zero-duplication verification via JSON line-number checks
 - ✅ Dedup regression — JS `const fn = async () => {}` multi-pattern overlap
-- ✅ Cross-language dedup — zero duplicates across all 14 fixture files
+- ✅ Cross-language dedup — zero duplicates across all 19 fixture files
+- ✅ Dockerfile — FROM/ENV/ARG/ENTRYPOINT/CMD/EXPOSE/VOLUME extraction, Dockerfile.prod variant detection, RUN/COPY/WORKDIR noise exclusion
+- ✅ Makefile — target/variable/include/export extraction, .PHONY exclusion
+- ✅ YAML — top-level/second-level block key extraction, image/uses/extends imports, ALL_CAPS constants
 
 ### ftree Coverage
 - ✅ Version and help output
@@ -198,11 +204,11 @@ bash test_integration.sh
 
 ## Test Results Summary
 
-**Total Test Cases: 259**
+**Total Test Cases: 273**
 
 - fsearch: 37 tests
 - fcontent: 47 tests
-- fmap: 58 tests
+- fmap: 72 tests
 - ftree: 54 tests
 - Integration: 33 tests
 - Telemetry: 30 tests

@@ -7,7 +7,7 @@ export LC_ALL=C
 
 set -euo pipefail
 
-VERSION="1.6.1"
+VERSION="1.7.0"
 
 # -------------------------
 # Source common library for tiered telemetry
@@ -88,7 +88,7 @@ _fsuite_record_telemetry() {
   fi
   local _safe_flags
   _safe_flags=$(printf '%s' "${_TELEM_FLAGS# }" | tr -cd '[:alnum:] _./-' | head -c 200)
-  local _telem_line="{\"timestamp\":\"$ts\",\"tool\":\"fmap\",\"version\":\"$VERSION\",\"mode\":\"$mode\",\"path_hash\":\"$ph\",\"project_name\":\"$pn\",\"duration_ms\":$dur_ms,\"exit_code\":$_TELEM_EXIT_CODE,\"depth\":-1,\"items_scanned\":${TOTAL_FILES_SCANNED:-0},\"bytes_scanned\":${_TELEM_BYTES},\"flags\":\"$_safe_flags\",\"backend\":\"grep\"${_hw_fields}}"
+  local _telem_line="{\"timestamp\":\"$ts\",\"run_id\":\"${_TELEM_START_MS}_$$\",\"tool\":\"fmap\",\"version\":\"$VERSION\",\"mode\":\"$mode\",\"path_hash\":\"$ph\",\"project_name\":\"$pn\",\"duration_ms\":$dur_ms,\"exit_code\":$_TELEM_EXIT_CODE,\"depth\":-1,\"items_scanned\":${TOTAL_FILES_SCANNED:-0},\"bytes_scanned\":${_TELEM_BYTES},\"flags\":\"$_safe_flags\",\"backend\":\"grep\"${_hw_fields}}"
   {
     flock -x 200 2>/dev/null
     echo "$_telem_line" >> "$telem_dir/telemetry.jsonl"
@@ -181,7 +181,7 @@ OPTIONS
   -L, --lang <lang>
       Force language (auto-detect by default).
       Supported: python, javascript, typescript, rust, go, java,
-                 c, cpp, ruby, lua, php, bash
+                 c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml
 
   -t, --type <type>
       Filter symbol types: function, class, import, type, export, constant
@@ -212,7 +212,7 @@ OPTIONS
 
 SUPPORTED LANGUAGES
   Python, JavaScript, TypeScript, Rust, Go, Java, C, C++,
-  Ruby, Lua, PHP, Bash/Shell
+  Ruby, Lua, PHP, Bash/Shell, Dockerfile, Makefile, YAML
 
 HEADLESS / AI AGENT USAGE
   fmap -o json /project
@@ -315,8 +315,8 @@ if [[ -n "$FILTER_TYPE" ]]; then
 fi
 if [[ -n "$FORCE_LANG" ]]; then
   case "$FORCE_LANG" in
-    python|javascript|typescript|rust|go|java|c|cpp|ruby|lua|php|bash) ;;
-    *) die "Invalid --lang: $FORCE_LANG (valid: python, javascript, typescript, rust, go, java, c, cpp, ruby, lua, php, bash)" ;;
+    python|javascript|typescript|rust|go|java|c|cpp|ruby|lua|php|bash|dockerfile|makefile|yaml) ;;
+    *) die "Invalid --lang: $FORCE_LANG (valid: python, javascript, typescript, rust, go, java, c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml)" ;;
   esac
 fi
 
@@ -475,6 +475,12 @@ detect_language() {
     ext=""
   fi
 
+  # Basename-based detection for config files without standard extensions
+  case "$base" in
+    Dockerfile|Dockerfile.*|Containerfile|Containerfile.*|containerfile|containerfile.*) echo "dockerfile"; return ;;
+    Makefile|makefile|GNUmakefile) echo "makefile"; return ;;
+  esac
+
   case "$ext" in
     py|pyw|pyi) echo "python"; return ;;
     js|mjs|cjs|jsx) echo "javascript"; return ;;
@@ -491,6 +497,9 @@ detect_language() {
     sh|bash) echo "bash"; return ;;
     bashrc|bash_profile|bash_login|bash_logout|profile) echo "bash"; return ;;
     ebuild|eclass) echo "bash"; return ;;
+    dockerfile|Dockerfile|containerfile|Containerfile) echo "dockerfile"; return ;;
+    mk) echo "makefile"; return ;;
+    yml|yaml) echo "yaml"; return ;;
   esac
 
   # Shebang fallback for extensionless files
@@ -650,6 +659,32 @@ extract_symbols() {
         "import:^[[:space:]]*(source|\\.)[[:space:]]"
         "export:^[[:space:]]*export[[:space:]]"
         "constant:^[[:space:]]*(readonly|declare[[:space:]]+-r|typeset[[:space:]]+-r)[[:space:]]"
+      )
+      ;;
+    dockerfile)
+      patterns=(
+        "import:^FROM[[:space:]]"
+        "constant:^(ENV|ARG)[[:space:]]"
+        "function:^(ENTRYPOINT|CMD|HEALTHCHECK)[[:space:][]"
+        "export:^(EXPOSE|VOLUME)[[:space:]]"
+      )
+      ;;
+    makefile)
+      patterns=(
+        "function:^[a-zA-Z][a-zA-Z0-9_.-]*[[:space:]]*:([^:=]|$)"
+        "constant:^[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*([:?!+]?=)"
+        "import:^-?(include|sinclude)[[:space:]]"
+        "export:^export[[:space:]]"
+      )
+      ;;
+    yaml)
+      patterns=(
+        "class:^[a-zA-Z_][a-zA-Z0-9_.-]*:[[:space:]]*$"
+        "function:^[[:space:]]{2,4}[a-zA-Z_][a-zA-Z0-9_.-]*:[[:space:]]*$"
+        "import:^[[:space:]]*(- )?uses:[[:space:]]"
+        "import:^[[:space:]]+image:[[:space:]]"
+        "import:^[[:space:]]+extends:[[:space:]]"
+        "constant:^[[:space:]]+[A-Z][A-Z0-9_]*:[[:space:]]"
       )
       ;;
   esac
