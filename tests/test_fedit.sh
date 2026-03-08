@@ -282,10 +282,12 @@ test_multiline_after_anchor() {
       fail "Multi-line --after anchor should succeed"
       return
     }
-  if grep -q 'audit_log(user)' "${TEST_DIR}/multiline_anchor.py"; then
+  local content
+  content=$(cat "${TEST_DIR}/multiline_anchor.py")
+  if [[ "$content" == *$'def authenticate(\n    user,\n):\n    audit_log(user)\n    return True'* ]]; then
     pass "Multi-line anchor text is applied as one block"
   else
-    fail "Multi-line --after anchor should insert payload"
+    fail "Multi-line --after anchor should insert payload immediately after anchor" "Got: $content"
   fi
 }
 
@@ -552,11 +554,11 @@ test_crlf_payload_normalization() {
     open my $fh, "<:raw", $ARGV[0] or exit 2;
     local $/;
     my $c = <$fh>;
-    exit(($c =~ /\r\n/ && $c !~ /(?<!\r)\n/) ? 0 : 1);
+    exit(($c =~ /\r\n/ && $c !~ /(?<!\r)\n/ && $c =~ /audit_log\(user\)\r\n    notify\(user\)\r\n    return True\r\n/) ? 0 : 1);
   ' "${TEST_DIR}/crlf_target.py"; then
     pass "Payload is normalized to CRLF when target file uses CRLF"
   else
-    fail "CRLF normalization should not leave bare LF line endings"
+    fail "CRLF normalization should preserve inserted content and line endings"
   fi
 }
 

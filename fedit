@@ -260,6 +260,7 @@ normalized_payload_file() {
     perl -e '
       use strict;
       use warnings;
+      use bytes;
       my ($src, $dst) = @ARGV;
       open my $sf, "<:raw", $src or die;
       local $/;
@@ -280,9 +281,11 @@ contains_nul_bytes() {
     use strict;
     use warnings;
     open my $fh, "<:raw", $ARGV[0] or exit 2;
-    local $/;
-    my $content = <$fh>;
-    exit(index($content, "\0") >= 0 ? 0 : 1);
+    my $buf = q{};
+    while (read($fh, $buf, 65536)) {
+      exit 0 if index($buf, "\0") >= 0;
+    }
+    exit 1;
   ' "$path" >/dev/null 2>&1
 }
 
