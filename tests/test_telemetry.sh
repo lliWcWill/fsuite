@@ -537,9 +537,7 @@ test_v15_project_name_walkup() {
   FSUITE_TELEMETRY=1 "${FTREE}" --recon "${proj_dir}/src/deep/nested" >/dev/null 2>&1 || true
   local line
   line=$(tail -1 $HOME/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
-  if [[ "$line" =~ \"project_name\":\"myproject\" ]]; then
-    pass "ftree: walk-up finds .git and uses project root name"
-  else
+  if ! [[ "$line" =~ \"project_name\":\"myproject\" ]]; then
     fail "ftree should infer project_name='myproject' from .git" "Got: $line"
     return
   fi
@@ -548,9 +546,7 @@ test_v15_project_name_walkup() {
   rm -f $HOME/.fsuite/telemetry.jsonl
   FSUITE_TELEMETRY=1 "${FSEARCH}" --output paths "*.txt" "${proj_dir}/src/deep/nested" >/dev/null 2>&1 || true
   line=$(tail -1 $HOME/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
-  if [[ "$line" =~ \"project_name\":\"myproject\" ]]; then
-    pass "fsearch: walk-up finds .git and uses project root name"
-  else
+  if ! [[ "$line" =~ \"project_name\":\"myproject\" ]]; then
     fail "fsearch should infer project_name='myproject'" "Got: $line"
     return
   fi
@@ -559,11 +555,12 @@ test_v15_project_name_walkup() {
   rm -f $HOME/.fsuite/telemetry.jsonl
   FSUITE_TELEMETRY=1 "${FCONTENT}" "hello" "${proj_dir}/src/deep/nested" >/dev/null 2>&1 || true
   line=$(tail -1 $HOME/.fsuite/telemetry.jsonl 2>/dev/null) || line=""
-  if [[ "$line" =~ \"project_name\":\"myproject\" ]]; then
-    pass "fcontent: walk-up finds .git and uses project root name"
-  else
+  if ! [[ "$line" =~ \"project_name\":\"myproject\" ]]; then
     fail "fcontent should infer project_name='myproject'" "Got: $line"
+    return
   fi
+
+  pass "Walk-up finds .git and uses project root name (ftree, fsearch, fcontent)"
 }
 
 test_v15_project_name_fallback() {

@@ -125,6 +125,37 @@ path_matches_filter() {
   fi
 }
 
+filter_results_stream() {
+  local item pattern include_match exclude_match
+  while IFS= read -r item; do
+    [[ -z "$item" ]] && continue
+
+    if (( ${#INCLUDE_PATTERNS[@]} > 0 )); then
+      include_match=0
+      for pattern in "${INCLUDE_PATTERNS[@]}"; do
+        if path_matches_filter "$item" "$pattern"; then
+          include_match=1
+          break
+        fi
+      done
+      (( include_match == 1 )) || continue
+    fi
+
+    if (( ${#EXCLUDE_PATTERNS[@]} > 0 )); then
+      exclude_match=0
+      for pattern in "${EXCLUDE_PATTERNS[@]}"; do
+        if path_matches_filter "$item" "$pattern"; then
+          exclude_match=1
+          break
+        fi
+      done
+      (( exclude_match == 1 )) && continue
+    fi
+
+    printf "%s\n" "$item"
+  done
+}
+
 usage() {
   cat <<'EOF'
 fsearch — fast filename/path search (glob patterns, extensions, agent-friendly)
@@ -481,43 +512,25 @@ BACKEND_BIN="$(choose_backend "$BACKEND")"
 # -------------------------
 # Execute search
 # -------------------------
+# Bound memory: collect only MAX+1 filtered results first, then compute exact
+# filtered total only when truncation is detected.
 if [[ "$BACKEND_BIN" == "find" ]]; then
-  mapfile -t RESULTS < <(run_find "$SEARCH_PATH" "$NAME_GLOB")
+  mapfile -t RESULTS < <(run_find "$SEARCH_PATH" "$NAME_GLOB" | filter_results_stream | head -n "$((MAX + 1))" || true)
 else
-  mapfile -t RESULTS < <(run_fd "$BACKEND_BIN" "$SEARCH_PATH" "$NAME_GLOB")
-fi
-
-if (( ${#INCLUDE_PATTERNS[@]} > 0 || ${#EXCLUDE_PATTERNS[@]} > 0 )); then
-  FILTERED_RESULTS=()
-  for item in "${RESULTS[@]}"; do
-    if (( ${#INCLUDE_PATTERNS[@]} > 0 )); then
-      include_match=0
-      for pattern in "${INCLUDE_PATTERNS[@]}"; do
-        if path_matches_filter "$item" "$pattern"; then
-          include_match=1
-          break
-        fi
-      done
-      (( include_match == 0 )) && continue
-    fi
-
-    if (( ${#EXCLUDE_PATTERNS[@]} > 0 )); then
-      exclude_match=0
-      for pattern in "${EXCLUDE_PATTERNS[@]}"; do
-        if path_matches_filter "$item" "$pattern"; then
-          exclude_match=1
-          break
-        fi
-      done
-      (( exclude_match == 1 )) && continue
-    fi
-
-    FILTERED_RESULTS+=("$item")
-  done
-  RESULTS=("${FILTERED_RESULTS[@]}")
+  mapfile -t RESULTS < <(run_fd "$BACKEND_BIN" "$SEARCH_PATH" "$NAME_GLOB" | filter_results_stream | head -n "$((MAX + 1))" || true)
 fi
 
 TOTAL_FOUND="${#RESULTS[@]}"
+if (( TOTAL_FOUND > MAX )); then
+  _full_count=0
+  if [[ "$BACKEND_BIN" == "find" ]]; then
+    _full_count=$(run_find "$SEARCH_PATH" "$NAME_GLOB" | filter_results_stream | wc -l || true)
+  else
+    _full_count=$(run_fd "$BACKEND_BIN" "$SEARCH_PATH" "$NAME_GLOB" | filter_results_stream | wc -l || true)
+  fi
+  _full_count="${_full_count//[[:space:]]/}"
+  [[ "$_full_count" =~ ^[0-9]+$ ]] && TOTAL_FOUND="$_full_count"
+fi
 SHOWN="$TOTAL_FOUND"
 if (( SHOWN > MAX )); then SHOWN="$MAX"; fi
 

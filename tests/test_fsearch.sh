@@ -328,6 +328,23 @@ test_max_limit_in_json() {
   fi
 }
 
+test_max_limit_with_include_filter_total_count() {
+  local scoped="${TEST_DIR}/filter_scope_case"
+  mkdir -p "${scoped}/a" "${scoped}/z"
+  local i
+  for i in $(seq -w 1 120); do touch "${scoped}/a/a_${i}.log"; done
+  for i in $(seq -w 1 120); do touch "${scoped}/z/z_${i}.log"; done
+
+  local output
+  output=$("${FSEARCH}" --output json --max 10 --include "*/z/*" "*.log" "${scoped}" 2>&1)
+  if [[ "$output" =~ \"total_found\":120 ]] && [[ "$output" =~ \"shown\":10 ]]; then
+    pass "JSON filtered total_found stays accurate with max cap"
+  else
+    fail "Filtered max JSON count is incorrect" "Output: $output"
+  fi
+  rm -rf "${scoped}"
+}
+
 # ============================================================================
 # Backend Tests
 # ============================================================================
@@ -628,6 +645,7 @@ main() {
   # Max limit
   run_test "Max limit pretty output" test_max_limit
   run_test "Max limit JSON output" test_max_limit_in_json
+  run_test "Max limit JSON with include filter" test_max_limit_with_include_filter_total_count
 
   # Backends
   run_test "Backend find" test_backend_find
