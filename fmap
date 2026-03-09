@@ -7,7 +7,7 @@ export LC_ALL=C
 
 set -euo pipefail
 
-VERSION="1.9.0"
+VERSION="2.0.0"
 
 # -------------------------
 # Source common library for tiered telemetry

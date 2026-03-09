@@ -599,6 +599,287 @@ test_tier3_telemetry() {
   fi
 }
 
+# ==============================
+# Symbol Shortcut Tests
+# ==============================
+
+test_function_shortcut() {
+  reset_fixture "auth.py"
+  FSUITE_TELEMETRY=0 "${FEDIT}" "${TEST_DIR}/auth.py" --function authenticate --replace 'return False' --with 'return deny()' --apply >/dev/null 2>&1 || {
+    fail "--function shortcut should succeed"
+    return
+  }
+  local first second
+  first=$(sed -n '1,4p' "${TEST_DIR}/auth.py")
+  second=$(sed -n '6,9p' "${TEST_DIR}/auth.py")
+  if [[ "$first" == *'return deny()'* ]] && [[ "$second" == *'return False'* ]]; then
+    pass "--function shortcut scopes correctly"
+  else
+    fail "--function shortcut should scope to the named function only"
+  fi
+}
+
+test_class_shortcut() {
+  reset_fixture "auth.py"
+  local output
+  output=$(FSUITE_TELEMETRY=0 "${FEDIT}" "${TEST_DIR}/auth.py" --class AuthHandler --replace 'return authenticate(user)' --with 'return verify(user)' 2>/dev/null)
+  if [[ "$output" == *"+        return verify(user)"* ]]; then
+    pass "--class shortcut scopes correctly"
+  else
+    fail "--class shortcut should scope to the named class" "Got: $output"
+  fi
+}
+
+test_shortcut_symbol_conflict() {
+  local rc=0
+  FSUITE_TELEMETRY=0 "${FEDIT}" "${TEST_DIR}/auth.py" --function authenticate --symbol deny_if_missing --replace 'x' --with 'y' >/dev/null 2>&1 || rc=$?
+  if (( rc != 0 )); then
+    pass "Symbol shortcut + --symbol conflict fails"
+  else
+    fail "Cannot combine --function with --symbol"
+  fi
+}
+
+test_method_aliases_function() {
+  reset_fixture "auth.py"
+  local fn_output method_output
+  fn_output=$(FSUITE_TELEMETRY=0 "${FEDIT}" "${TEST_DIR}/auth.py" --function authenticate --replace 'return False' --with 'return deny()' 2>/dev/null)
+  reset_fixture "auth.py"
+  method_output=$(FSUITE_TELEMETRY=0 "${FEDIT}" "${TEST_DIR}/auth.py" --method authenticate --replace 'return False' --with 'return deny()' 2>/dev/null)
+  if [[ "$fn_output" == "$method_output" ]]; then
+    pass "--method aliases --function identically"
+  else
+    fail "--method should produce identical output to --function"
+  fi
+}
+
+# ==============================
+# Batch Mode Tests
+# ==============================
+
+test_batch_paths_dry_run() {
+  local a="${TEST_DIR}/batch_a.py" b="${TEST_DIR}/batch_b.py" c="${TEST_DIR}/batch_c.py"
+  echo 'old_value = 1' > "$a"
+  echo 'old_value = 1' > "$b"
+  echo 'old_value = 1' > "$c"
+  local output
+  output=$(printf '%s\n' "$a" "$b" "$c" | FSUITE_TELEMETRY=0 "${FEDIT}" --targets-file - --targets-format paths --replace 'old_value = 1' --with 'new_value = 2' 2>/dev/null)
+  if [[ "$output" == *"dry-run"* ]] && \
+     [[ "$(cat "$a")" == 'old_value = 1' ]] && \
+     [[ "$(cat "$b")" == 'old_value = 1' ]] && \
+     [[ "$(cat "$c")" == 'old_value = 1' ]]; then
+    pass "Batch paths dry-run previews without mutation"
+  else
+    fail "Batch dry-run should not mutate files" "output: $output"
+  fi
+}
+
+test_batch_paths_apply() {
+  local a="${TEST_DIR}/batch_a2.py" b="${TEST_DIR}/batch_b2.py" c="${TEST_DIR}/batch_c2.py"
+  echo 'old_value = 1' > "$a"
+  echo 'old_value = 1' > "$b"
+  echo 'old_value = 1' > "$c"
+  printf '%s\n' "$a" "$b" "$c" | FSUITE_TELEMETRY=0 "${FEDIT}" --targets-file - --targets-format paths --replace 'old_value = 1' --with 'new_value = 2' --apply >/dev/null 2>&1 || {
+    fail "Batch apply should succeed"
+    return
+  }
+  if [[ "$(cat "$a")" == 'new_value = 2' ]] && \
+     [[ "$(cat "$b")" == 'new_value = 2' ]] && \
+     [[ "$(cat "$c")" == 'new_value = 2' ]]; then
+    pass "Batch paths apply writes all targets"
+  else
+    fail "All batch targets should be mutated"
+  fi
+}
+
+test_batch_preflight_failure_writes_nothing() {
+  local a="${TEST_DIR}/batch_pf_a.py" b="${TEST_DIR}/batch_pf_b.py" c="${TEST_DIR}/batch_pf_c.py"
+  echo 'old_value = 1' > "$a"
+  echo 'old_value = 1' > "$b"
+  echo 'different_text = 99' > "$c"
+  local rc=0
+  printf '%s\n' "$a" "$b" "$c" | FSUITE_TELEMETRY=0 "${FEDIT}" --targets-file - --targets-format paths --replace 'old_value = 1' --with 'new_value = 2' --apply >/dev/null 2>&1 || rc=$?
+  if (( rc != 0 )) && \
+     [[ "$(cat "$a")" == 'old_value = 1' ]] && \
+     [[ "$(cat "$b")" == 'old_value = 1' ]]; then
+    pass "Preflight failure writes nothing"
+  else
+    fail "When one target fails planning, no files should be mutated" "rc=$rc a=$(cat "$a")"
+  fi
+}
+
+test_batch_symbol_scoped() {
+  local a="${TEST_DIR}/batch_sym_a.py" b="${TEST_DIR}/batch_sym_b.py"
+  cat > "$a" <<'PYEOF'
+def authenticate(user):
+    return False
+
+def other(user):
+    return False
+PYEOF
+  cat > "$b" <<'PYEOF'
+def authenticate(user):
+    return False
+
+def other(user):
+    return False
+PYEOF
+  printf '%s\n' "$a" "$b" | FSUITE_TELEMETRY=0 "${FEDIT}" --targets-file - --targets-format paths --function authenticate --replace 'return False' --with 'return deny()' --apply >/dev/null 2>&1 || {
+    fail "Batch symbol-scoped should succeed"
+    return
+  }
+  local a_auth a_other b_auth b_other
+  a_auth=$(sed -n '2p' "$a")
+  a_other=$(sed -n '5p' "$a")
+  b_auth=$(sed -n '2p' "$b")
+  b_other=$(sed -n '5p' "$b")
+  if [[ "$a_auth" == *'return deny()'* ]] && [[ "$a_other" == *'return False'* ]] && \
+     [[ "$b_auth" == *'return deny()'* ]] && [[ "$b_other" == *'return False'* ]]; then
+    pass "Batch + --function scopes each file independently"
+  else
+    fail "Batch symbol scoping should only edit the target symbol per file"
+  fi
+}
+
+test_batch_fmap_json() {
+  local a="${TEST_DIR}/batch_fmap_a.py" b="${TEST_DIR}/batch_fmap_b.py"
+  cat > "$a" <<'PYEOF'
+def authenticate(user):
+    return False
+
+def other(user):
+    return False
+PYEOF
+  cat > "$b" <<'PYEOF'
+def authenticate(user):
+    return False
+
+def helper():
+    return True
+PYEOF
+  local fmap_json="${TEST_DIR}/batch-map.json"
+  FSUITE_TELEMETRY=0 "${FMAP}" -o json "$a" "$b" > "$fmap_json" 2>/dev/null || {
+    fail "fmap JSON generation for batch should succeed"
+    return
+  }
+  FSUITE_TELEMETRY=0 "${FEDIT}" --targets-file "$fmap_json" --targets-format fmap-json --function authenticate --replace 'return False' --with 'return deny()' --apply >/dev/null 2>&1 || {
+    fail "Batch fmap-json should succeed"
+    return
+  }
+  local a_auth a_other
+  a_auth=$(sed -n '2p' "$a")
+  a_other=$(sed -n '5p' "$a")
+  if [[ "$a_auth" == *'return deny()'* ]] && [[ "$a_other" == *'return False'* ]]; then
+    pass "Batch fmap-json targets format works"
+  else
+    fail "fmap-json batch should scope correctly" "a_auth='$a_auth' a_other='$a_other'"
+  fi
+}
+
+test_batch_stdin_targets() {
+  local a="${TEST_DIR}/batch_stdin_a.py"
+  echo 'old = 1' > "$a"
+  local output
+  output=$(echo "$a" | FSUITE_TELEMETRY=0 "${FEDIT}" --targets-file - --targets-format paths --replace 'old = 1' --with 'new = 2' 2>/dev/null)
+  if [[ "$output" == *"dry-run"* ]] && [[ "$output" == *"$a"* ]]; then
+    pass "--targets-file - reads from stdin"
+  else
+    fail "--targets-file - should read targets from stdin" "Got: $output"
+  fi
+}
+
+test_batch_stdin_payload_conflict() {
+  local rc=0
+  echo "/tmp/dummy.py" | FSUITE_TELEMETRY=0 "${FEDIT}" --targets-file - --targets-format paths --stdin --replace 'x' --with 'y' >/dev/null 2>&1 || rc=$?
+  if (( rc != 0 )); then
+    pass "--targets-file - + --stdin conflict detected"
+  else
+    fail "--targets-file - and --stdin should be mutually exclusive"
+  fi
+}
+
+test_batch_json_envelope() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    pass "Batch JSON envelope test skipped (python3 not available)"
+    return 0
+  fi
+  local a="${TEST_DIR}/batch_json_a.py" b="${TEST_DIR}/batch_json_b.py"
+  echo 'x = 1' > "$a"
+  echo 'x = 1' > "$b"
+  local output
+  output=$(printf '%s\n' "$a" "$b" | FSUITE_TELEMETRY=0 "${FEDIT}" -o json --targets-file - --targets-format paths --replace 'x = 1' --with 'x = 2' 2>/dev/null)
+  if printf '%s' "$output" | python3 -m json.tool >/dev/null 2>&1 && \
+     [[ "$output" == *'"mode":"patch_batch"'* ]] && \
+     [[ "$output" == *'"targets_total":2'* ]] && \
+     [[ "$output" == *'"targets_ready":2'* ]] && \
+     [[ "$output" == *'"preflighted":true'* ]] && \
+     [[ "$output" == *'"results":'* ]]; then
+    pass "Batch JSON envelope has correct structure"
+  else
+    fail "Batch JSON should have batch-specific fields" "Got: $output"
+  fi
+}
+
+test_batch_paths_output() {
+  local a="${TEST_DIR}/batch_po_a.py" b="${TEST_DIR}/batch_po_b.py"
+  echo 'x = 1' > "$a"
+  echo 'x = 1' > "$b"
+  local dry_output apply_output
+  dry_output=$(printf '%s\n' "$a" "$b" | FSUITE_TELEMETRY=0 "${FEDIT}" -o paths --targets-file - --targets-format paths --replace 'x = 1' --with 'x = 2' 2>/dev/null)
+  echo 'x = 1' > "$a"
+  echo 'x = 1' > "$b"
+  apply_output=$(printf '%s\n' "$a" "$b" | FSUITE_TELEMETRY=0 "${FEDIT}" -o paths --targets-file - --targets-format paths --replace 'x = 1' --with 'x = 2' --apply 2>/dev/null)
+  local line_count
+  line_count=$(printf '%s\n' "$apply_output" | wc -l | tr -d '[:space:]')
+  if [[ -z "$dry_output" ]] && (( line_count == 2 )); then
+    pass "Batch paths output only emits applied paths"
+  else
+    fail "Paths: empty on dry-run, one per applied on apply" "dry='$dry_output' apply='$apply_output'"
+  fi
+}
+
+test_batch_spaces_in_paths() {
+  local spaced="${TEST_DIR}/batch spaced file.py"
+  echo 'x = 1' > "$spaced"
+  local output
+  output=$(printf '%s\n' "$spaced" | FSUITE_TELEMETRY=0 "${FEDIT}" --targets-file - --targets-format paths --replace 'x = 1' --with 'x = 2' --apply 2>/dev/null)
+  if [[ "$(cat "$spaced")" == 'x = 2' ]]; then
+    pass "Batch handles spaces in file paths"
+  else
+    fail "Batch should handle spaces in paths" "content: $(cat "$spaced")"
+  fi
+}
+
+test_batch_preserves_order() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    pass "Batch order test skipped (python3 not available)"
+    return 0
+  fi
+  local a="${TEST_DIR}/batch_ord_a.py" b="${TEST_DIR}/batch_ord_b.py" c="${TEST_DIR}/batch_ord_c.py"
+  echo 'x = 1' > "$a"
+  echo 'x = 1' > "$b"
+  echo 'x = 1' > "$c"
+  local output
+  output=$(printf '%s\n' "$c" "$a" "$b" | FSUITE_TELEMETRY=0 "${FEDIT}" -o json --targets-file - --targets-format paths --replace 'x = 1' --with 'x = 2' 2>/dev/null)
+  local first_path
+  first_path=$(printf '%s' "$output" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['results'][0]['path'])" 2>/dev/null || true)
+  if [[ "$first_path" == "$c" ]]; then
+    pass "Batch JSON results preserve input order"
+  else
+    fail "Results order should match input order" "first_path=$first_path expected=$c"
+  fi
+}
+
+test_batch_empty_input() {
+  local rc=0
+  printf '' | FSUITE_TELEMETRY=0 "${FEDIT}" --targets-file - --targets-format paths --replace 'x' --with 'y' >/dev/null 2>&1 || rc=$?
+  if (( rc != 0 )); then
+    pass "Empty batch targets produces structured error"
+  else
+    fail "Empty targets should fail"
+  fi
+}
+
 main() {
   echo "======================================"
   echo "  fedit Test Suite"
@@ -612,6 +893,7 @@ main() {
   setup
   trap teardown EXIT
 
+  # --- Original tests (35) ---
   run_test "Version output" test_version
   run_test "Help output" test_help
   run_test "Self-check" test_self_check
@@ -647,6 +929,26 @@ main() {
   run_test "CRLF normalization" test_crlf_payload_normalization
   run_test "Spaces in filename" test_spaces_in_filename
   run_test "Tier 3 telemetry" test_tier3_telemetry
+
+  # --- Symbol shortcut tests (4) ---
+  run_test "Function shortcut" test_function_shortcut
+  run_test "Class shortcut" test_class_shortcut
+  run_test "Shortcut+symbol conflict" test_shortcut_symbol_conflict
+  run_test "Method aliases function" test_method_aliases_function
+
+  # --- Batch mode tests (12) ---
+  run_test "Batch paths dry-run" test_batch_paths_dry_run
+  run_test "Batch paths apply" test_batch_paths_apply
+  run_test "Batch preflight failure" test_batch_preflight_failure_writes_nothing
+  run_test "Batch symbol scoped" test_batch_symbol_scoped
+  run_test "Batch fmap-json" test_batch_fmap_json
+  run_test "Batch stdin targets" test_batch_stdin_targets
+  run_test "Batch stdin+payload conflict" test_batch_stdin_payload_conflict
+  run_test "Batch JSON envelope" test_batch_json_envelope
+  run_test "Batch paths output" test_batch_paths_output
+  run_test "Batch spaces in paths" test_batch_spaces_in_paths
+  run_test "Batch preserves order" test_batch_preserves_order
+  run_test "Batch empty input" test_batch_empty_input
 
   echo ""
   echo "======================================"

@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-VERSION="1.9.0"
+VERSION="2.0.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_PREFIX="${HOME}/.local"
 PREFIX="$DEFAULT_PREFIX"
@@ -43,7 +43,7 @@ EXAMPLES
   ./install.sh
   ./install.sh --system
   ./install.sh --prefix /opt/fsuite
-  ./install.sh --package ../fsuite_1.9.0-1_all.deb
+  ./install.sh --package ../fsuite_2.0.0-1_all.deb
 EOF
 }
 

@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="1.9.0"
+VERSION="2.0.0"
 
 # -------------------------
 # Source common library for tiered telemetry
@@ -152,6 +152,8 @@ AFTER_TEXT=""
 BEFORE_TEXT=""
 SYMBOL_NAME=""
 SYMBOL_TYPE=""
+SHORTCUT_SYMBOL=""
+SHORTCUT_TYPE=""
 FMAP_JSON_PATH=""
 ERROR_CODE=""
 ERROR_DETAIL=""
@@ -162,6 +164,23 @@ DIFF_OUTPUT=""
 PAYLOAD_FILE=""
 TEMP_FILES=()
 POSITIONAL=()
+
+# Batch mode state
+BATCH_MODE=0
+TARGETS_FILE=""
+TARGETS_FORMAT=""
+BATCH_PATHS=()
+BATCH_APPLIED=()
+BATCH_DIFFS=()
+BATCH_ERROR_CODES=()
+BATCH_ERROR_DETAILS=()
+BATCH_ANCHORS=()
+BATCH_PRECONDITIONS=()
+BATCH_CANDIDATES=()
+BATCH_EXPECTED_SHAS=()
+BATCH_SYMBOLS=()
+BATCH_SYMBOL_TYPES=()
+BATCH_LOCK_FDS=()
 
 cleanup() {
   local tmp
@@ -303,25 +322,44 @@ fedit — surgical, preview-first file editing for fsuite.
 
 USAGE
   fedit <file> --replace OLD --with NEW [--apply]
+  fedit <file> --function NAME --replace OLD --with NEW [--apply]
   fedit <file> --after TEXT --content-file patch.txt [--apply]
-  fedit <file> --before TEXT --stdin [--apply]
+  fedit --targets-file paths.txt --targets-format paths --replace OLD --with NEW
   fedit --create <file> --content-file newfile.txt [--apply]
   fedit --replace-file <file> --content-file rewritten.txt [--apply]
 
-OPTIONS
+PATCH OPTIONS
   --replace TEXT              Replace an exact text block
   --with TEXT                 Replacement or insertion payload
   --after TEXT                Insert payload after exact anchor text
   --before TEXT               Insert payload before exact anchor text
   --content-file PATH         Read payload from file
   --stdin                     Read payload from stdin
-  --expect TEXT               Require existing file to contain this text
-  --expect-sha256 HASH        Require existing file hash to match
+
+SYMBOL SHORTCUTS (resolved to --symbol + --symbol-type)
+  --function NAME             Scope to function NAME
+  --class NAME                Scope to class NAME
+  --method NAME               Scope to function NAME (alias for --function)
+  --import NAME               Scope to import NAME
+  --constant NAME             Scope to constant NAME
+  --type NAME                 Scope to type NAME
+
+SYMBOL OPTIONS
   --symbol NAME               Scope patching to one fmap-resolved symbol
   --symbol-type TYPE          Restrict symbol match (function, class, import, ...)
   --fmap-json PATH            Reuse existing fmap JSON instead of running fmap
+
+PRECONDITIONS
+  --expect TEXT               Require existing file to contain this text
+  --expect-sha256 HASH        Require existing file hash to match
+
+BATCH MODE
+  --targets-file PATH         Read target files from PATH (use - for stdin)
+  --targets-format FMT        Required with --targets-file: paths | fmap-json
+
+CONTROL
   --allow-multiple            Allow all matches for replace/anchor operations
-  --apply                     Write the edited file
+  --apply                     Write the edited file(s)
   --dry-run                   Preview diff only (default)
   --create                    Create a new file (fails if file exists)
   --replace-file              Replace the entire target file from payload
@@ -336,12 +374,15 @@ BEHAVIOR
   - Dry-run is the default. Nothing mutates unless --apply is present.
   - Patch operations fail closed when anchors are missing or ambiguous.
   - --symbol scopes patch operations to the chosen fmap symbol block.
+  - Symbol shortcuts are sugar: --function X equals --symbol X --symbol-type function.
+  - Batch mode is preflighted all-or-nothing: all planning completes before writes.
   - JSON output is intended for agent/harness consumption.
 
 HEADLESS / AI AGENT USAGE
   fedit -o json file.ts --replace "old" --with "new"
-  fedit -o json file.ts --symbol authenticate --replace "return False" --with "return deny()"
-  fedit -o json file.ts --after "function x() {" --content-file patch.txt --apply
+  fedit -o json file.ts --function authenticate --replace "return False" --with "return deny()"
+  printf 'a.py\nb.py\n' | fedit --targets-file - --targets-format paths --replace 'x' --with 'y'
+  fmap -o json src > map.json && fedit --targets-file map.json --targets-format fmap-json --function auth --replace 'x' --with 'y' -o json
 EOF
 }
 
@@ -946,6 +987,442 @@ build_patch_candidate() {
   apply_patch_operation "$original_file" "$candidate_file"
 }
 
+normalize_path() {
+  local p="$1"
+  # Expand ~ at start
+  if [[ "$p" == "~/"* ]]; then
+    p="${HOME}/${p#\~/}"
+  elif [[ "$p" == "~" ]]; then
+    p="$HOME"
+  fi
+  # Make absolute
+  if [[ "$p" != /* ]]; then
+    p="$(pwd)/$p"
+  fi
+  # Canonicalize if target exists
+  if [[ -e "$p" ]]; then
+    realpath -e "$p" 2>/dev/null || printf '%s' "$p"
+  else
+    printf '%s' "$p"
+  fi
+}
+
+load_batch_targets() {
+  local raw_lines=()
+  if [[ "$TARGETS_FORMAT" == "paths" ]]; then
+    local input_source="/dev/stdin"
+    if [[ "$TARGETS_FILE" != "-" ]]; then
+      [[ -r "$TARGETS_FILE" ]] || { ERROR_CODE="invalid_args"; die 1 "Targets file not readable: $TARGETS_FILE"; }
+      input_source="$TARGETS_FILE"
+    fi
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ -n "$line" ]] || continue
+      raw_lines+=("$line")
+    done < "$input_source"
+    # Normalize and deduplicate
+    local -A seen=()
+    local norm
+    for line in "${raw_lines[@]}"; do
+      norm=$(normalize_path "$line")
+      if [[ -z "${seen[$norm]+x}" ]]; then
+        seen[$norm]=1
+        BATCH_PATHS+=("$norm")
+      fi
+    done
+  elif [[ "$TARGETS_FORMAT" == "fmap-json" ]]; then
+    local json_source="$TARGETS_FILE"
+    if [[ "$TARGETS_FILE" == "-" ]]; then
+      json_source=$(make_temp)
+      cat > "$json_source"
+    fi
+    [[ -r "$json_source" ]] || { ERROR_CODE="invalid_args"; die 1 "fmap-json file not readable: $json_source"; }
+    # Store for later symbol resolution in batch
+    FMAP_JSON_PATH="$json_source"
+    local paths_output
+    paths_output=$(perl -MJSON::PP -e '
+      use strict;
+      use warnings;
+      open my $fh, "<:raw", $ARGV[0] or exit 90;
+      local $/;
+      my $json = <$fh>;
+      my $data = JSON::PP::decode_json($json);
+      my @files = @{ $data->{files} || [] };
+      for my $f (@files) {
+        print $f->{path}, "\n" if defined $f->{path};
+      }
+    ' "$json_source") || { ERROR_CODE="invalid_args"; die 1 "Failed to parse fmap-json targets"; }
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      raw_lines+=("$line")
+    done <<< "$paths_output"
+    local -A seen=()
+    local norm
+    for line in "${raw_lines[@]}"; do
+      norm=$(normalize_path "$line")
+      if [[ -z "${seen[$norm]+x}" ]]; then
+        seen[$norm]=1
+        BATCH_PATHS+=("$norm")
+      fi
+    done
+  fi
+}
+
+plan_batch() {
+  local i total=${#BATCH_PATHS[@]}
+  for (( i=0; i<total; i++ )); do
+    BATCH_APPLIED[i]=false
+    BATCH_DIFFS[i]=""
+    BATCH_ERROR_CODES[i]=""
+    BATCH_ERROR_DETAILS[i]=""
+    BATCH_ANCHORS[i]=0
+    BATCH_PRECONDITIONS[i]=true
+    BATCH_CANDIDATES[i]=""
+    BATCH_EXPECTED_SHAS[i]=""
+
+    local path="${BATCH_PATHS[i]}"
+
+    # Validate file
+    if [[ ! -e "$path" ]]; then
+      BATCH_ERROR_CODES[i]="not_found"
+      BATCH_ERROR_DETAILS[i]="File does not exist: $path"
+      return 1
+    fi
+    if [[ ! -f "$path" ]]; then
+      BATCH_ERROR_CODES[i]="not_regular"
+      BATCH_ERROR_DETAILS[i]="Not a regular file: $path"
+      return 1
+    fi
+    if [[ ! -r "$path" ]]; then
+      BATCH_ERROR_CODES[i]="permission"
+      BATCH_ERROR_DETAILS[i]="File is not readable: $path"
+      return 1
+    fi
+
+    # Snapshot content
+    local original_file
+    original_file=$(make_temp)
+    cat "$path" > "$original_file"
+    if contains_nul_bytes "$original_file"; then
+      BATCH_ERROR_CODES[i]="invalid_args"
+      BATCH_ERROR_DETAILS[i]="Binary targets are not supported: $path"
+      return 1
+    fi
+
+    TOTAL_FILES_READ=$(( TOTAL_FILES_READ + 1 ))
+    local file_bytes
+    file_bytes=$(wc -c < "$original_file" | tr -d '[:space:]')
+    [[ "$file_bytes" =~ ^[0-9]+$ ]] || file_bytes=0
+    TOTAL_BYTES_READ=$(( TOTAL_BYTES_READ + file_bytes ))
+
+    # Preconditions
+    if (( EXPECT_TEXT_SET == 1 )); then
+      local expect_file count
+      expect_file=$(make_temp)
+      printf '%s' "$EXPECT_TEXT" > "$expect_file"
+      count=$(match_count "$original_file" "$expect_file") || count="0"
+      if [[ "$count" == "0" ]]; then
+        BATCH_PRECONDITIONS[i]=false
+        BATCH_ERROR_CODES[i]="precondition_failed"
+        BATCH_ERROR_DETAILS[i]="--expect text not found in: $path"
+        return 1
+      fi
+    fi
+
+    local actual_hash
+    actual_hash=$(compute_sha256 "$original_file" 2>/dev/null || true)
+    if [[ -z "$actual_hash" ]]; then
+      BATCH_PRECONDITIONS[i]=false
+      BATCH_ERROR_CODES[i]="precondition_failed"
+      BATCH_ERROR_DETAILS[i]="Failed to compute hash for: $path"
+      return 1
+    fi
+    BATCH_EXPECTED_SHAS[i]="$actual_hash"
+
+    if [[ -n "$EXPECT_SHA256" && "$actual_hash" != "$EXPECT_SHA256" ]]; then
+      BATCH_PRECONDITIONS[i]=false
+      BATCH_ERROR_CODES[i]="precondition_failed"
+      BATCH_ERROR_DETAILS[i]="--expect-sha256 does not match: $path"
+      return 1
+    fi
+
+    # Build candidate (reuse single-file infrastructure)
+    local candidate_file
+    candidate_file=$(make_temp)
+
+    # Temporarily set TARGET_PATH for symbol resolution
+    local saved_target="$TARGET_PATH"
+    TARGET_PATH="$path"
+
+    # Reset per-file error state
+    ERROR_CODE=""
+    ERROR_DETAIL=""
+    ANCHORS_MATCHED=0
+
+    local plan_rc=0
+    build_patch_candidate "$original_file" "$candidate_file" || plan_rc=$?
+    if (( plan_rc != 0 )); then
+      BATCH_ERROR_CODES[i]="${ERROR_CODE:-build_failed}"
+      BATCH_ERROR_DETAILS[i]="${ERROR_DETAIL:-Patch operation failed for: $path}"
+      TARGET_PATH="$saved_target"
+      return 1
+    fi
+
+    BATCH_ANCHORS[i]="$ANCHORS_MATCHED"
+    BATCH_CANDIDATES[i]="$candidate_file"
+
+    # Per-target diff
+    local this_diff
+    this_diff=$(diff -u --label "$path (old)" --label "$path (new)" "$original_file" "$candidate_file" || true)
+    BATCH_DIFFS[i]="$this_diff"
+
+    TARGET_PATH="$saved_target"
+  done
+  return 0
+}
+
+apply_batch() {
+  local i total=${#BATCH_PATHS[@]}
+
+  # Phase 2: Lock + Recheck
+  for (( i=0; i<total; i++ )); do
+    local path="${BATCH_PATHS[i]}"
+    local lock_fd
+    exec {lock_fd}<"$path" || {
+      # Release previously acquired locks
+      local j
+      for (( j=0; j<i; j++ )); do
+        [[ -n "${BATCH_LOCK_FDS[j]:-}" ]] && exec {BATCH_LOCK_FDS[j]}<&- 2>/dev/null || true
+      done
+      BATCH_ERROR_CODES[i]="permission"
+      BATCH_ERROR_DETAILS[i]="Failed to open for locking: $path"
+      return 1
+    }
+    flock -x "$lock_fd" || {
+      exec {lock_fd}<&-
+      local j
+      for (( j=0; j<i; j++ )); do
+        [[ -n "${BATCH_LOCK_FDS[j]:-}" ]] && exec {BATCH_LOCK_FDS[j]}<&- 2>/dev/null || true
+      done
+      BATCH_ERROR_CODES[i]="permission"
+      BATCH_ERROR_DETAILS[i]="Failed to lock: $path"
+      return 1
+    }
+    BATCH_LOCK_FDS[i]="$lock_fd"
+
+    # Recheck SHA
+    local current_hash
+    current_hash=$(compute_sha256 "$path" 2>/dev/null || true)
+    if [[ -z "$current_hash" || "$current_hash" != "${BATCH_EXPECTED_SHAS[i]}" ]]; then
+      local j
+      for (( j=0; j<=i; j++ )); do
+        [[ -n "${BATCH_LOCK_FDS[j]:-}" ]] && exec {BATCH_LOCK_FDS[j]}<&- 2>/dev/null || true
+      done
+      BATCH_ERROR_CODES[i]="precondition_failed"
+      BATCH_ERROR_DETAILS[i]="File changed after planning: $path"
+      return 1
+    fi
+  done
+
+  # Phase 3: Materialize + Preserve Mode
+  local BATCH_TEMPS=()
+  for (( i=0; i<total; i++ )); do
+    local path="${BATCH_PATHS[i]}"
+    local target_dir
+    target_dir=$(dirname "$path")
+    local target_tmp
+    target_tmp=$(make_temp_in "$target_dir")
+    cat "${BATCH_CANDIDATES[i]}" > "$target_tmp"
+    preserve_mode "$path" "$target_tmp"
+    BATCH_TEMPS[i]="$target_tmp"
+  done
+
+  # Phase 4: Rename
+  for (( i=0; i<total; i++ )); do
+    if ! mv "${BATCH_TEMPS[i]}" "${BATCH_PATHS[i]}"; then
+      BATCH_ERROR_CODES[i]="rename_failed"
+      BATCH_ERROR_DETAILS[i]="Failed to rename temp to: ${BATCH_PATHS[i]}"
+      # Release all locks
+      local j
+      for (( j=0; j<total; j++ )); do
+        [[ -n "${BATCH_LOCK_FDS[j]:-}" ]] && exec {BATCH_LOCK_FDS[j]}<&- 2>/dev/null || true
+      done
+      return 1
+    fi
+    BATCH_APPLIED[i]=true
+  done
+
+  # Release all locks
+  for (( i=0; i<total; i++ )); do
+    [[ -n "${BATCH_LOCK_FDS[i]:-}" ]] && exec {BATCH_LOCK_FDS[i]}<&- 2>/dev/null || true
+  done
+  return 0
+}
+
+render_batch_json() {
+  local total=${#BATCH_PATHS[@]}
+  local targets_ready=0 targets_applied=0
+  local combined_diff=""
+  local i
+
+  for (( i=0; i<total; i++ )); do
+    [[ -z "${BATCH_ERROR_CODES[i]}" ]] && targets_ready=$((targets_ready + 1))
+    [[ "${BATCH_APPLIED[i]}" == "true" ]] && targets_applied=$((targets_applied + 1))
+    [[ -n "${BATCH_DIFFS[i]}" ]] && combined_diff+="${BATCH_DIFFS[i]}"$'\n'
+  done
+
+  local batch_applied=false
+  (( targets_applied > 0 )) && batch_applied=true
+
+  printf '{'
+  printf '"tool":"fedit",'
+  printf '"version":"%s",' "$VERSION"
+  printf '"mode":"patch_batch",'
+  if (( DRY_RUN == 1 )); then
+    printf '"dry_run":true,'
+  else
+    printf '"dry_run":false,'
+  fi
+  printf '"applied":%s,' "$batch_applied"
+  printf '"preflighted":true,'
+  printf '"rollback_supported":false,'
+  printf '"targets_total":%d,' "$total"
+  printf '"targets_ready":%d,' "$targets_ready"
+  printf '"targets_applied":%d,' "$targets_applied"
+  printf '"combined_diff":"%s",' "$(json_escape_str "$combined_diff")"
+  printf '"results":['
+
+  for (( i=0; i<total; i++ )); do
+    (( i > 0 )) && printf ','
+    printf '{'
+    printf '"path":"%s",' "$(json_escape_str "${BATCH_PATHS[i]}")"
+    if [[ -n "$SYMBOL_NAME" ]]; then
+      printf '"symbol":"%s",' "$(json_escape_str "$SYMBOL_NAME")"
+      printf '"symbol_type":"%s",' "$(json_escape_str "$SYMBOL_TYPE")"
+    else
+      printf '"symbol":null,'
+      printf '"symbol_type":null,'
+    fi
+    printf '"applied":%s,' "${BATCH_APPLIED[i]}"
+    printf '"anchors_matched":%s,' "${BATCH_ANCHORS[i]}"
+    if [[ "${BATCH_PRECONDITIONS[i]}" == "true" ]]; then
+      printf '"preconditions_ok":true,'
+    else
+      printf '"preconditions_ok":false,'
+    fi
+    printf '"diff":"%s",' "$(json_escape_str "${BATCH_DIFFS[i]}")"
+    if [[ -n "${BATCH_ERROR_CODES[i]}" ]]; then
+      printf '"error_code":"%s",' "$(json_escape_str "${BATCH_ERROR_CODES[i]}")"
+    else
+      printf '"error_code":null,'
+    fi
+    if [[ -n "${BATCH_ERROR_DETAILS[i]}" ]]; then
+      printf '"error_detail":"%s"' "$(json_escape_str "${BATCH_ERROR_DETAILS[i]}")"
+    else
+      printf '"error_detail":null'
+    fi
+    printf '}'
+  done
+
+  printf '],'
+  if [[ -n "$ERROR_CODE" ]]; then
+    printf '"error_code":"%s",' "$(json_escape_str "$ERROR_CODE")"
+  else
+    printf '"error_code":null,'
+  fi
+  if [[ -n "$ERROR_DETAIL" ]]; then
+    printf '"error_detail":"%s"' "$(json_escape_str "$ERROR_DETAIL")"
+  else
+    printf '"error_detail":null'
+  fi
+  printf '}\n'
+}
+
+render_batch_pretty() {
+  local total=${#BATCH_PATHS[@]}
+  local i
+  printf 'fedit patch_batch (%d targets)\n' "$total"
+  if (( DRY_RUN == 1 )); then
+    echo "status: dry-run"
+  else
+    echo "status: applied"
+  fi
+  echo ""
+  for (( i=0; i<total; i++ )); do
+    printf -- '--- %s ---\n' "${BATCH_PATHS[i]}"
+    if [[ -n "${BATCH_ERROR_CODES[i]}" ]]; then
+      printf 'error: %s — %s\n' "${BATCH_ERROR_CODES[i]}" "${BATCH_ERROR_DETAILS[i]}"
+    elif [[ -n "${BATCH_DIFFS[i]}" ]]; then
+      echo "${BATCH_DIFFS[i]}"
+    else
+      echo "(no diff)"
+    fi
+    echo ""
+  done
+}
+
+render_batch_paths() {
+  local total=${#BATCH_PATHS[@]}
+  local i
+  for (( i=0; i<total; i++ )); do
+    [[ "${BATCH_APPLIED[i]}" == "true" ]] && echo "${BATCH_PATHS[i]}"
+  done
+}
+
+process_batch() {
+  TOTAL_FILES_READ=0
+  TOTAL_BYTES_READ=0
+
+  local plan_rc=0
+  plan_batch || plan_rc=$?
+
+  if (( plan_rc != 0 )); then
+    # Planning failed — set top-level error
+    local i
+    for (( i=0; i<${#BATCH_PATHS[@]}; i++ )); do
+      if [[ -n "${BATCH_ERROR_CODES[i]}" ]]; then
+        ERROR_CODE="${BATCH_ERROR_CODES[i]}"
+        ERROR_DETAIL="${BATCH_ERROR_DETAILS[i]}"
+        break
+      fi
+    done
+    [[ -n "$ERROR_CODE" ]] || { ERROR_CODE="plan_failed"; ERROR_DETAIL="Batch planning failed"; }
+    case "$OUTPUT" in
+      json) render_batch_json ;;
+      pretty) render_batch_pretty ;;
+      paths) render_batch_paths ;;
+    esac
+    exit 1
+  fi
+
+  if (( DRY_RUN == 0 )); then
+    local apply_rc=0
+    apply_batch || apply_rc=$?
+    if (( apply_rc != 0 )); then
+      local i
+      for (( i=0; i<${#BATCH_PATHS[@]}; i++ )); do
+        if [[ -n "${BATCH_ERROR_CODES[i]}" ]]; then
+          ERROR_CODE="${BATCH_ERROR_CODES[i]}"
+          ERROR_DETAIL="${BATCH_ERROR_DETAILS[i]}"
+          break
+        fi
+      done
+      [[ -n "$ERROR_CODE" ]] || { ERROR_CODE="apply_failed"; ERROR_DETAIL="Batch apply failed"; }
+      case "$OUTPUT" in
+        json) render_batch_json ;;
+        pretty) render_batch_pretty ;;
+        paths) render_batch_paths ;;
+      esac
+      exit 1
+    fi
+  fi
+
+  case "$OUTPUT" in
+    json) render_batch_json ;;
+    pretty) render_batch_pretty ;;
+    paths) render_batch_paths ;;
+  esac
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1010,11 +1487,70 @@ parse_args() {
         _TELEM_FLAGS+=" --symbol-type"
         shift 2
         ;;
+      --function)
+        [[ -n "${2:-}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --function"; }
+        SHORTCUT_SYMBOL="$2"
+        SHORTCUT_TYPE="function"
+        _TELEM_FLAGS+=" --function"
+        shift 2
+        ;;
+      --class)
+        [[ -n "${2:-}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --class"; }
+        SHORTCUT_SYMBOL="$2"
+        SHORTCUT_TYPE="class"
+        _TELEM_FLAGS+=" --class"
+        shift 2
+        ;;
+      --method)
+        [[ -n "${2:-}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --method"; }
+        SHORTCUT_SYMBOL="$2"
+        SHORTCUT_TYPE="function"
+        _TELEM_FLAGS+=" --method"
+        shift 2
+        ;;
+      --import)
+        [[ -n "${2:-}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --import"; }
+        SHORTCUT_SYMBOL="$2"
+        SHORTCUT_TYPE="import"
+        _TELEM_FLAGS+=" --import"
+        shift 2
+        ;;
+      --constant)
+        [[ -n "${2:-}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --constant"; }
+        SHORTCUT_SYMBOL="$2"
+        SHORTCUT_TYPE="constant"
+        _TELEM_FLAGS+=" --constant"
+        shift 2
+        ;;
+      --type)
+        [[ -n "${2:-}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --type"; }
+        SHORTCUT_SYMBOL="$2"
+        SHORTCUT_TYPE="type"
+        _TELEM_FLAGS+=" --type"
+        shift 2
+        ;;
       --fmap-json)
         [[ -n "${2:-}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --fmap-json"; }
         FMAP_JSON_PATH="$2"
         _TELEM_FLAGS+=" --fmap-json"
         shift 2
+        ;;
+      --targets-file)
+        [[ "${2+x}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --targets-file"; }
+        TARGETS_FILE="$2"
+        _TELEM_FLAGS+=" --targets-file"
+        shift 2
+        ;;
+      --targets-format)
+        [[ -n "${2:-}" ]] || { ERROR_CODE="invalid_args"; die "Missing value for --targets-format"; }
+        TARGETS_FORMAT="$2"
+        _TELEM_FLAGS+=" --targets-format=$2"
+        shift 2
+        ;;
+      --targets-format=*)
+        TARGETS_FORMAT="${1#*=}"
+        _TELEM_FLAGS+=" --targets-format=$TARGETS_FORMAT"
+        shift
         ;;
       --allow-multiple)
         ALLOW_MULTIPLE=1
@@ -1084,6 +1620,16 @@ parse_args() {
 }
 
 validate_args() {
+  # Resolve symbol shortcuts before validation
+  if [[ -n "$SHORTCUT_SYMBOL" ]]; then
+    if [[ -n "$SYMBOL_NAME" || -n "$SYMBOL_TYPE" ]]; then
+      ERROR_CODE="invalid_args"
+      die "Symbol shortcuts (--function, --class, etc.) are mutually exclusive with --symbol/--symbol-type"
+    fi
+    SYMBOL_NAME="$SHORTCUT_SYMBOL"
+    SYMBOL_TYPE="$SHORTCUT_TYPE"
+  fi
+
   case "$OUTPUT" in
     pretty|json|paths) ;;
     *)
@@ -1095,6 +1641,41 @@ validate_args() {
   if (( CREATE_MODE == 1 && REPLACE_FILE_MODE == 1 )); then
     ERROR_CODE="invalid_args"
     die "Choose only one of --create or --replace-file"
+  fi
+
+  # --- Batch mode validation ---
+  if [[ -n "$TARGETS_FILE" ]]; then
+    BATCH_MODE=1
+    MODE="patch_batch"
+    [[ -n "$TARGETS_FORMAT" ]] || { ERROR_CODE="invalid_args"; die "--targets-file requires --targets-format (paths or fmap-json)"; }
+    case "$TARGETS_FORMAT" in
+      paths|fmap-json) ;;
+      *) ERROR_CODE="invalid_args"; die "Invalid --targets-format: $TARGETS_FORMAT (expected paths or fmap-json)" ;;
+    esac
+    (( ${#POSITIONAL[@]} == 0 )) || { ERROR_CODE="invalid_args"; die "--targets-file is mutually exclusive with positional <file> arg"; }
+    (( CREATE_MODE == 0 )) || { ERROR_CODE="invalid_args"; die "--targets-file is incompatible with --create"; }
+    (( REPLACE_FILE_MODE == 0 )) || { ERROR_CODE="invalid_args"; die "--targets-file is incompatible with --replace-file"; }
+    if [[ "$TARGETS_FILE" == "-" ]] && (( USE_STDIN == 1 )); then
+      ERROR_CODE="invalid_args"
+      die "--targets-file - (stdin targets) is mutually exclusive with --stdin (payload)"
+    fi
+
+    load_batch_targets
+    (( ${#BATCH_PATHS[@]} > 0 )) || { ERROR_CODE="empty_targets"; die 1 "No targets provided"; }
+
+    # Validate patch operation
+    local op_count=0
+    [[ -n "$REPLACE_TEXT" ]] && op_count=$((op_count + 1))
+    [[ -n "$AFTER_TEXT" ]] && op_count=$((op_count + 1))
+    [[ -n "$BEFORE_TEXT" ]] && op_count=$((op_count + 1))
+    (( op_count == 1 )) || { ERROR_CODE="invalid_args"; die "Choose exactly one patch operation: --replace, --after, or --before"; }
+    [[ -z "$SYMBOL_TYPE" || -n "$SYMBOL_NAME" ]] || { ERROR_CODE="invalid_args"; die "--symbol-type requires --symbol"; }
+    return 0
+  fi
+
+  if [[ -n "$TARGETS_FORMAT" ]]; then
+    ERROR_CODE="invalid_args"
+    die "--targets-format requires --targets-file"
   fi
 
   if (( ${#POSITIONAL[@]} != 1 )); then
@@ -1181,6 +1762,16 @@ main() {
   parse_args "$@"
   validate_args
   load_payload
+
+  # Batch mode dispatches separately
+  if (( BATCH_MODE == 1 )); then
+    if (( WITH_SET == 0 )) && [[ -z "$CONTENT_FILE" ]] && (( USE_STDIN == 0 )); then
+      ERROR_CODE="invalid_args"
+      die "Batch mode requires payload via --with, --content-file, or --stdin"
+    fi
+    process_batch
+    return 0
+  fi
 
   case "$MODE" in
     create|replace_file)

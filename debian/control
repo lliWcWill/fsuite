@@ -22,7 +22,7 @@ Description: Filesystem reconnaissance toolkit for humans and AI agents
   * ftree - Visualize directory structure with smart defaults and recon mode
   * fmap - Extract structural skeleton of code files (code cartography)
   * fread - Read files with budgets, context windows, and diff-aware ranges
-  * fedit - Apply surgical text patches with dry-run diffs and symbol scoping
+  * fedit - Apply surgical text patches with batch mode, symbol shortcuts, and dry-run diffs
   * fmetrics - Analyze local telemetry and predict runtime
  .
  The reconnaissance tools output in multiple formats (pretty, paths,

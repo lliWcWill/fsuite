@@ -1,3 +1,18 @@
+fsuite (2.0.0-1) unstable; urgency=medium
+
+  * feat(fedit): add symbol-first shortcuts (--function, --class, --method,
+    --import, --constant, --type) as sugar for --symbol + --symbol-type
+  * feat(fedit): add multi-file preflighted batch mode via --targets-file
+    with paths and fmap-json formats, four-phase atomic apply engine
+  * feat(fedit): batch JSON envelope with per-target results, combined_diff,
+    preflighted flag, and granular error reporting
+  * feat(fedit): add normalize_path() for tilde expansion and path
+    canonicalization in batch target resolution
+  * docs: update fedit usage with batch and symbol shortcut examples
+  * release: unify all tool versions at 2.0.0
+
+ -- Chess Williams <chess.w.williams@gmail.com>  Sun, 08 Mar 2026 22:00:00 -0500
+
 fsuite (1.9.0-1) unstable; urgency=medium
 
   * feat(fedit): add preview-first surgical patch tool with exact replace,
