@@ -2,3 +2,4 @@ __pycache__/
 
 # local artifacts
 *.deb
+vm/state/
