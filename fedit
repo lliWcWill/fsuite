@@ -905,7 +905,8 @@ apply_candidate() {
   fi
 
   local target_dir target_tmp current_hash lock_fd=""
-  target_dir=$(dirname "$TARGET_PATH")
+  target_dir="${TARGET_PATH%/*}"
+  [[ -n "$target_dir" ]] || target_dir="."
   target_tmp=$(make_temp_in "$target_dir")
 
   if [[ -f "$TARGET_PATH" ]]; then

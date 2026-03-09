@@ -1198,7 +1198,7 @@ main() {
   setup
   trap teardown EXIT
 
-  # --- Original tests (35) ---
+  # --- Original tests (41) ---
   run_test "Version output" test_version
   run_test "Help output" test_help
   run_test "Self-check" test_self_check
