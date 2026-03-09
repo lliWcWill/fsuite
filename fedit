@@ -168,10 +168,12 @@ POSITIONAL=()
 
 # Batch mode state
 BATCH_MODE=0
+BATCH_PLANNING=0
 TARGETS_FILE=""
 TARGETS_FORMAT=""
 BATCH_PATHS=()
 BATCH_APPLIED=()
+BATCH_STATES=()  # planned|failed|skipped
 BATCH_DIFFS=()
 BATCH_ERROR_CODES=()
 BATCH_ERROR_DETAILS=()
@@ -180,6 +182,7 @@ BATCH_PRECONDITIONS=()
 BATCH_CANDIDATES=()
 BATCH_EXPECTED_SHAS=()
 BATCH_LOCK_FDS=()
+DEFER_ERRORS=0
 
 cleanup() {
   local tmp
@@ -208,6 +211,10 @@ die() {
   fi
   [[ -n "$ERROR_CODE" ]] || ERROR_CODE="invalid_args"
   ERROR_DETAIL="$*"
+  # During batch planning, store error and return instead of exiting
+  if (( BATCH_PLANNING == 1 || DEFER_ERRORS == 1 )); then
+    return "$code"
+  fi
   if [[ "$OUTPUT" == "json" ]]; then
     if (( BATCH_MODE == 1 )); then
       render_batch_json
@@ -581,13 +588,13 @@ resolve_symbol_scope() {
   [[ -n "$SYMBOL_NAME" ]] || { printf '0\t0'; return 0; }
 
   if [[ -n "$FMAP_JSON_PATH" ]]; then
-    [[ -r "$FMAP_JSON_PATH" ]] || { ERROR_CODE="invalid_args"; die 1 "fmap JSON file not readable: $FMAP_JSON_PATH"; }
+    [[ -r "$FMAP_JSON_PATH" ]] || { ERROR_CODE="invalid_args"; die 1 "fmap JSON file not readable: $FMAP_JSON_PATH"; return $?; }
     fmap_json_file="$FMAP_JSON_PATH"
   else
     local fmap_bin
     fmap_bin="${_FSUITE_SCRIPT_DIR}/fmap"
     [[ -x "$fmap_bin" ]] || fmap_bin="$(command -v fmap 2>/dev/null || true)"
-    [[ -n "$fmap_bin" ]] || { ERROR_CODE="invalid_args"; die 1 "fmap is required for --symbol but was not found"; }
+    [[ -n "$fmap_bin" ]] || { ERROR_CODE="invalid_args"; die 1 "fmap is required for --symbol but was not found"; return $?; }
     fmap_json_file=$(make_temp)
     FSUITE_TELEMETRY=0 "$fmap_bin" -o json "$TARGET_PATH" > "$fmap_json_file"
   fi
@@ -647,9 +654,9 @@ resolve_symbol_scope() {
     print join("\t", $start, $end);
   ' "$fmap_json_file" "$TARGET_PATH" "$SYMBOL_NAME" "$SYMBOL_TYPE") || {
     case $? in
-      20) ERROR_CODE="symbol_missing"; die 1 "Symbol not found: $SYMBOL_NAME" ;;
-      21) ERROR_CODE="symbol_ambiguous"; die 1 "Symbol matched multiple entries: $SYMBOL_NAME" ;;
-      *) ERROR_CODE="invalid_args"; die 1 "Failed to resolve symbol scope from fmap JSON" ;;
+      20) ERROR_CODE="symbol_missing"; die 1 "Symbol not found: $SYMBOL_NAME"; return $? ;;
+      21) ERROR_CODE="symbol_ambiguous"; die 1 "Symbol matched multiple entries: $SYMBOL_NAME"; return $? ;;
+      *) ERROR_CODE="invalid_args"; die 1 "Failed to resolve symbol scope from fmap JSON"; return $? ;;
     esac
   }
 
@@ -750,17 +757,21 @@ apply_patch_operation() {
     if [[ -n "$REPLACE_TEXT" ]]; then
       ERROR_CODE="replace_missing"
       die 1 "--replace text not found"
+      return $?
     fi
     ERROR_CODE="anchor_missing"
     die 1 "Anchor text not found"
+    return $?
   fi
   if (( ALLOW_MULTIPLE == 0 )) && [[ "$target_count" != "1" ]]; then
     if [[ -n "$REPLACE_TEXT" ]]; then
       ERROR_CODE="replace_ambiguous"
       die 1 "--replace matched ${target_count} locations; use --allow-multiple to proceed"
+      return $?
     fi
     ERROR_CODE="anchor_ambiguous"
     die 1 "Anchor matched ${target_count} locations; use --allow-multiple to proceed"
+    return $?
   fi
 
   if [[ -n "$REPLACE_TEXT" ]]; then
@@ -934,6 +945,7 @@ check_preconditions() {
       PRECONDITIONS_OK=false
       ERROR_CODE="precondition_failed"
       die 1 "--expect text not found in target file"
+      return $?
     fi
   fi
 
@@ -944,12 +956,14 @@ check_preconditions() {
       PRECONDITIONS_OK=false
       ERROR_CODE="precondition_failed"
       die 1 "Failed to compute target hash for write-time safety"
+      return $?
     fi
     EXPECTED_WRITE_SHA="$actual_hash"
     if [[ -n "$EXPECT_SHA256" && "$actual_hash" != "$EXPECT_SHA256" ]]; then
       PRECONDITIONS_OK=false
       ERROR_CODE="precondition_failed"
       die 1 "--expect-sha256 does not match target file"
+      return $?
     fi
   fi
 }
@@ -959,18 +973,20 @@ build_patch_candidate() {
   local candidate_file="$2"
 
   if [[ -n "$SYMBOL_NAME" ]]; then
-    local scope scope_start scope_end scoped_original scoped_candidate
-    scope=$(resolve_symbol_scope)
+    local scope scope_start scope_end scoped_original scoped_candidate scope_file
+    scope_file=$(make_temp)
+    resolve_symbol_scope > "$scope_file" || return $?
+    scope=$(cat "$scope_file")
     scope_start="${scope%%$'\t'*}"
     scope_end="${scope#*$'\t'}"
-    [[ "$scope_start" =~ ^[0-9]+$ ]] || { ERROR_CODE="symbol_missing"; die 1 "Invalid symbol start line"; }
-    [[ "$scope_end" =~ ^[0-9]+$ ]] || { ERROR_CODE="symbol_missing"; die 1 "Invalid symbol end line"; }
-    (( scope_start >= 1 && scope_end >= scope_start )) || { ERROR_CODE="symbol_missing"; die 1 "Resolved symbol range is invalid"; }
+    [[ "$scope_start" =~ ^[0-9]+$ ]] || { ERROR_CODE="symbol_missing"; die 1 "Invalid symbol start line"; return $?; }
+    [[ "$scope_end" =~ ^[0-9]+$ ]] || { ERROR_CODE="symbol_missing"; die 1 "Invalid symbol end line"; return $?; }
+    (( scope_start >= 1 && scope_end >= scope_start )) || { ERROR_CODE="symbol_missing"; die 1 "Resolved symbol range is invalid"; return $?; }
 
     scoped_original=$(make_temp)
     scoped_candidate=$(make_temp)
-    extract_line_range "$original_file" "$scope_start" "$scope_end" "$scoped_original" || { ERROR_CODE="symbol_missing"; die 1 "Failed to extract symbol-scoped lines"; }
-    apply_patch_operation "$scoped_original" "$scoped_candidate"
+    extract_line_range "$original_file" "$scope_start" "$scope_end" "$scoped_original" || { ERROR_CODE="symbol_missing"; die 1 "Failed to extract symbol-scoped lines"; return $?; }
+    apply_patch_operation "$scoped_original" "$scoped_candidate" || return $?
     local splice_rc=0
     splice_line_range "$original_file" "$scope_start" "$scope_end" "$scoped_candidate" "$candidate_file" || splice_rc=$?
     case "$splice_rc" in
@@ -978,10 +994,12 @@ build_patch_candidate() {
       12)
         ERROR_CODE="symbol_missing"
         die 1 "Symbol scope drifted; refusing to append stale replacement"
+        return $?
         ;;
       *)
         ERROR_CODE="invalid_args"
         die 1 "Failed to rebuild target file from symbol-scoped replacement"
+        return $?
         ;;
     esac
     return 0
@@ -1000,7 +1018,7 @@ normalize_path() {
   fi
   # Make absolute
   if [[ "$p" != /* ]]; then
-    p="$(pwd)/$p"
+    p="$PWD/$p"
   fi
   # Canonicalize if target exists
   if [[ -e "$p" ]]; then
@@ -1072,32 +1090,45 @@ load_batch_targets() {
 
 plan_batch() {
   local i total=${#BATCH_PATHS[@]}
+
+  # Pre-initialize all targets as skipped
   for (( i=0; i<total; i++ )); do
     BATCH_APPLIED[i]=false
+    BATCH_STATES[i]="skipped"
     BATCH_DIFFS[i]=""
     BATCH_ERROR_CODES[i]=""
     BATCH_ERROR_DETAILS[i]=""
     BATCH_ANCHORS[i]=0
-    BATCH_PRECONDITIONS[i]=true
+    BATCH_PRECONDITIONS[i]=false
     BATCH_CANDIDATES[i]=""
     BATCH_EXPECTED_SHAS[i]=""
+  done
 
+  BATCH_PLANNING=1
+
+  for (( i=0; i<total; i++ )); do
     local path="${BATCH_PATHS[i]}"
 
     # Validate file
     if [[ ! -e "$path" ]]; then
+      BATCH_STATES[i]="failed"
       BATCH_ERROR_CODES[i]="not_found"
       BATCH_ERROR_DETAILS[i]="File does not exist: $path"
+      BATCH_PLANNING=0
       return 1
     fi
     if [[ ! -f "$path" ]]; then
+      BATCH_STATES[i]="failed"
       BATCH_ERROR_CODES[i]="not_regular"
       BATCH_ERROR_DETAILS[i]="Not a regular file: $path"
+      BATCH_PLANNING=0
       return 1
     fi
     if [[ ! -r "$path" ]]; then
+      BATCH_STATES[i]="failed"
       BATCH_ERROR_CODES[i]="permission"
       BATCH_ERROR_DETAILS[i]="File is not readable: $path"
+      BATCH_PLANNING=0
       return 1
     fi
 
@@ -1106,8 +1137,10 @@ plan_batch() {
     original_file=$(make_temp)
     cat "$path" > "$original_file"
     if contains_nul_bytes "$original_file"; then
+      BATCH_STATES[i]="failed"
       BATCH_ERROR_CODES[i]="invalid_args"
       BATCH_ERROR_DETAILS[i]="Binary targets are not supported: $path"
+      BATCH_PLANNING=0
       return 1
     fi
 
@@ -1118,15 +1151,18 @@ plan_batch() {
     TOTAL_BYTES_READ=$(( TOTAL_BYTES_READ + file_bytes ))
 
     # Preconditions
+    BATCH_PRECONDITIONS[i]=true
     if (( EXPECT_TEXT_SET == 1 )); then
       local expect_file count
       expect_file=$(make_temp)
       printf '%s' "$EXPECT_TEXT" > "$expect_file"
       count=$(match_count "$original_file" "$expect_file") || count="0"
       if [[ "$count" == "0" ]]; then
+        BATCH_STATES[i]="failed"
         BATCH_PRECONDITIONS[i]=false
         BATCH_ERROR_CODES[i]="precondition_failed"
         BATCH_ERROR_DETAILS[i]="--expect text not found in: $path"
+        BATCH_PLANNING=0
         return 1
       fi
     fi
@@ -1134,17 +1170,21 @@ plan_batch() {
     local actual_hash
     actual_hash=$(compute_sha256 "$original_file" 2>/dev/null || true)
     if [[ -z "$actual_hash" ]]; then
+      BATCH_STATES[i]="failed"
       BATCH_PRECONDITIONS[i]=false
       BATCH_ERROR_CODES[i]="precondition_failed"
       BATCH_ERROR_DETAILS[i]="Failed to compute hash for: $path"
+      BATCH_PLANNING=0
       return 1
     fi
     BATCH_EXPECTED_SHAS[i]="$actual_hash"
 
     if [[ -n "$EXPECT_SHA256" && "$actual_hash" != "$EXPECT_SHA256" ]]; then
+      BATCH_STATES[i]="failed"
       BATCH_PRECONDITIONS[i]=false
       BATCH_ERROR_CODES[i]="precondition_failed"
       BATCH_ERROR_DETAILS[i]="--expect-sha256 does not match: $path"
+      BATCH_PLANNING=0
       return 1
     fi
 
@@ -1164,12 +1204,15 @@ plan_batch() {
     local plan_rc=0
     build_patch_candidate "$original_file" "$candidate_file" || plan_rc=$?
     if (( plan_rc != 0 )); then
+      BATCH_STATES[i]="failed"
       BATCH_ERROR_CODES[i]="${ERROR_CODE:-build_failed}"
       BATCH_ERROR_DETAILS[i]="${ERROR_DETAIL:-Patch operation failed for: $path}"
       TARGET_PATH="$saved_target"
+      BATCH_PLANNING=0
       return 1
     fi
 
+    BATCH_STATES[i]="planned"
     BATCH_ANCHORS[i]="$ANCHORS_MATCHED"
     BATCH_CANDIDATES[i]="$candidate_file"
 
@@ -1180,32 +1223,46 @@ plan_batch() {
 
     TARGET_PATH="$saved_target"
   done
+
+  BATCH_PLANNING=0
   return 0
 }
 
 apply_batch() {
   local i total=${#BATCH_PATHS[@]}
 
-  # Phase 2: Lock + Recheck
-  for (( i=0; i<total; i++ )); do
+  # Build a sorted index to acquire locks in canonical (path) order — prevents deadlocks
+  local -a lock_order=()
+  for (( i=0; i<total; i++ )); do lock_order+=("$i"); done
+  IFS=$'\n' read -r -d '' -a lock_order < <(
+    for idx in "${lock_order[@]}"; do
+      printf '%s\t%s\n' "${BATCH_PATHS[idx]}" "$idx"
+    done | sort -t$'\t' -k1,1 | cut -f2
+    printf '\0'
+  ) || true
+
+  # Phase 2: Lock + Recheck (in sorted order)
+  _release_batch_locks() {
+    local k
+    for (( k=0; k<${#BATCH_PATHS[@]}; k++ )); do
+      [[ -n "${BATCH_LOCK_FDS[k]:-}" ]] && exec {BATCH_LOCK_FDS[k]}<&- 2>/dev/null || true
+    done
+  }
+
+  for i in "${lock_order[@]}"; do
     local path="${BATCH_PATHS[i]}"
     local lock_fd
     exec {lock_fd}<"$path" || {
-      # Release previously acquired locks
-      local j
-      for (( j=0; j<i; j++ )); do
-        [[ -n "${BATCH_LOCK_FDS[j]:-}" ]] && exec {BATCH_LOCK_FDS[j]}<&- 2>/dev/null || true
-      done
+      _release_batch_locks
+      BATCH_STATES[i]="failed"
       BATCH_ERROR_CODES[i]="permission"
       BATCH_ERROR_DETAILS[i]="Failed to open for locking: $path"
       return 1
     }
     flock -x "$lock_fd" || {
       exec {lock_fd}<&-
-      local j
-      for (( j=0; j<i; j++ )); do
-        [[ -n "${BATCH_LOCK_FDS[j]:-}" ]] && exec {BATCH_LOCK_FDS[j]}<&- 2>/dev/null || true
-      done
+      _release_batch_locks
+      BATCH_STATES[i]="failed"
       BATCH_ERROR_CODES[i]="permission"
       BATCH_ERROR_DETAILS[i]="Failed to lock: $path"
       return 1
@@ -1216,10 +1273,8 @@ apply_batch() {
     local current_hash
     current_hash=$(compute_sha256 "$path" 2>/dev/null || true)
     if [[ -z "$current_hash" || "$current_hash" != "${BATCH_EXPECTED_SHAS[i]}" ]]; then
-      local j
-      for (( j=0; j<=i; j++ )); do
-        [[ -n "${BATCH_LOCK_FDS[j]:-}" ]] && exec {BATCH_LOCK_FDS[j]}<&- 2>/dev/null || true
-      done
+      _release_batch_locks
+      BATCH_STATES[i]="failed"
       BATCH_ERROR_CODES[i]="precondition_failed"
       BATCH_ERROR_DETAILS[i]="File changed after planning: $path"
       return 1
@@ -1230,8 +1285,8 @@ apply_batch() {
   local BATCH_TEMPS=()
   for (( i=0; i<total; i++ )); do
     local path="${BATCH_PATHS[i]}"
-    local target_dir
-    target_dir=$(dirname "$path")
+    local target_dir="${path%/*}"
+    [[ -n "$target_dir" ]] || target_dir="."
     local target_tmp
     target_tmp=$(make_temp_in "$target_dir")
     cat "${BATCH_CANDIDATES[i]}" > "$target_tmp"
@@ -1242,22 +1297,17 @@ apply_batch() {
   # Phase 4: Rename
   for (( i=0; i<total; i++ )); do
     if ! mv "${BATCH_TEMPS[i]}" "${BATCH_PATHS[i]}"; then
+      BATCH_STATES[i]="failed"
       BATCH_ERROR_CODES[i]="rename_failed"
       BATCH_ERROR_DETAILS[i]="Failed to rename temp to: ${BATCH_PATHS[i]}"
-      # Release all locks
-      local j
-      for (( j=0; j<total; j++ )); do
-        [[ -n "${BATCH_LOCK_FDS[j]:-}" ]] && exec {BATCH_LOCK_FDS[j]}<&- 2>/dev/null || true
-      done
+      _release_batch_locks
       return 1
     fi
+    BATCH_STATES[i]="applied"
     BATCH_APPLIED[i]=true
   done
 
-  # Release all locks
-  for (( i=0; i<total; i++ )); do
-    [[ -n "${BATCH_LOCK_FDS[i]:-}" ]] && exec {BATCH_LOCK_FDS[i]}<&- 2>/dev/null || true
-  done
+  _release_batch_locks
   return 0
 }
 
@@ -1268,7 +1318,7 @@ render_batch_json() {
   local i
 
   for (( i=0; i<total; i++ )); do
-    [[ -z "${BATCH_ERROR_CODES[i]:-}" ]] && targets_ready=$((targets_ready + 1))
+    [[ "${BATCH_STATES[i]:-skipped}" =~ ^(planned|applied)$ ]] && targets_ready=$((targets_ready + 1))
     [[ "${BATCH_APPLIED[i]:-false}" == "true" ]] && targets_applied=$((targets_applied + 1))
     [[ -n "${BATCH_DIFFS[i]:-}" ]] && combined_diff+="${BATCH_DIFFS[i]}"$'\n'
   done
@@ -1305,9 +1355,12 @@ render_batch_json() {
       printf '"symbol":null,'
       printf '"symbol_type":null,'
     fi
+    printf '"state":"%s",' "${BATCH_STATES[i]:-skipped}"
     printf '"applied":%s,' "${BATCH_APPLIED[i]:-false}"
     printf '"anchors_matched":%s,' "${BATCH_ANCHORS[i]:-0}"
-    if [[ "${BATCH_PRECONDITIONS[i]:-true}" == "true" ]]; then
+    if [[ "${BATCH_STATES[i]:-skipped}" == "skipped" ]]; then
+      printf '"preconditions_ok":null,'
+    elif [[ "${BATCH_PRECONDITIONS[i]:-false}" == "true" ]]; then
       printf '"preconditions_ok":true,'
     else
       printf '"preconditions_ok":false,'
@@ -1344,7 +1397,9 @@ render_batch_pretty() {
   local total=${#BATCH_PATHS[@]}
   local i
   printf 'fedit patch_batch (%d targets)\n' "$total"
-  if (( DRY_RUN == 1 )); then
+  if [[ -n "$ERROR_CODE" ]]; then
+    echo "status: failed"
+  elif (( DRY_RUN == 1 )); then
     echo "status: dry-run"
   else
     echo "status: applied"
@@ -1352,7 +1407,9 @@ render_batch_pretty() {
   echo ""
   for (( i=0; i<total; i++ )); do
     printf -- '--- %s ---\n' "${BATCH_PATHS[i]}"
-    if [[ -n "${BATCH_ERROR_CODES[i]:-}" ]]; then
+    if [[ "${BATCH_STATES[i]:-skipped}" == "skipped" ]]; then
+      echo "(skipped — not evaluated)"
+    elif [[ -n "${BATCH_ERROR_CODES[i]:-}" ]]; then
       printf 'error: %s — %s\n' "${BATCH_ERROR_CODES[i]}" "${BATCH_ERROR_DETAILS[i]:-}"
     elif [[ -n "${BATCH_DIFFS[i]:-}" ]]; then
       echo "${BATCH_DIFFS[i]}"
@@ -1761,26 +1818,32 @@ process_edit() {
   TOTAL_FILES_READ=1
   TOTAL_BYTES_READ=$(wc -c < "$original_file" | tr -d '[:space:]')
   [[ "$TOTAL_BYTES_READ" =~ ^[0-9]+$ ]] || TOTAL_BYTES_READ=0
+  local op_rc=0
+  DEFER_ERRORS=1
+  check_preconditions "$original_file" || op_rc=$?
 
-  check_preconditions "$original_file"
-
-  case "$MODE" in
-    create)
-      cat "$PAYLOAD_FILE" > "$candidate_file"
-      ;;
-    replace_file)
-      local original_content
-      original_content=$(cat "$original_file")
-      cat "$(normalized_payload_file "$original_content")" > "$candidate_file"
-      ;;
-    patch)
-      build_patch_candidate "$original_file" "$candidate_file"
-      ;;
-    *)
-      ERROR_CODE="invalid_args"
-      die "Unsupported mode: $MODE"
-      ;;
-  esac
+  if (( op_rc == 0 )); then
+    case "$MODE" in
+      create)
+        cat "$PAYLOAD_FILE" > "$candidate_file"
+        ;;
+      replace_file)
+        local original_content
+        original_content=$(cat "$original_file")
+        cat "$(normalized_payload_file "$original_content")" > "$candidate_file"
+        ;;
+      patch)
+        build_patch_candidate "$original_file" "$candidate_file" || op_rc=$?
+        ;;
+      *)
+        ERROR_CODE="invalid_args"
+        op_rc=1
+        ERROR_DETAIL="Unsupported mode: $MODE"
+        ;;
+    esac
+  fi
+  DEFER_ERRORS=0
+  (( op_rc == 0 )) || die "$op_rc" "${ERROR_DETAIL:-fedit operation failed}"
 
   local candidate_bytes
   candidate_bytes=$(wc -c < "$candidate_file" | tr -d '[:space:]')

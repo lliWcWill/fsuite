@@ -70,9 +70,12 @@ EOF
 
   cat > "${TEST_DIR}/types.ts" <<'EOF'
 import { readFile } from 'fs';
+import { writeFile } from 'fs';
 const MAX_SIZE = 10;
 export type CustomType = { name: string };
+export type OtherType = { name: string };
 export function x(): CustomType { return { name: 'x' }; }
+export function y() { const limit = MAX_SIZE; return limit; }
 EOF
 
   echo 'old content' > "${TEST_DIR}/replace_me.txt"
@@ -482,12 +485,118 @@ test_batch_json_error_output() {
   echo 'x = 1' > "$b"
   local output rc=0
   output=$(printf '%s\n' "$a" "$b" | FSUITE_TELEMETRY=0 "${FEDIT}" -o json --targets-file - --targets-format paths --replace 'missing_text' --with 'x = 2' 2>/dev/null) || rc=$?
-  if (( rc != 0 )) && printf '%s' "$output" | python3 -m json.tool >/dev/null 2>&1 && \
-     [[ "$output" == *'"mode":"patch_batch"'* ]] && [[ "$output" == *'"results":['* ]] && \
-     [[ "$output" == *'"error_code":"replace_missing"'* ]]; then
+  if (( rc != 0 )) && printf '%s' "$output" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+assert data["mode"] == "patch_batch"
+assert len(data["results"]) == 2
+first, second = data["results"]
+assert first["path"] == sys.argv[1]
+assert first["state"] == "failed"
+assert first["error_code"] == "replace_missing"
+assert first["preconditions_ok"] is True
+assert second["path"] == sys.argv[2]
+assert second["state"] == "skipped"
+assert second["error_code"] is None
+assert second["preconditions_ok"] is None
+' "$a" "$b" >/dev/null 2>&1
+  then
     pass "Batch failures render the batch JSON envelope"
   else
     fail "Batch JSON failures should render batch-specific structure" "rc=$rc output=$output"
+  fi
+}
+
+test_json_not_found_error() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    pass "JSON not-found test skipped (python3 not available)"
+    return 0
+  fi
+  local missing="${TEST_DIR}/missing.py" output rc=0
+  output=$(FSUITE_TELEMETRY=0 "${FEDIT}" -o json "$missing" --replace 'x' --with 'y' 2>/dev/null) || rc=$?
+  if (( rc != 0 )) && printf '%s' "$output" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["error_code"]=="not_found"' >/dev/null 2>&1; then
+    pass "JSON mode reports not_found errors"
+  else
+    fail "JSON mode should expose not_found" "rc=$rc output=$output"
+  fi
+}
+
+test_json_not_regular_error() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    pass "JSON not-regular test skipped (python3 not available)"
+    return 0
+  fi
+  local output rc=0
+  output=$(FSUITE_TELEMETRY=0 "${FEDIT}" -o json "${TEST_DIR}" --replace 'x' --with 'y' 2>/dev/null) || rc=$?
+  if (( rc != 0 )) && printf '%s' "$output" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["error_code"]=="not_regular"' >/dev/null 2>&1; then
+    pass "JSON mode reports not_regular errors"
+  else
+    fail "JSON mode should expose not_regular" "rc=$rc output=$output"
+  fi
+}
+
+test_json_permission_error() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    pass "JSON permission test skipped (python3 not available)"
+    return 0
+  fi
+  local denied="${TEST_DIR}/permission_denied.py" output rc=0
+  printf 'x = 1\n' > "$denied"
+  chmod 000 "$denied"
+  output=$(FSUITE_TELEMETRY=0 "${FEDIT}" -o json "$denied" --replace 'x = 1' --with 'x = 2' 2>/dev/null) || rc=$?
+  chmod 644 "$denied"
+  if (( rc != 0 )) && printf '%s' "$output" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["error_code"]=="permission"' >/dev/null 2>&1; then
+    pass "JSON mode reports permission errors"
+  else
+    fail "JSON mode should expose permission" "rc=$rc output=$output"
+  fi
+}
+
+test_json_symbol_ambiguous_error() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    pass "JSON symbol-ambiguous test skipped (python3 not available)"
+    return 0
+  fi
+  local dup="${TEST_DIR}/duplicate_symbol.py" output rc=0
+  cat > "$dup" <<'EOF'
+def authenticate(user):
+    return False
+
+def authenticate(user):
+    return True
+EOF
+  output=$(FSUITE_TELEMETRY=0 "${FEDIT}" -o json "$dup" --function authenticate --replace 'return False' --with 'return deny()' 2>/dev/null) || rc=$?
+  if (( rc != 0 )) && printf '%s' "$output" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["error_code"]=="symbol_ambiguous"' >/dev/null 2>&1; then
+    pass "JSON mode reports symbol_ambiguous errors"
+  else
+    fail "JSON mode should expose symbol_ambiguous" "rc=$rc output=$output"
+  fi
+}
+
+test_batch_json_anchor_missing_error() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    pass "Batch JSON anchor-missing test skipped (python3 not available)"
+    return 0
+  fi
+  local a="${TEST_DIR}/batch_json_anchor_a.py" b="${TEST_DIR}/batch_json_anchor_b.py"
+  echo 'x = 1' > "$a"
+  echo 'x = 1' > "$b"
+  local output rc=0
+  output=$(printf '%s\n' "$a" "$b" | FSUITE_TELEMETRY=0 "${FEDIT}" -o json --targets-file - --targets-format paths --after 'missing_anchor()' --with $'    x()\n' 2>/dev/null) || rc=$?
+  if (( rc != 0 )) && printf '%s' "$output" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+first, second = data["results"]
+assert first["path"] == sys.argv[1]
+assert first["state"] == "failed"
+assert first["error_code"] == "anchor_missing"
+assert second["path"] == sys.argv[2]
+assert second["state"] == "skipped"
+' "$a" "$b" >/dev/null 2>&1
+  then
+    pass "Batch JSON reports anchor_missing per target"
+  else
+    fail "Batch JSON should expose anchor_missing on the failing target" "rc=$rc output=$output"
   fi
 }
 
@@ -647,13 +756,26 @@ test_function_shortcut() {
 }
 
 test_class_shortcut() {
-  reset_fixture "auth.py"
-  local output
-  output=$(FSUITE_TELEMETRY=0 "${FEDIT}" "${TEST_DIR}/auth.py" --class AuthHandler --replace 'return authenticate(user)' --with 'return verify(user)' 2>/dev/null)
-  if [[ "$output" == *"+        return verify(user)"* ]]; then
+  local scoped="${TEST_DIR}/class_scope.py"
+  cat > "$scoped" <<'EOF'
+class AuthHandler:
+    def login(self, user):
+        return authenticate(user)
+
+def helper(user):
+    return authenticate(user)
+EOF
+  FSUITE_TELEMETRY=0 "${FEDIT}" "$scoped" --class AuthHandler --replace 'return authenticate(user)' --with 'return verify(user)' --apply >/dev/null 2>&1 || {
+    fail "--class shortcut should succeed"
+    return
+  }
+  local class_line outside_line
+  class_line=$(sed -n '3p' "$scoped")
+  outside_line=$(sed -n '6p' "$scoped")
+  if [[ "$class_line" == *'return verify(user)'* ]] && [[ "$outside_line" == *'return authenticate(user)'* ]]; then
     pass "--class shortcut scopes correctly"
   else
-    fail "--class shortcut should scope to the named class" "Got: $output"
+    fail "--class shortcut should scope to the named class only" "class_line='$class_line' outside='$outside_line'"
   fi
 }
 
@@ -692,35 +814,62 @@ test_multiple_shortcuts_conflict() {
 }
 
 test_import_shortcut() {
-  reset_fixture "types.ts"
-  local output
-  output=$(FSUITE_TELEMETRY=0 "${FEDIT}" "${TEST_DIR}/types.ts" --import readFile --replace "import { readFile } from 'fs';" --with "import { writeFile } from 'fs';" 2>/dev/null)
-  if [[ "$output" == *"+import { writeFile } from 'fs';"* ]]; then
+  local scoped="${TEST_DIR}/import_scope.ts"
+  cat > "$scoped" <<'EOF'
+import { readFile } from 'fs';
+import { writeFile } from 'fs';
+const msg = "import { readFile } from 'fs';";
+EOF
+  FSUITE_TELEMETRY=0 "${FEDIT}" "$scoped" --import readFile --replace "import { readFile } from 'fs';" --with "import { writeFile } from 'fs';" --apply >/dev/null 2>&1 || {
+    fail "--import shortcut should succeed"
+    return
+  }
+  local import1 import2
+  import1=$(sed -n '1p' "$scoped")
+  import2=$(sed -n '3p' "$scoped")
+  if [[ "$import1" == "import { writeFile } from 'fs';" ]] && [[ "$import2" == *"import { readFile } from 'fs';"* ]]; then
     pass "--import shortcut scopes correctly"
   else
-    fail "--import shortcut should target the import symbol" "Got: $output"
+    fail "--import shortcut should only edit the scoped import line" "l1='$import1' l2='$import2'"
   fi
 }
 
 test_constant_shortcut() {
-  reset_fixture "types.ts"
-  local output
-  output=$(FSUITE_TELEMETRY=0 "${FEDIT}" "${TEST_DIR}/types.ts" --constant MAX_SIZE --replace 'MAX_SIZE = 10' --with 'MAX_SIZE = 20' 2>/dev/null)
-  if [[ "$output" == *'+const MAX_SIZE = 20;'* ]]; then
+  local scoped="${TEST_DIR}/constant_scope.ts"
+  cat > "$scoped" <<'EOF'
+const MAX_SIZE = 10;
+export type Config = { size: number };
+const echo = "const MAX_SIZE = 10;";
+EOF
+  FSUITE_TELEMETRY=0 "${FEDIT}" "$scoped" --constant MAX_SIZE --replace 'MAX_SIZE = 10' --with 'MAX_SIZE = 20' --apply >/dev/null 2>&1 || {
+    fail "--constant shortcut should succeed"
+    return
+  }
+  local const_line string_line
+  const_line=$(sed -n '1p' "$scoped")
+  string_line=$(sed -n '3p' "$scoped")
+  if [[ "$const_line" == 'const MAX_SIZE = 20;' ]] && [[ "$string_line" == *'const MAX_SIZE = 10;'* ]]; then
     pass "--constant shortcut scopes correctly"
   else
-    fail "--constant shortcut should target the constant symbol" "Got: $output"
+    fail "--constant shortcut should target only the constant symbol" "const='$const_line' string='$string_line'"
   fi
 }
 
 test_type_shortcut() {
+  # types.ts has 'name: string' in both CustomType and OtherType
+  # --type CustomType should only scope to CustomType's line
   reset_fixture "types.ts"
-  local output
-  output=$(FSUITE_TELEMETRY=0 "${FEDIT}" "${TEST_DIR}/types.ts" --type CustomType --replace 'name: string' --with 'name: number' 2>/dev/null)
-  if [[ "$output" == *'+export type CustomType = { name: number };'* ]]; then
+  FSUITE_TELEMETRY=0 "${FEDIT}" "${TEST_DIR}/types.ts" --type CustomType --replace 'name: string' --with 'name: number' --apply >/dev/null 2>&1 || {
+    fail "--type shortcut should succeed"
+    return
+  }
+  local custom_line other_line
+  custom_line=$(grep 'CustomType' "${TEST_DIR}/types.ts")
+  other_line=$(grep 'OtherType' "${TEST_DIR}/types.ts")
+  if [[ "$custom_line" == *'name: number'* ]] && [[ "$other_line" == *'name: string'* ]]; then
     pass "--type shortcut scopes correctly"
   else
-    fail "--type shortcut should target the type symbol" "Got: $output"
+    fail "--type shortcut should only edit the scoped type" "custom='$custom_line' other='$other_line'"
   fi
 }
 
@@ -1075,9 +1224,14 @@ main() {
   run_test "Replace-file apply" test_replace_file_apply
   run_test "JSON parseability" test_json_output_parseable
   run_test "JSON error output" test_json_error_output
+  run_test "JSON not_found" test_json_not_found_error
+  run_test "JSON not_regular" test_json_not_regular_error
+  run_test "JSON permission" test_json_permission_error
   run_test "JSON anchor ambiguous" test_json_anchor_ambiguous_error
   run_test "JSON precondition error" test_json_precondition_error
+  run_test "JSON symbol ambiguous" test_json_symbol_ambiguous_error
   run_test "Batch JSON error output" test_batch_json_error_output
+  run_test "Batch JSON anchor missing" test_batch_json_anchor_missing_error
   run_test "Dollar payload preservation" test_dollar_payload_preserved
   run_test "Binary payload rejection" test_binary_payload_rejected
   run_test "Paths output" test_paths_output_only_when_applied

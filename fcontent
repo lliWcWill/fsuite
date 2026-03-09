@@ -129,29 +129,34 @@ die() { echo "Error: $*" >&2; exit 1; }
 has() { command -v "$1" >/dev/null 2>&1; }
 
 normalize_input_path() {
-  local p="$1"
-  [[ -n "$p" ]] || return 0
-
-  if [[ "$p" == "~/"* ]]; then
-    p="${HOME}/${p#\~/}"
-  elif [[ "$p" == "~" ]]; then
-    p="$HOME"
-  fi
-
-  if [[ "$p" != /* ]]; then
-    p="$(pwd)/$p"
-  fi
-
-  if [[ -e "$p" ]]; then
-    realpath -e "$p" 2>/dev/null || printf "%s" "$p"
+  if type _fsuite_normalize_input_path &>/dev/null; then
+    _fsuite_normalize_input_path "$1"
   else
-    printf "%s" "$p"
+    local p="$1"
+    [[ -n "$p" ]] || return 0
+    if [[ "$p" == "~/"* ]]; then
+      p="${HOME}/${p#\~/}"
+    elif [[ "$p" == "~" ]]; then
+      p="$HOME"
+    fi
+    if [[ "$p" != /* ]]; then
+      p="$PWD/$p"
+    fi
+    if [[ -e "$p" ]]; then
+      realpath -e "$p" 2>/dev/null || printf "%s" "$p"
+    else
+      printf "%s" "$p"
+    fi
   fi
 }
 
 path_is_low_signal_root() {
-  local p="$1"
-  [[ "$p" =~ (^|/)(node_modules|dist|build|\.next|coverage|\.git|vendor|target)(/|$) ]]
+  if type _fsuite_path_is_low_signal_root &>/dev/null; then
+    _fsuite_path_is_low_signal_root "$1"
+  else
+    local p="$1"
+    [[ "$p" =~ (^|/)(node_modules|dist|build|\.next|coverage|\.git|vendor|target)(/|$) ]]
+  fi
 }
 
 usage() {

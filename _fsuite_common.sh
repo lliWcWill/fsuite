@@ -22,6 +22,35 @@ _fsuite_detect_os() {
 }
 
 # -------------------------
+# Path Normalization
+# -------------------------
+_fsuite_normalize_input_path() {
+  local p="$1"
+  [[ -n "$p" ]] || return 0
+
+  if [[ "$p" == "~/"* ]]; then
+    p="${HOME}/${p#\~/}"
+  elif [[ "$p" == "~" ]]; then
+    p="$HOME"
+  fi
+
+  if [[ "$p" != /* ]]; then
+    p="$PWD/$p"
+  fi
+
+  if [[ -e "$p" ]]; then
+    realpath -e "$p" 2>/dev/null || printf '%s' "$p"
+  else
+    printf '%s' "$p"
+  fi
+}
+
+_fsuite_path_is_low_signal_root() {
+  local p="$1"
+  [[ "$p" =~ (^|/)(node_modules|dist|build|\.next|coverage|\.git|vendor|target)(/|$) ]]
+}
+
+# -------------------------
 # Hardware Metrics (Tier 2)
 # -------------------------
 
