@@ -143,15 +143,17 @@ val localTimeout = 30
 
 sealed interface AuthResult
 
-data class UserSession(val token: String)
+  data class UserSession(val token: String)
 
-object SessionManager
+  object SessionManager
 
-class MainActivity : AppCompatActivity() {
-    fun bootstrap(user: String): Boolean {
-        return user.isNotEmpty()
-    }
-}
+  class MainActivity : AppCompatActivity() {
+      inner class ViewHolder
+
+      fun bootstrap(user: String): Boolean {
+          return user.isNotEmpty()
+      }
+  }
 
 typealias SessionLoader = (String) -> Boolean
 KTEOF
@@ -171,14 +173,15 @@ KTSEOF
 
   mkdir -p "${TEST_DIR}/src/app/src/main"
   cat > "${TEST_DIR}/src/app/src/main/AndroidManifest.xml" <<'MANIFESTEOF'
-<manifest package="com.example.app">
-    <application android:name=".App">
-        <activity android:name=".MainActivity" />
-        <service android:name=".SyncService" />
-        <receiver android:name=".BootReceiver" />
-        <provider android:name=".DataProvider" />
-    </application>
-</manifest>
+  <manifest package="com.example.app">
+      <application android:name=".App">
+          <activity android:name=".MainActivity" />
+          <activity-alias android:name=".LauncherAlias" />
+          <service android:name=".SyncService" />
+          <receiver android:name=".BootReceiver" />
+          <provider android:name=".DataProvider" />
+      </application>
+  </manifest>
 MANIFESTEOF
 
   mkdir -p "${TEST_DIR}/src/app/src/main/res/layout"
@@ -1391,13 +1394,14 @@ test_force_lang_kotlin() {
 }
 
 test_kotlin_constants_are_conservative() {
-  local uppercase_property lowercase_property
+  local uppercase_property uppercase_val lowercase_property
   uppercase_property=$(_assert_symbol_type_for_text "${TEST_DIR}/src/App.kt" "const val DEFAULT_TIMEOUT_MS" "constant")
+  uppercase_val=$(_assert_symbol_type_for_text "${TEST_DIR}/src/App.kt" "val API_ROUTE = \"/api\"" "constant")
   lowercase_property=$(_assert_symbol_type_not_present_for_text "${TEST_DIR}/src/App.kt" "val localTimeout = 30" "constant")
-  if [[ "$uppercase_property" == "OK" && "$lowercase_property" == "OK" ]]; then
+  if [[ "$uppercase_property" == "OK" && "$uppercase_val" == "OK" && "$lowercase_property" == "OK" ]]; then
     pass "Kotlin constants stay conservative"
   else
-    fail "Kotlin constant classification is too broad" "${uppercase_property}|${lowercase_property}"
+    fail "Kotlin constant classification is too broad" "${uppercase_property}|${uppercase_val}|${lowercase_property}"
   fi
 }
 
@@ -1408,6 +1412,16 @@ test_gradle_kts_detects_as_kotlin() {
     pass "Gradle Kotlin DSL file is detected as kotlin"
   else
     fail "Gradle Kotlin DSL detection failed" "$result"
+  fi
+}
+
+test_kotlin_inner_classes_classify_as_classes() {
+  local result
+  result=$(_assert_symbol_type_for_text "${TEST_DIR}/src/App.kt" "inner class ViewHolder" "class")
+  if [[ "$result" == "OK" ]]; then
+    pass "Kotlin inner classes classify as classes"
+  else
+    fail "Kotlin inner class classification failed" "$result"
   fi
 }
 
@@ -1438,6 +1452,16 @@ test_android_manifest_is_path_scoped() {
     pass "Android manifest detection stays path-scoped"
   else
     fail "Android manifest detection leaked into non-manifest files" "$output"
+  fi
+}
+
+test_android_manifest_activity_alias_is_excluded() {
+  local result
+  result=$(_assert_symbol_type_not_present_for_text "${TEST_DIR}/src/app/src/main/AndroidManifest.xml" "activity-alias" "class")
+  if [[ "$result" == "OK" ]]; then
+    pass "Android manifest excludes activity-alias from activity symbols"
+  else
+    fail "Android manifest activity-alias classification failed" "$result"
   fi
 }
 
@@ -1909,6 +1933,7 @@ main() {
     run_test "Swift constants are SCREAMING_CASE-only" test_swift_constants_are_screaming_case_only
     run_test "Kotlin exact parse" test_parse_kotlin_exact
     run_test "Kotlin constants stay conservative" test_kotlin_constants_are_conservative
+    run_test "Kotlin inner classes" test_kotlin_inner_classes_classify_as_classes
     run_test "Rust exact parse" test_parse_rust_exact
   run_test "Go exact parse" test_parse_go_exact
   run_test "Java exact parse" test_parse_java_exact
@@ -1950,6 +1975,7 @@ main() {
     run_test "Gradle Kotlin DSL detection" test_gradle_kts_detects_as_kotlin
     run_test "Android manifest exact parse" test_parse_android_manifest_exact
     run_test "Android manifest path scoping" test_android_manifest_is_path_scoped
+    run_test "Android manifest excludes activity-alias" test_android_manifest_activity_alias_is_excluded
     run_test "Android layout exact parse" test_parse_android_layout_exact
     run_test "Android layout path scoping" test_android_layout_is_path_scoped
 

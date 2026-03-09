@@ -605,7 +605,7 @@ extract_symbols() {
       kotlin)
         patterns=(
           "function:^[[:space:]]*((public|private|internal|protected|open|final|override|suspend|inline|operator|infix|tailrec|external|actual|expect)[[:space:]]+)*fun[[:space:]]"
-          "class:^[[:space:]]*((public|private|internal|protected|sealed|data|enum|annotation|value|inline|open|abstract|final|companion)[[:space:]]+)*(class|interface|object)[[:space:]]"
+          "class:^[[:space:]]*((public|private|internal|protected|sealed|data|enum|annotation|value|inline|open|abstract|final|companion|inner)[[:space:]]+)*(class|interface|object)[[:space:]]"
           "import:^[[:space:]]*import[[:space:]]"
           "type:^[[:space:]]*((public|private|internal|protected)[[:space:]]+)*typealias[[:space:]]"
           "constant:^[[:space:]]*((public|private|internal|protected)[[:space:]]+)*(const[[:space:]]+)?val[[:space:]]+[A-Z][A-Z0-9_]*([[:space:]]*[:=]|$)"
@@ -614,7 +614,7 @@ extract_symbols() {
       android_manifest)
         patterns=(
           "class:^[[:space:]]*<application\\b"
-          "class:^[[:space:]]*<activity\\b"
+          "class:^[[:space:]]*<activity([[:space:]/>])"
           "class:^[[:space:]]*<service\\b"
           "class:^[[:space:]]*<receiver\\b"
           "class:^[[:space:]]*<provider\\b"
