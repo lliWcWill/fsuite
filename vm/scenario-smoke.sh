@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export FSUITE_TELEMETRY=0
+
 WORKDIR="$HOME/workspace/noisy-ts-app"
 ARTIFACT_DIR="$HOME/artifacts"
 mkdir -p "$ARTIFACT_DIR"
@@ -75,11 +77,13 @@ run_cmd content_auth fcontent authenticate "$WORKDIR" -o paths
 run_cmd fedit_preview fedit "$WORKDIR/src/auth/service.ts" --function validateLength --replace 'return user.length > 3;' --with 'return user.length > 5;' -o json
 run_cmd fedit_apply fedit "$WORKDIR/src/auth/service.ts" --function validateLength --replace 'return user.length > 3;' --with 'return user.length > 5;' --apply -o json
 run_cmd read_after fread "$WORKDIR/src/auth/service.ts" --head 40 -o json
+run_cmd read_index fread "$WORKDIR/src/index.ts" --head 40 -o json
 
 DEFAULT_SEARCH=$(cat "$ARTIFACT_DIR/search_default.txt")
 NODE_SEARCH=$(cat "$ARTIFACT_DIR/search_node_modules.txt")
 CONTENT_SEARCH=$(cat "$ARTIFACT_DIR/content_auth.txt")
 AFTER_READ=$(cat "$ARTIFACT_DIR/read_after.txt")
+INDEX_READ=$(cat "$ARTIFACT_DIR/read_index.txt")
 
 if grep -q 'node_modules' <<<"$DEFAULT_SEARCH"; then
   echo "default fsearch leaked node_modules" >&2
@@ -105,7 +109,11 @@ if ! grep -q 'return user.length > 5;' <<<"$AFTER_READ"; then
   echo "fedit did not update the target function" >&2
   exit 16
 fi
-if grep -q 'src/index.ts.*5' <<<"$AFTER_READ"; then
+if ! grep -q 'return authenticate(user);' <<<"$INDEX_READ"; then
+  echo "cross-file state drifted unexpectedly" >&2
+  exit 17
+fi
+if grep -q 'return user.length > 5;' <<<"$INDEX_READ"; then
   echo "fedit leaked outside the target file" >&2
   exit 17
 fi

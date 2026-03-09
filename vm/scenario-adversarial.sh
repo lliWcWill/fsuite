@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export FSUITE_TELEMETRY=0
+
 WORKDIR="$HOME/workspace/adversarial-ts-app"
 ARTIFACT_DIR="$HOME/artifacts"
 mkdir -p "$ARTIFACT_DIR"

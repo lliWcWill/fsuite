@@ -33,6 +33,7 @@ vm/run-smoke.sh --reuse --scenario adversarial
 ## Notes
 
 - requires: `qemu-system-x86_64`, `qemu-img`, `genisoimage`, `ssh`, `scp`, `curl`
-- uses host port `2222` for guest SSH by default
+- uses default guest SSH ports `2222` (smoke) and `2223` (adversarial), with automatic bumping if the port is already taken
 - waits for `cloud-init status --wait` before installing or running the scenario
+- applies a timeout to scenario execution with `SCENARIO_TIMEOUT` (default: 900 seconds)
 - the guest user is `runner` with passwordless sudo, created only inside the disposable VM

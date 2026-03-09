@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+REPO_PARENT="$(cd "${REPO_ROOT}/.." && pwd)"
 STATE_DIR="${SCRIPT_DIR}/state"
 IMAGE_DIR="${STATE_DIR}/images"
 SEED_DIR="${STATE_DIR}/seed"
@@ -11,12 +12,14 @@ SSH_PORT="${SSH_PORT:-}"
 SSH_USER="runner"
 MEMORY_MB="${MEMORY_MB:-4096}"
 CPUS="${CPUS:-2}"
+SCENARIO_TIMEOUT="${SCENARIO_TIMEOUT:-900}"
 UBUNTU_IMAGE_URL="${UBUNTU_IMAGE_URL:-https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img}"
 BASE_IMAGE="${IMAGE_DIR}/ubuntu-noble-amd64.img"
 PRIVATE_KEY="${SSH_DIR}/id_ed25519"
 PUBLIC_KEY="${PRIVATE_KEY}.pub"
-LOCAL_DEB="${LOCAL_DEB:-${REPO_ROOT%/fsuite}/fsuite_2.0.0-1_all.deb}"
+LOCAL_DEB="${LOCAL_DEB:-${REPO_PARENT}/fsuite_2.0.0-1_all.deb}"
 SCENARIO_NAME="${SCENARIO_NAME:-smoke}"
+CLEANUP_ON_EXIT=1
 
 usage() {
   cat <<USAGE
@@ -31,6 +34,13 @@ Options:
   --reuse        Reuse an existing overlay image instead of recreating it
   --scenario     Scenario name: smoke (default) or adversarial
 USAGE
+}
+
+die() {
+  local code=1
+  if [[ "${1:-}" =~ ^[0-9]+$ ]]; then code="$1"; shift; fi
+  echo "run-smoke.sh: $*" >&2
+  exit "$code"
 }
 
 START_ONLY=0
@@ -63,6 +73,9 @@ if [[ -z "$SSH_PORT" ]]; then
     smoke) SSH_PORT=2222 ;;
     adversarial) SSH_PORT=2223 ;;
   esac
+  while ss -ltnH "( sport = :${SSH_PORT} )" 2>/dev/null | grep -q .; do
+    SSH_PORT=$((SSH_PORT + 10))
+  done
 fi
 OVERLAY_IMAGE="${STATE_DIR}/${VM_NAME}.qcow2"
 SEED_ISO="${STATE_DIR}/${VM_NAME}-seed.iso"
@@ -73,6 +86,7 @@ SCENARIO_SCRIPT="${SCRIPT_DIR}/scenario-${SCENARIO_NAME}.sh"
 
 mkdir -p "$STATE_DIR" "$IMAGE_DIR" "$SEED_DIR" "$ARTIFACT_DIR" "$SSH_DIR"
 [[ -f "$SCENARIO_SCRIPT" ]] || { echo "Scenario script not found: $SCENARIO_SCRIPT" >&2; exit 1; }
+[[ -f "$LOCAL_DEB" ]] || die "Local package not found: $LOCAL_DEB"
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || {
@@ -81,7 +95,7 @@ require_cmd() {
   }
 }
 
-for cmd in qemu-system-x86_64 qemu-img genisoimage ssh scp curl timeout nc ssh-keygen; do
+for cmd in qemu-system-x86_64 qemu-img genisoimage ssh scp curl timeout ssh-keygen ss; do
   require_cmd "$cmd"
 done
 
@@ -97,7 +111,15 @@ stop_vm() {
   fi
 }
 
+on_exit() {
+  if (( CLEANUP_ON_EXIT == 1 )); then
+    stop_vm
+  fi
+}
+trap on_exit EXIT
+
 if (( STOP_ONLY == 1 )); then
+  CLEANUP_ON_EXIT=0
   stop_vm
   exit 0
 fi
@@ -178,9 +200,10 @@ wait_for_ssh() {
 
 wait_for_ssh
 ssh -i "$PRIVATE_KEY" -p "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-  "${SSH_USER}@127.0.0.1" "sudo cloud-init status --wait >/dev/null 2>&1 || true"
+  "${SSH_USER}@127.0.0.1" "sudo cloud-init status --wait >/dev/null 2>&1" || die "cloud-init did not complete successfully"
 
 if (( START_ONLY == 1 )); then
+  CLEANUP_ON_EXIT=0
   echo "VM started on ssh port ${SSH_PORT} for scenario ${SCENARIO_NAME}"
   exit 0
 fi
@@ -188,9 +211,9 @@ fi
 scp -i "$PRIVATE_KEY" -P "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
   "$LOCAL_DEB" "${SSH_USER}@127.0.0.1:/home/${SSH_USER}/fsuite.deb" >/dev/null
 set +e
-ssh -i "$PRIVATE_KEY" -p "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+timeout "$SCENARIO_TIMEOUT" ssh -i "$PRIVATE_KEY" -p "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
   "${SSH_USER}@127.0.0.1" \
-  "sudo dpkg -i /home/${SSH_USER}/fsuite.deb && /usr/local/bin/fsuite-vm-scenario.sh" \
+  "export FSUITE_TELEMETRY=0; sudo dpkg -i /home/${SSH_USER}/fsuite.deb && /usr/local/bin/fsuite-vm-scenario.sh" \
   | tee "$ARTIFACT_DIR/scenario-output.txt"
 SCENARIO_RC=${PIPESTATUS[0]}
 scp -i "$PRIVATE_KEY" -P "$SSH_PORT" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -r \
