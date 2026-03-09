@@ -608,7 +608,7 @@ extract_symbols() {
           "class:^[[:space:]]*((public|private|internal|protected|sealed|data|enum|annotation|value|inline|open|abstract|final|companion|inner)[[:space:]]+)*(class|interface|object)[[:space:]]"
           "import:^[[:space:]]*import[[:space:]]"
           "type:^[[:space:]]*((public|private|internal|protected)[[:space:]]+)*typealias[[:space:]]"
-          "constant:^[[:space:]]*((public|private|internal|protected)[[:space:]]+)*(const[[:space:]]+)?val[[:space:]]+[A-Z][A-Z0-9_]*([[:space:]]*[:=]|$)"
+          "constant:^[[:space:]]*((public|private|internal|protected)[[:space:]]+)*(const[[:space:]]+)?val[[:space:]]+[A-Z][A-Z0-9_]*[[:space:]]*[:=]"
         )
         ;;
       android_manifest)

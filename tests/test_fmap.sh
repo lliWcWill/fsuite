@@ -139,11 +139,12 @@ import androidx.appcompat.app.AppCompatActivity
 
 const val DEFAULT_TIMEOUT_MS = 5000
 val API_ROUTE = "/api"
+val BROKEN_CONSTANT
 val localTimeout = 30
 
 sealed interface AuthResult
 
-  data class UserSession(val token: String)
+data class UserSession(val token: String)
 
   object SessionManager
 
@@ -155,7 +156,13 @@ sealed interface AuthResult
       }
   }
 
-typealias SessionLoader = (String) -> Boolean
+  suspend fun refreshToken(): Boolean {
+      return true
+  }
+
+  fun String.masked(): String = this.take(2)
+
+  typealias SessionLoader = (String) -> Boolean
 KTEOF
 
   cat > "${TEST_DIR}/src/build.gradle.kts" <<'KTSEOF'
@@ -1394,14 +1401,15 @@ test_force_lang_kotlin() {
 }
 
 test_kotlin_constants_are_conservative() {
-  local uppercase_property uppercase_val lowercase_property
+  local uppercase_property uppercase_val bare_val lowercase_property
   uppercase_property=$(_assert_symbol_type_for_text "${TEST_DIR}/src/App.kt" "const val DEFAULT_TIMEOUT_MS" "constant")
   uppercase_val=$(_assert_symbol_type_for_text "${TEST_DIR}/src/App.kt" "val API_ROUTE = \"/api\"" "constant")
+  bare_val=$(_assert_symbol_type_not_present_for_text "${TEST_DIR}/src/App.kt" "val BROKEN_CONSTANT" "constant")
   lowercase_property=$(_assert_symbol_type_not_present_for_text "${TEST_DIR}/src/App.kt" "val localTimeout = 30" "constant")
-  if [[ "$uppercase_property" == "OK" && "$uppercase_val" == "OK" && "$lowercase_property" == "OK" ]]; then
+  if [[ "$uppercase_property" == "OK" && "$uppercase_val" == "OK" && "$bare_val" == "OK" && "$lowercase_property" == "OK" ]]; then
     pass "Kotlin constants stay conservative"
   else
-    fail "Kotlin constant classification is too broad" "${uppercase_property}|${uppercase_val}|${lowercase_property}"
+    fail "Kotlin constant classification is too broad" "${uppercase_property}|${uppercase_val}|${bare_val}|${lowercase_property}"
   fi
 }
 
@@ -1422,6 +1430,26 @@ test_kotlin_inner_classes_classify_as_classes() {
     pass "Kotlin inner classes classify as classes"
   else
     fail "Kotlin inner class classification failed" "$result"
+  fi
+}
+
+test_kotlin_suspend_functions_classify_as_functions() {
+  local result
+  result=$(_assert_symbol_type_for_text "${TEST_DIR}/src/App.kt" "suspend fun refreshToken" "function")
+  if [[ "$result" == "OK" ]]; then
+    pass "Kotlin suspend functions classify as functions"
+  else
+    fail "Kotlin suspend function classification failed" "$result"
+  fi
+}
+
+test_kotlin_extension_functions_classify_as_functions() {
+  local result
+  result=$(_assert_symbol_type_for_text "${TEST_DIR}/src/App.kt" "fun String.masked()" "function")
+  if [[ "$result" == "OK" ]]; then
+    pass "Kotlin extension functions classify as functions"
+  else
+    fail "Kotlin extension function classification failed" "$result"
   fi
 }
 
@@ -1934,6 +1962,8 @@ main() {
     run_test "Kotlin exact parse" test_parse_kotlin_exact
     run_test "Kotlin constants stay conservative" test_kotlin_constants_are_conservative
     run_test "Kotlin inner classes" test_kotlin_inner_classes_classify_as_classes
+    run_test "Kotlin suspend functions" test_kotlin_suspend_functions_classify_as_functions
+    run_test "Kotlin extension functions" test_kotlin_extension_functions_classify_as_functions
     run_test "Rust exact parse" test_parse_rust_exact
   run_test "Go exact parse" test_parse_go_exact
   run_test "Java exact parse" test_parse_java_exact
