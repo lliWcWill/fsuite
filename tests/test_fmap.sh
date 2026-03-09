@@ -132,6 +132,43 @@ public extension AuthService {
 }
 SWIFTEOF
 
+  # Kotlin fixtures
+  cat > "${TEST_DIR}/src/App.kt" <<'KTEOF'
+import android.os.Bundle
+import androidx.appcompat.app.AppCompatActivity
+
+const val DEFAULT_TIMEOUT_MS = 5000
+val API_ROUTE = "/api"
+val localTimeout = 30
+
+sealed interface AuthResult
+
+data class UserSession(val token: String)
+
+object SessionManager
+
+class MainActivity : AppCompatActivity() {
+    fun bootstrap(user: String): Boolean {
+        return user.isNotEmpty()
+    }
+}
+
+typealias SessionLoader = (String) -> Boolean
+KTEOF
+
+  cat > "${TEST_DIR}/src/build.gradle.kts" <<'KTSEOF'
+import com.android.build.api.dsl.ApplicationExtension
+
+const val COMPILE_SDK = 34
+
+fun sharedVersionName(): String = "1.0"
+
+plugins {
+    id("com.android.application")
+    kotlin("android")
+}
+KTSEOF
+
   # Rust fixtures
   cat > "${TEST_DIR}/src/main.rs" <<'RSEOF'
 use std::collections::HashMap;
@@ -1268,6 +1305,16 @@ test_dir_swift_symbols() {
   fi
 }
 
+test_dir_kotlin_symbols() {
+  local output
+  output=$(FSUITE_TELEMETRY=0 "${FMAP}" "${TEST_DIR}/src" 2>&1)
+  if [[ "$output" =~ "App.kt" ]] && [[ "$output" =~ "bootstrap" ]] && [[ "$output" =~ "SessionManager" ]]; then
+    pass "Kotlin symbols found in directory mode"
+  else
+    fail "Kotlin symbols missing in directory mode" "$output"
+  fi
+}
+
 test_parse_swift_exact() {
   local result
   result=$(_validate_lang_json "${TEST_DIR}/src/App.swift" "swift" "function,class,import,type,constant" 7)
@@ -1296,6 +1343,47 @@ test_swift_constants_are_screaming_case_only() {
     pass "Swift constants stay SCREAMING_CASE-only"
   else
     fail "Swift constant classification is too broad" "${uppercase_property}|${lowercase_property}"
+  fi
+}
+
+test_parse_kotlin_exact() {
+  local result
+  result=$(_validate_lang_json "${TEST_DIR}/src/App.kt" "kotlin" "function,class,import,type,constant" 7)
+  if [[ "$result" == "OK" ]]; then
+    pass "Kotlin exact parse: all types found, no dupes, 7+ symbols"
+  else
+    fail "Kotlin exact parse failed" "$result"
+  fi
+}
+
+test_force_lang_kotlin() {
+  local output
+  output=$(FSUITE_TELEMETRY=0 "${FMAP}" -L kotlin "${TEST_DIR}/src/App.kt" 2>&1)
+  if [[ "$output" =~ "(kotlin)" ]]; then
+    pass "-L kotlin forces language detection"
+  else
+    fail "-L kotlin not effective" "Got: $output"
+  fi
+}
+
+test_kotlin_constants_are_conservative() {
+  local uppercase_property lowercase_property
+  uppercase_property=$(_assert_symbol_type_for_text "${TEST_DIR}/src/App.kt" "const val DEFAULT_TIMEOUT_MS" "constant")
+  lowercase_property=$(_assert_symbol_type_not_present_for_text "${TEST_DIR}/src/App.kt" "val localTimeout = 30" "constant")
+  if [[ "$uppercase_property" == "OK" && "$lowercase_property" == "OK" ]]; then
+    pass "Kotlin constants stay conservative"
+  else
+    fail "Kotlin constant classification is too broad" "${uppercase_property}|${lowercase_property}"
+  fi
+}
+
+test_gradle_kts_detects_as_kotlin() {
+  local result
+  result=$(_validate_lang_json "${TEST_DIR}/src/build.gradle.kts" "kotlin" "function,import,constant" 3)
+  if [[ "$result" == "OK" ]]; then
+    pass "Gradle Kotlin DSL file is detected as kotlin"
+  else
+    fail "Gradle Kotlin DSL detection failed" "$result"
   fi
 }
 
@@ -1608,7 +1696,7 @@ test_force_lang_yaml() {
 test_bad_lang_lists_new_languages() {
   local output rc
   output=$(FSUITE_TELEMETRY=0 "${FMAP}" -L badlang "${TEST_DIR}" 2>&1) || rc=$?
-  if [[ "${rc:-0}" -eq 2 ]] && [[ "$output" =~ "swift" ]] && [[ "$output" =~ "dockerfile" ]] && [[ "$output" =~ "makefile" ]] && [[ "$output" =~ "yaml" ]]; then
+  if [[ "${rc:-0}" -eq 2 ]] && [[ "$output" =~ "kotlin" ]] && [[ "$output" =~ "swift" ]] && [[ "$output" =~ "dockerfile" ]] && [[ "$output" =~ "makefile" ]] && [[ "$output" =~ "yaml" ]]; then
     pass "Invalid --lang error lists new languages"
   else
     fail "Invalid --lang error missing new languages" "rc=${rc:-0}, output=$output"
@@ -1675,11 +1763,12 @@ main() {
   run_test "Bash both forms" test_dir_bash_both_function_forms
   run_test "Bash source imports" test_dir_bash_source_imports
   run_test "Bash constants" test_dir_bash_constants
-  run_test "Rust symbols" test_dir_rust_symbols
-  run_test "Go symbols" test_dir_go_symbols
-  run_test "Ruby symbols" test_dir_ruby_symbols
-  run_test "Java symbols" test_dir_java_symbols
-  run_test "Swift symbols" test_dir_swift_symbols
+    run_test "Rust symbols" test_dir_rust_symbols
+    run_test "Go symbols" test_dir_go_symbols
+    run_test "Ruby symbols" test_dir_ruby_symbols
+    run_test "Java symbols" test_dir_java_symbols
+    run_test "Swift symbols" test_dir_swift_symbols
+    run_test "Kotlin symbols" test_dir_kotlin_symbols
 
   # Single file mode
   run_test "Single file detect" test_single_file_detect
@@ -1728,11 +1817,13 @@ main() {
   run_test "Python exact parse" test_parse_python_exact
   run_test "JavaScript exact parse" test_parse_javascript_exact
   run_test "JavaScript exported forms" test_javascript_exported_forms_classify_correctly
-  run_test "TypeScript exact parse" test_parse_typescript_exact
-  run_test "TypeScript exported functions" test_typescript_exported_functions_classify_as_functions
-  run_test "Swift exact parse" test_parse_swift_exact
-  run_test "Swift constants are SCREAMING_CASE-only" test_swift_constants_are_screaming_case_only
-  run_test "Rust exact parse" test_parse_rust_exact
+    run_test "TypeScript exact parse" test_parse_typescript_exact
+    run_test "TypeScript exported functions" test_typescript_exported_functions_classify_as_functions
+    run_test "Swift exact parse" test_parse_swift_exact
+    run_test "Swift constants are SCREAMING_CASE-only" test_swift_constants_are_screaming_case_only
+    run_test "Kotlin exact parse" test_parse_kotlin_exact
+    run_test "Kotlin constants stay conservative" test_kotlin_constants_are_conservative
+    run_test "Rust exact parse" test_parse_rust_exact
   run_test "Go exact parse" test_parse_go_exact
   run_test "Java exact parse" test_parse_java_exact
   run_test "Bash exact parse" test_parse_bash_exact
@@ -1764,14 +1855,16 @@ main() {
   run_test "Force lang makefile" test_force_lang_makefile
 
   # YAML
-  run_test "YAML symbols" test_dir_yaml_symbols
-  run_test "YAML uses: import" test_yaml_github_actions_uses
-  run_test "YAML exact parse" test_parse_yaml_exact
-  run_test "Force lang yaml" test_force_lang_yaml
-  run_test "Force lang swift" test_force_lang_swift
+    run_test "YAML symbols" test_dir_yaml_symbols
+    run_test "YAML uses: import" test_yaml_github_actions_uses
+    run_test "YAML exact parse" test_parse_yaml_exact
+    run_test "Force lang yaml" test_force_lang_yaml
+    run_test "Force lang swift" test_force_lang_swift
+    run_test "Force lang kotlin" test_force_lang_kotlin
+    run_test "Gradle Kotlin DSL detection" test_gradle_kts_detects_as_kotlin
 
-  # New language validation
-  run_test "Invalid --lang lists new langs" test_bad_lang_lists_new_languages
+    # New language validation
+    run_test "Invalid --lang lists new langs" test_bad_lang_lists_new_languages
 
   # Pipeline
   run_test "fsearch | fmap pipeline" test_pipeline_fsearch_to_fmap

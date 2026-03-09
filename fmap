@@ -194,8 +194,8 @@ OPTIONS
 
   -L, --lang <lang>
       Force language (auto-detect by default).
-      Supported: python, javascript, typescript, swift, rust, go, java,
-                 c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml
+        Supported: python, javascript, typescript, kotlin, swift, rust, go, java,
+                   c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml
 
   -t, --type <type>
       Filter symbol types: function, class, import, type, export, constant
@@ -224,9 +224,9 @@ OPTIONS
   --version
       Print version and exit.
 
-SUPPORTED LANGUAGES
-  Python, JavaScript, TypeScript, Swift, Rust, Go, Java, C, C++,
-  Ruby, Lua, PHP, Bash/Shell, Dockerfile, Makefile, YAML
+  SUPPORTED LANGUAGES
+    Python, JavaScript, TypeScript, Kotlin, Swift, Rust, Go, Java, C, C++,
+    Ruby, Lua, PHP, Bash/Shell, Dockerfile, Makefile, YAML
 
 HEADLESS / AI AGENT USAGE
   fmap -o json /project
@@ -329,8 +329,8 @@ if [[ -n "$FILTER_TYPE" ]]; then
 fi
 if [[ -n "$FORCE_LANG" ]]; then
   case "$FORCE_LANG" in
-    python|javascript|typescript|swift|rust|go|java|c|cpp|ruby|lua|php|bash|dockerfile|makefile|yaml) ;;
-    *) die "Invalid --lang: $FORCE_LANG (valid: python, javascript, typescript, swift, rust, go, java, c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml)" ;;
+      python|javascript|typescript|kotlin|swift|rust|go|java|c|cpp|ruby|lua|php|bash|dockerfile|makefile|yaml) ;;
+      *) die "Invalid --lang: $FORCE_LANG (valid: python, javascript, typescript, kotlin, swift, rust, go, java, c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml)" ;;
   esac
 fi
 
@@ -498,8 +498,9 @@ detect_language() {
   case "$ext" in
     py|pyw|pyi) echo "python"; return ;;
     js|mjs|cjs|jsx) echo "javascript"; return ;;
-    ts|tsx|mts|cts) echo "typescript"; return ;;
-    swift) echo "swift"; return ;;
+      ts|tsx|mts|cts) echo "typescript"; return ;;
+      kt|kts) echo "kotlin"; return ;;
+      swift) echo "swift"; return ;;
     rs) echo "rust"; return ;;
     go) echo "go"; return ;;
     java) echo "java"; return ;;
@@ -595,8 +596,17 @@ extract_symbols() {
         "constant:^[[:space:]]*const[[:space:]]+[A-Z][A-Z0-9_]*[[:space:]]*[:=]"
       )
       ;;
-    swift)
-      patterns=(
+      kotlin)
+        patterns=(
+          "function:^[[:space:]]*((public|private|internal|protected|open|final|override|suspend|inline|operator|infix|tailrec|external|actual|expect)[[:space:]]+)*fun[[:space:]]"
+          "class:^[[:space:]]*((public|private|internal|protected|sealed|data|enum|annotation|value|inline|open|abstract|final|companion)[[:space:]]+)*(class|interface|object)[[:space:]]"
+          "import:^[[:space:]]*import[[:space:]]"
+          "type:^[[:space:]]*((public|private|internal|protected)[[:space:]]+)*typealias[[:space:]]"
+          "constant:^[[:space:]]*((public|private|internal|protected)[[:space:]]+)*(const[[:space:]]+)?val[[:space:]]+[A-Z][A-Z0-9_]*([[:space:]]*[:=]|$)"
+        )
+        ;;
+      swift)
+        patterns=(
         "function:^[[:space:]]*((public|private|internal|fileprivate|open|final|static|class|override|mutating|nonmutating|convenience|required|async|throws|rethrows)[[:space:]]+)*func[[:space:]]"
         "class:^[[:space:]]*((public|private|internal|fileprivate|open|final|indirect)[[:space:]]+)*(class|struct|enum|protocol|actor|extension)[[:space:]]"
         "import:^[[:space:]]*import[[:space:]]"
