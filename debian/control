@@ -14,9 +14,11 @@ Architecture: all
 Depends: ${misc:Depends}, bash (>= 4.0), coreutils, findutils, perl
 Recommends: tree, ripgrep, fd-find, python3, sqlite3
 Description: Filesystem reconnaissance toolkit for humans and AI agents
- fsuite provides seven composable CLI tools that turn filesystem
- exploration into a clean, scriptable, agent-friendly pipeline:
+ fsuite provides a suite-level help command plus seven composable CLI
+ tools that turn filesystem exploration into a clean, scriptable,
+ agent-friendly pipeline:
  .
+  * fsuite - Show the conceptual workflow and suite-level guidance
   * fsearch - Find files by name, extension, or glob pattern
   * fcontent - Search inside files for text (powered by ripgrep)
   * ftree - Visualize directory structure with smart defaults and recon mode

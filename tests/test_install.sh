@@ -61,6 +61,7 @@ test_prefix_install_copies_tools_and_assets() {
   local missing=0
   local path
   for path in \
+    "${prefix}/bin/fsuite" \
     "${prefix}/bin/ftree" \
     "${prefix}/bin/fsearch" \
     "${prefix}/bin/fcontent" \
@@ -89,6 +90,7 @@ test_prefix_install_versions_work() {
 
   local output
   output=$(
+    FSUITE_TELEMETRY=0 "${prefix}/bin/fsuite" --version
     FSUITE_TELEMETRY=0 "${prefix}/bin/ftree" --version
     FSUITE_TELEMETRY=0 "${prefix}/bin/fsearch" --version
     FSUITE_TELEMETRY=0 "${prefix}/bin/fcontent" --version
@@ -98,7 +100,8 @@ test_prefix_install_versions_work() {
     FSUITE_TELEMETRY=0 "${prefix}/bin/fmetrics" --version
   )
 
-  if [[ "$output" =~ ftree\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
+  if [[ "$output" =~ fsuite\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
+     [[ "$output" =~ ftree\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
      [[ "$output" =~ fsearch\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
      [[ "$output" =~ fcontent\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
      [[ "$output" =~ fmap\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
@@ -108,6 +111,24 @@ test_prefix_install_versions_work() {
     pass "Installed tools report versions from the prefix"
   else
     fail "Installed tools should be executable from the prefix" "Got: $output"
+  fi
+}
+
+test_fsuite_help_explains_flow() {
+  local prefix="${TEST_ROOT}/meta"
+  FSUITE_TELEMETRY=0 "${INSTALLER}" --prefix "$prefix" >/dev/null 2>&1 || {
+    fail "Meta install should succeed"
+    return
+  }
+
+  local output
+  output=$(FSUITE_TELEMETRY=0 "${prefix}/bin/fsuite" 2>&1)
+
+  if [[ "$output" == *"Canonical agent flow"* ]] && \
+     [[ "$output" == *"ftree -> fsearch | fcontent -> fmap -> fread -> fedit -> fmetrics"* ]]; then
+    pass "fsuite command explains the suite flow"
+  else
+    fail "fsuite command should explain the suite workflow" "Got: $output"
   fi
 }
 
@@ -146,6 +167,7 @@ main() {
   run_test "Installer help output" test_installer_help
   run_test "Prefix install copies tools and assets" test_prefix_install_copies_tools_and_assets
   run_test "Installed tools report versions" test_prefix_install_versions_work
+  run_test "fsuite command explains flow" test_fsuite_help_explains_flow
   run_test "Installed fmetrics finds predict helper" test_installed_fmetrics_finds_predict_helper
 
   echo ""

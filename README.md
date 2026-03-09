@@ -17,12 +17,13 @@
 
 ---
 
-**A seven-tool filesystem reconnaissance, patching, and analytics kit for humans and AI agents.**
+**A suite-level guide plus seven operational tools for filesystem reconnaissance, patching, and analytics.**
 
-`fsuite` provides seven composable CLI tools that turn filesystem exploration into a clean, scriptable, agent-friendly pipeline:
+`fsuite` provides one suite-level guide command plus seven operational tools that turn filesystem exploration into a clean, scriptable, agent-friendly pipeline:
 
 | Tool | Purpose |
 |------|---------|
+| **`fsuite`** | Print the suite-level conceptual flow, tool roles, and headless usage guidance |
 | **`fsearch`** | Find files by name, extension, or glob pattern |
 | **`fcontent`** | Search _inside_ files for text (powered by ripgrep) |
 | **`ftree`** | Visualize directory structure with smart defaults and recon mode |
@@ -31,7 +32,7 @@
 | **`fedit`** | Apply surgical text patches with dry-run diffs, preconditions, and symbol scoping |
 | **`fmetrics`** | Analyze telemetry, history, and predicted runtime |
 
-The first five are reconnaissance drones. `fedit` is the surgical patch arm. `fmetrics` is the flight recorder and analyst. Together they cover **scout -> find -> map -> read/search -> edit -> measure** with zero glue code.
+The first five operational tools are reconnaissance drones. `fedit` is the surgical patch arm. `fmetrics` is the flight recorder and analyst. Together they cover **scout -> find/search -> map -> read -> edit -> measure**. The `fsuite` command is the suite-level explainer that teaches that flow to humans and agents on first contact.
 
 Works with **Claude Code**, **Codex**, **OpenCode**, and any shell-capable agent harness that can call local binaries.
 
@@ -128,6 +129,9 @@ cd fsuite
 # Recommended: install into ~/.local/bin
 ./install.sh --user
 
+# Suite-level guide
+./fsuite
+
 # Find all .log files under /var/log
 ./fsearch '*.log' /var/log
 
@@ -157,15 +161,21 @@ cd fsuite
 
 ## fsuite Help
 
-There is no single `fsuite` binary. `fsuite` is a **headless workflow contract** made of seven small commands that compose cleanly.
+`fsuite` is now a real suite-level guide command. The operational work still happens through the seven underlying tools, but `fsuite` is the fastest way to load the mental model.
 
 If your harness reads repo instructions automatically, use the bundled [AGENTS.md](AGENTS.md) as the suite-level operating guide.
 
 If an agent only remembers one thing, it should remember this:
 
 ```text
-ftree  ->  fsearch  ->  fmap  ->  fread  ->  fcontent?  ->  fedit  ->  fmetrics
-Scout     Find         Map      Read       Confirm         Edit       Measure
+fsuite -> ftree -> fsearch | fcontent -> fmap -> fread -> fedit -> fmetrics
+Guide     Scout    Narrowing             Bridge   Read     Edit      Measure
+```
+
+The CLI equivalent is:
+
+```bash
+fsuite
 ```
 
 ### What Each Tool Is For
@@ -187,11 +197,14 @@ Scout     Find         Map      Read       Confirm         Edit       Measure
 - Prefer `pretty` only for human terminal use.
 - Errors go to `stderr`. Results go to `stdout`.
 - `-q` is for existence checks and silent control flow.
-- Use each tool's `--help` for the full flag breakdown. This section is the suite-level mental model, not the flag reference.
+- Use `fsuite` for the suite-level mental model and each tool's `--help` for the full flag breakdown.
 
 ### Default Agent Workflow
 
 ```bash
+# 0) Load the suite-level guide once
+fsuite
+
 # 1) Scout the target once
 ftree --snapshot -o json /project
 

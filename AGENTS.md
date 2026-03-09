@@ -1,12 +1,12 @@
 # fsuite Agent Guide
 
-Use `fsuite` for filesystem reconnaissance before opening files blindly or spawning broad exploration loops.
+Use `fsuite` for suite-level guidance first, then use the operational tools for filesystem reconnaissance before opening files blindly or spawning broad exploration loops.
 
 ## Mental Model
 
 ```text
-ftree  ->  fsearch  ->  fmap  ->  fread  ->  fcontent?  ->  fedit  ->  fmetrics
-Scout     Find         Map      Read       Confirm         Edit       Measure
+fsuite -> ftree -> fsearch | fcontent -> fmap -> fread -> fedit -> fmetrics
+Guide     Scout    Narrowing             Bridge   Read     Edit      Measure
 ```
 
 ## Headless Defaults
@@ -20,6 +20,9 @@ Scout     Find         Map      Read       Confirm         Edit       Measure
 ## Recommended Workflow
 
 ```bash
+# 0) Load the suite-level guide once
+fsuite
+
 # 1) Scout once
 ftree --snapshot -o json /project
 
@@ -43,6 +46,7 @@ fmetrics predict /project
 
 ## Workflow Discipline
 
+- Run `fsuite` once if you need the suite-level mental model.
 - Run `ftree` once to establish territory.
 - Run one narrowing pass with `fsearch`.
 - Prefer `fmap` and `fread` before broad `fcontent`.

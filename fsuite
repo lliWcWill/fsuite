@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# fsuite — suite-level help and workflow guidance for the fsuite toolchain.
+
+set -euo pipefail
+
+VERSION="2.0.0"
+
+usage() {
+  cat <<'EOF'
+fsuite — suite-level help for the fsuite workflow
+
+USAGE
+  fsuite
+  fsuite help
+  fsuite tools
+  fsuite flow
+  fsuite examples
+  fsuite version
+
+DESCRIPTION
+  fsuite is the suite-level guide for the seven operational tools:
+    ftree, fsearch, fcontent, fmap, fread, fedit, fmetrics
+
+  Use fsuite when you want the conceptual flow, tool roles, and headless
+  operating pattern without digging through the README first.
+EOF
+}
+
+print_help() {
+  cat <<EOF
+fsuite ${VERSION}
+
+Seven operational tools. One headless workflow.
+
+  ftree     Scout the project once
+  fsearch   Find candidate files
+  fcontent  Confirm exact text across the narrowed set
+  fmap      Map symbols and structure
+  fread     Read the exact seam you care about
+  fedit     Preview and apply surgical patches
+  fmetrics  Measure what happened and predict the next run
+
+Canonical agent flow
+
+  ftree -> fsearch | fcontent -> fmap -> fread -> fedit -> fmetrics
+  Scout    Narrowing             Bridge   Read     Change    Measure
+
+Practical guidance
+
+  - Use ftree first for broad orientation.
+  - Use fsearch to narrow candidate files.
+  - Use fcontent after narrowing, not as the first broad repo search.
+  - Treat fmap as the bridge from discovery to surgical reading and editing.
+  - Use fread once the seam is known.
+  - Use fedit with dry-run first, then --apply.
+  - Use fmetrics after execution if you care about telemetry and runtime history.
+
+Headless defaults
+
+  - Prefer -o json for programmatic decisions.
+  - Prefer -o paths when piping into another fsuite tool.
+  - Prefer pretty only for human terminal output.
+  - Results go to stdout. Errors go to stderr.
+
+Examples
+
+  fsuite flow
+  ftree --snapshot -o json /project
+  fsearch -o paths '*.ts' /project/src | fcontent -o paths "auth"
+  fsearch -o paths '*.ts' /project/src | fmap -o json
+  fread -o json /project/src/auth.ts --around "function authenticate" -A 20
+  fedit -o json /project/src/auth.ts --function validateLength --replace "return false;" --with "return true;"
+  fmetrics import && fmetrics stats -o json
+
+Use each tool's --help for the full flag surface.
+EOF
+}
+
+print_tools() {
+  cat <<'EOF'
+Tool roles
+
+  ftree
+    Broad orientation. Use once to understand repo shape and likely hotspots.
+
+  fsearch
+    Candidate-file discovery by name, extension, or glob.
+
+  fcontent
+    Exact text confirmation across the narrowed file set.
+
+  fmap
+    Structural map of symbols, imports, functions, types, and handoff seams.
+
+  fread
+    Bounded reads around lines, patterns, symbols, and diffs.
+
+  fedit
+    Surgical patching with dry-run diffs, symbol shortcuts, preconditions, and batch mode.
+
+  fmetrics
+    Telemetry import, stats, and prediction.
+EOF
+}
+
+print_flow() {
+  cat <<'EOF'
+Recommended workflow
+
+  1. ftree
+     Build the broad repo picture once.
+
+  2. fsearch
+     Narrow to likely files.
+
+  3. fcontent
+     Use only when exact textual confirmation is needed across the narrowed set.
+
+  4. fmap
+     Bridge discovery to structural understanding.
+
+  5. fread
+     Read the exact code seam now that the target is clear.
+
+  6. fedit
+     Preview and apply a surgical change.
+
+  7. fmetrics
+     Measure runtime history and import telemetry if needed.
+
+Heuristic, not rigid rule:
+  ftree -> fsearch | fcontent -> fmap -> fread -> fedit -> fmetrics
+EOF
+}
+
+print_examples() {
+  cat <<'EOF'
+Examples
+
+  # Scout once
+  ftree --snapshot -o json /project
+
+  # Narrow candidates, then confirm exact text only if needed
+  fsearch -o paths '*.py' /project/src | fcontent -o paths "authenticate"
+
+  # Map structure before broad reads
+  fsearch -o paths '*.py' /project/src | fmap -o json
+
+  # Read the exact seam
+  fread -o json /project/src/auth.py --around "def authenticate" -B 5 -A 20
+
+  # Preview and apply a patch
+  fedit -o json /project/src/auth.py --symbol authenticate --replace "return False" --with "return deny()"
+  fedit -o json /project/src/auth.py --symbol authenticate --replace "return False" --with "return deny()" --apply
+
+  # Measure and inspect
+  fmetrics import
+  fmetrics stats -o json
+EOF
+}
+
+case "${1:-help}" in
+  help|"")
+    print_help
+    ;;
+  tools)
+    print_tools
+    ;;
+  flow)
+    print_flow
+    ;;
+  examples)
+    print_examples
+    ;;
+  version|--version)
+    echo "fsuite ${VERSION}"
+    ;;
+  -h|--help)
+    usage
+    ;;
+  *)
+    echo "fsuite: unknown subcommand: $1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
