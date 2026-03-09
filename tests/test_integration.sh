@@ -229,12 +229,12 @@ test_find_env_with_secrets() {
   command -v rg >/dev/null 2>&1 || return
 
   local output
-  output=$("${FSEARCH}" --output paths ".env" "${TEST_DIR}" | "${FCONTENT}" "SECRET" 2>&1)
+  output=$("${FSEARCH}" --output paths ".env" "${TEST_DIR}" | "${FCONTENT}" --rg-args "--hidden" "SECRET_KEY" 2>&1)
 
-  if [[ "$output" =~ SECRET ]]; then
-    pass "Security scan: find .env files with SECRET"
+  if [[ "$output" =~ SECRET_KEY ]]; then
+    pass "Security scan: find .env files with SECRET_KEY"
   else
-    fail "Should find SECRET in .env files"
+    fail "Should find SECRET_KEY in .env files"
   fi
 }
 
