@@ -11,7 +11,6 @@
 [![Release](https://img.shields.io/github/v/release/lliWcWill/fsuite?display_name=tag)](https://github.com/lliWcWill/fsuite/releases)
 ![Debian Package](https://img.shields.io/badge/deb-package%20available-A81D33)
 ![Shell](https://img.shields.io/badge/Shell-Bash-4EAA25?logo=gnubash&logoColor=white)
-![Agent First](https://img.shields.io/badge/agent-first-headless-1f6feb)
 ![JSON Output](https://img.shields.io/badge/output-json-0A7EA4)
 ![Platform](https://img.shields.io/badge/platform-linux%20%7C%20macOS-444)
 
