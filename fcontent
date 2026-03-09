@@ -113,10 +113,46 @@ DEFAULT_PATH="."
 DEFAULT_OUTPUT="pretty"     # pretty|paths|json
 DEFAULT_MAX_MATCHES=200     # cap printed matches to avoid terminal floods
 DEFAULT_MAX_FILES=2000      # cap file list read from stdin to avoid accidental explosions
+DEFAULT_RG_GLOBS=(
+  -g '!**/node_modules/**'
+  -g '!**/dist/**'
+  -g '!**/build/**'
+  -g '!**/.next/**'
+  -g '!**/coverage/**'
+  -g '!**/.git/**'
+  -g '!**/vendor/**'
+  -g '!**/target/**'
+)
                                 # --rg-args accumulates into RG_ARGS array
 
 die() { echo "Error: $*" >&2; exit 1; }
 has() { command -v "$1" >/dev/null 2>&1; }
+
+normalize_input_path() {
+  local p="$1"
+  [[ -n "$p" ]] || return 0
+
+  if [[ "$p" == "~/"* ]]; then
+    p="${HOME}/${p#\~/}"
+  elif [[ "$p" == "~" ]]; then
+    p="$HOME"
+  fi
+
+  if [[ "$p" != /* ]]; then
+    p="$(pwd)/$p"
+  fi
+
+  if [[ -e "$p" ]]; then
+    realpath -e "$p" 2>/dev/null || printf "%s" "$p"
+  else
+    printf "%s" "$p"
+  fi
+}
+
+path_is_low_signal_root() {
+  local p="$1"
+  [[ "$p" =~ (^|/)(node_modules|dist|build|\.next|coverage|\.git|vendor|target)(/|$) ]]
+}
 
 usage() {
   cat <<'EOF'
@@ -159,6 +195,11 @@ OPTIONS
   --rg-args "..."
       Extra arguments passed to rg (advanced).
       Example: --rg-args "-i --hidden"
+
+  --no-default-ignore
+      Disable built-in low-signal directory filtering in directory mode.
+      By default, fcontent suppresses dependency/build trees such as:
+        node_modules, dist, build, .next, coverage, .git, vendor, target
 
   --install-hints
       Print how to install rg and exit.
@@ -219,6 +260,7 @@ RG_ARGS=()
 INSTALL_HINTS=0
 SELF_CHECK=0
 QUIET=0
+NO_DEFAULT_IGNORE=0
 
 # Pre-process arguments: expand combined short flags like -m5 to -m 5
 _args=()
@@ -246,6 +288,10 @@ while [[ $# -gt 0 ]]; do
       fi
       _TELEM_FLAGS+=" --rg-args"
       shift 2 ;;
+    --no-default-ignore)
+      NO_DEFAULT_IGNORE=1
+      _TELEM_FLAGS+=" --no-default-ignore"
+      shift ;;
     --project-name)
       [[ -n "${2:-}" ]] || die "Missing value for --project-name"
       _TELEM_PROJECT_NAME="$2"; shift 2 ;;
@@ -330,6 +376,10 @@ if (( EXPLICIT_PATH == 0 )) && ! [ -t 0 ]; then
   FILES_FROM_STDIN=1
 fi
 
+if (( FILES_FROM_STDIN == 0 )); then
+  SEARCH_PATH="$(normalize_input_path "$SEARCH_PATH")"
+fi
+
 # Build file list if using stdin
 TMP_LIST=""
 cleanup() {
@@ -379,6 +429,10 @@ fi
 # --no-messages: suppress permission noise
 # --with-filename --line-number: useful metadata
 BASE_RG=(rg --no-messages --with-filename --line-number)
+DEFAULT_DIR_RG_ARGS=()
+if (( NO_DEFAULT_IGNORE == 0 )) && (( FILES_FROM_STDIN == 0 )) && ! path_is_low_signal_root "$SEARCH_PATH"; then
+  DEFAULT_DIR_RG_ARGS=("${DEFAULT_RG_GLOBS[@]}")
+fi
 
 # RG_ARGS is already an array (populated by --rg-args flags)
 
@@ -386,7 +440,7 @@ if [[ "$OUTPUT" == "paths" ]]; then
   if (( FILES_FROM_STDIN == 1 )); then
     xargs -d '\n' -a "$TMP_LIST" "${BASE_RG[@]}" ${RG_ARGS[@]+"${RG_ARGS[@]}"} -l -- "$QUERY" 2>/dev/null | sort -u || true
   else
-    "${BASE_RG[@]}" ${RG_ARGS[@]+"${RG_ARGS[@]}"} -l -- "$QUERY" "$SEARCH_PATH" 2>/dev/null | sort -u || true
+    "${BASE_RG[@]}" ${DEFAULT_DIR_RG_ARGS[@]+"${DEFAULT_DIR_RG_ARGS[@]}"} ${RG_ARGS[@]+"${RG_ARGS[@]}"} -l -- "$QUERY" "$SEARCH_PATH" 2>/dev/null | sort -u || true
   fi
   # Emit metacharacter warning to stderr (paths mode)
   (( _METACHAR_WARNING == 1 )) && echo "Warning: $_METACHAR_WARNING_MSG" >&2
@@ -398,7 +452,7 @@ fi
 if (( FILES_FROM_STDIN == 1 )); then
   mapfile -t MATCH_LINES < <(xargs -d '\n' -a "$TMP_LIST" "${BASE_RG[@]}" ${RG_ARGS[@]+"${RG_ARGS[@]}"} -- "$QUERY" 2>/dev/null | head -n "$MAX_MATCHES" || true)
 else
-  mapfile -t MATCH_LINES < <("${BASE_RG[@]}" ${RG_ARGS[@]+"${RG_ARGS[@]}"} -- "$QUERY" "$SEARCH_PATH" 2>/dev/null | head -n "$MAX_MATCHES" || true)
+  mapfile -t MATCH_LINES < <("${BASE_RG[@]}" ${DEFAULT_DIR_RG_ARGS[@]+"${DEFAULT_DIR_RG_ARGS[@]}"} ${RG_ARGS[@]+"${RG_ARGS[@]}"} -- "$QUERY" "$SEARCH_PATH" 2>/dev/null | head -n "$MAX_MATCHES" || true)
 fi
 
 # Extract unique matched filenames from MATCH_LINES (avoids redundant rg invocation).
@@ -425,7 +479,7 @@ if (( SHOWN_MATCHES == MAX_MATCHES )); then
     )
   else
     mapfile -t FULL_MATCH_FILES < <(
-      "${BASE_RG[@]}" ${RG_ARGS[@]+"${RG_ARGS[@]}"} -l -- "$QUERY" "$SEARCH_PATH" 2>/dev/null | sort -u || true
+      "${BASE_RG[@]}" ${DEFAULT_DIR_RG_ARGS[@]+"${DEFAULT_DIR_RG_ARGS[@]}"} ${RG_ARGS[@]+"${RG_ARGS[@]}"} -l -- "$QUERY" "$SEARCH_PATH" 2>/dev/null | sort -u || true
     )
   fi
   MATCH_FILES=("${FULL_MATCH_FILES[@]}")

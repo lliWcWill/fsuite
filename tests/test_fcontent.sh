@@ -23,6 +23,8 @@ setup() {
   mkdir -p "${TEST_DIR}/logs"
   mkdir -p "${TEST_DIR}/configs"
   mkdir -p "${TEST_DIR}/code"
+  mkdir -p "${TEST_DIR}/node_modules"
+  mkdir -p "${TEST_DIR}/dist"
 
   # Create files with searchable content
   cat > "${TEST_DIR}/logs/app.log" <<'EOF'
@@ -63,6 +65,14 @@ import sys
 # TODO: Add logging
 def helper():
     pass
+EOF
+
+  cat > "${TEST_DIR}/node_modules/dep.js" <<'EOF'
+const DEP_ONLY_TOKEN = "from-node-modules";
+EOF
+
+  cat > "${TEST_DIR}/dist/bundle.js" <<'EOF'
+const BUILD_ONLY_TOKEN = "from-dist";
 EOF
 
   cat > "${TEST_DIR}/empty.txt" <<'EOF'
@@ -202,6 +212,46 @@ test_recursive_search() {
     pass "Recursive search works"
   else
     fail "Should find TODO in nested directories"
+  fi
+}
+
+test_default_ignore_filters_dependency_trees() {
+  check_rg || return
+  local output
+  output=$("${FCONTENT}" --output paths "ONLY_TOKEN" "${TEST_DIR}" 2>&1)
+  if [[ -z "$output" ]]; then
+    pass "Default ignore filters dependency/build trees in directory mode"
+  else
+    fail "Default ignore should suppress node_modules and dist matches" "Output: $output"
+  fi
+}
+
+test_no_default_ignore_restores_dependency_trees() {
+  check_rg || return
+  local output
+  output=$("${FCONTENT}" --no-default-ignore --output paths "ONLY_TOKEN" "${TEST_DIR}" 2>&1)
+  if [[ "$output" == *"node_modules/dep.js"* ]] && [[ "$output" == *"dist/bundle.js"* ]]; then
+    pass "--no-default-ignore restores dependency/build tree matches"
+  else
+    fail "--no-default-ignore should include node_modules and dist matches" "Output: $output"
+  fi
+}
+
+test_tilde_path_expansion() {
+  check_rg || return
+  local home_dir
+  home_dir="$(mktemp -d "${HOME}/fsuite-fcontent-home.XXXXXX")"
+  local rc=0
+  cat > "${home_dir}/tilde.txt" <<'EOF'
+TILDE_ONLY_TOKEN=1
+EOF
+  local output
+  output=$("${FCONTENT}" --output paths "TILDE_ONLY_TOKEN" "~/${home_dir##${HOME}/}" 2>&1) || rc=$?
+  rm -rf "${home_dir}"
+  if [[ $rc -eq 0 ]] && [[ "$output" == *"tilde.txt"* ]]; then
+    pass "Tilde path expansion works in directory mode"
+  else
+    fail "Tilde path expansion should resolve to HOME" "rc=$rc output=$output"
   fi
 }
 
@@ -792,6 +842,8 @@ main() {
   run_test "Directory search" test_directory_search
   run_test "Multiple files search" test_directory_multiple_files
   run_test "Recursive search" test_recursive_search
+  run_test "Default ignore filters dependency trees" test_default_ignore_filters_dependency_trees
+  run_test "--no-default-ignore restores dependency trees" test_no_default_ignore_restores_dependency_trees
   run_test "No matches" test_no_matches
   run_test "Quiet no-match exit code" test_quiet_exit_code_no_match
   run_test "Quiet match exit code" test_quiet_exit_code_match
@@ -837,6 +889,7 @@ main() {
   run_test "JSON parseable" test_json_parseable
   run_test "Paths pipeable" test_paths_pipeable
   run_test "Piped from find" test_piped_from_find
+  run_test "Tilde path expansion" test_tilde_path_expansion
 
   # Negative tests
   run_test "Invalid output format" test_invalid_output_format

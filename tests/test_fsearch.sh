@@ -22,6 +22,8 @@ setup() {
   # Create test directory structure
   mkdir -p "${TEST_DIR}/subdir1"
   mkdir -p "${TEST_DIR}/subdir2/nested"
+  mkdir -p "${TEST_DIR}/src"
+  mkdir -p "${TEST_DIR}/dist"
   mkdir -p "${TEST_DIR}/node_modules"
   mkdir -p "${TEST_DIR}/node_modules/cache"
   touch "${TEST_DIR}/file1.log"
@@ -38,6 +40,10 @@ setup() {
   touch "${TEST_DIR}/test_progress.py"
   touch "${TEST_DIR}/node_modules/cache/bundle.log"
   touch "${TEST_DIR}/node_modules/legacy.log"
+  touch "${TEST_DIR}/package.json"
+  touch "${TEST_DIR}/src/package.json"
+  touch "${TEST_DIR}/dist/package.json"
+  touch "${TEST_DIR}/node_modules/package.json"
 }
 
 teardown() {
@@ -129,10 +135,10 @@ test_glob_extension() {
   output=$("${FSEARCH}" --output paths "*.log" "${TEST_DIR}" 2>&1)
   local count
   count=$(echo "$output" | grep -c "\.log$" || true)
-  if [[ $count -eq 5 ]]; then
-    pass "Glob pattern *.log finds all .log files"
+  if [[ $count -eq 3 ]]; then
+    pass "Glob pattern *.log skips low-signal directories by default"
   else
-    fail "Glob pattern *.log should find 5 files" "Found: $count"
+    fail "Glob pattern *.log should find 3 files with default ignores" "Found: $count"
   fi
 }
 
@@ -141,10 +147,10 @@ test_bare_extension() {
   output=$("${FSEARCH}" --output paths "log" "${TEST_DIR}" 2>&1)
   local count
   count=$(echo "$output" | grep -c "\.log$" || true)
-  if [[ $count -eq 5 ]]; then
-    pass "Bare extension 'log' expands to *.log"
+  if [[ $count -eq 3 ]]; then
+    pass "Bare extension 'log' expands to *.log with default ignores"
   else
-    fail "Bare extension 'log' should find 5 files" "Found: $count"
+    fail "Bare extension 'log' should find 3 files with default ignores" "Found: $count"
   fi
 }
 
@@ -153,10 +159,10 @@ test_dotted_extension() {
   output=$("${FSEARCH}" --output paths ".log" "${TEST_DIR}" 2>&1)
   local count
   count=$(echo "$output" | grep -c "\.log$" || true)
-  if [[ $count -eq 5 ]]; then
-    pass "Dotted extension '.log' expands to *.log"
+  if [[ $count -eq 3 ]]; then
+    pass "Dotted extension '.log' expands to *.log with default ignores"
   else
-    fail "Dotted extension '.log' should find 5 files" "Found: $count"
+    fail "Dotted extension '.log' should find 3 files with default ignores" "Found: $count"
   fi
 }
 
@@ -181,6 +187,45 @@ test_exclude_pattern() {
     pass "--exclude removes matching paths"
   else
     fail "--exclude should remove node_modules logs" "Found: $count"
+  fi
+}
+
+test_default_ignore_filters_dependency_trees() {
+  local output
+  output=$("${FSEARCH}" --output paths "package.json" "${TEST_DIR}" 2>&1)
+  if [[ "$output" == *"${TEST_DIR}/package.json"* ]] && \
+     [[ "$output" == *"${TEST_DIR}/src/package.json"* ]] && \
+     [[ "$output" != *"${TEST_DIR}/node_modules/package.json"* ]] && \
+     [[ "$output" != *"${TEST_DIR}/dist/package.json"* ]]; then
+    pass "Default ignore filters dependency/build trees"
+  else
+    fail "Default ignore should suppress node_modules and dist package manifests" "Output: $output"
+  fi
+}
+
+test_no_default_ignore_restores_dependency_trees() {
+  local output
+  output=$("${FSEARCH}" --no-default-ignore --output paths "package.json" "${TEST_DIR}" 2>&1)
+  if [[ "$output" == *"${TEST_DIR}/node_modules/package.json"* ]] && \
+     [[ "$output" == *"${TEST_DIR}/dist/package.json"* ]]; then
+    pass "--no-default-ignore restores dependency/build tree results"
+  else
+    fail "--no-default-ignore should include node_modules and dist results" "Output: $output"
+  fi
+}
+
+test_tilde_path_expansion() {
+  local home_dir
+  home_dir="$(mktemp -d "${HOME}/fsuite-fsearch-home.XXXXXX")"
+  local rc=0
+  touch "${home_dir}/tilde_test.log"
+  local output
+  output=$("${FSEARCH}" --output paths "*.log" "~/${home_dir##${HOME}/}" 2>&1) || rc=$?
+  rm -rf "${home_dir}"
+  if [[ $rc -eq 0 ]] && [[ "$output" == *"tilde_test.log"* ]]; then
+    pass "Tilde path expansion works"
+  else
+    fail "Tilde path expansion should resolve to HOME" "rc=$rc output=$output"
   fi
 }
 
@@ -285,10 +330,10 @@ test_json_output() {
 test_json_total_found() {
   local output
   output=$("${FSEARCH}" --output json "*.log" "${TEST_DIR}" 2>&1)
-  if [[ "$output" =~ \"total_found\":5 ]]; then
+  if [[ "$output" =~ \"total_found\":3 ]]; then
     pass "JSON total_found field is accurate"
   else
-    fail "JSON total_found should be 5"
+    fail "JSON total_found should be 3 with default ignores"
   fi
 }
 
@@ -321,7 +366,7 @@ test_max_limit() {
 test_max_limit_in_json() {
   local output
   output=$("${FSEARCH}" --output json --max 2 "*.log" "${TEST_DIR}" 2>&1)
-  if [[ "$output" =~ \"total_found\":5 ]] && [[ "$output" =~ \"shown\":2 ]]; then
+  if [[ "$output" =~ \"total_found\":3 ]] && [[ "$output" =~ \"shown\":2 ]]; then
     pass "JSON shows correct total_found vs shown with max limit"
   else
     fail "JSON max limit handling is incorrect"
@@ -460,17 +505,13 @@ test_install_hints() {
 # ============================================================================
 
 test_default_path() {
-  # Test searching from current directory (default)
-  (
-    cd "${TEST_DIR}"
-    local output
-    output=$("${FSEARCH}" --output paths "*.log" 2>&1)
-    if [[ -n "$output" ]] && [[ "$output" =~ \.log$ ]]; then
-      pass "Default path (current directory) works"
-    else
-      fail "Should search current directory by default"
-    fi
-  )
+  local output
+  output=$(cd "${TEST_DIR}" && "${FSEARCH}" --output paths "*.log" 2>&1)
+  if [[ -n "$output" ]] && [[ "$output" =~ \.log$ ]]; then
+    pass "Default path (current directory) works"
+  else
+    fail "Should search current directory by default"
+  fi
 }
 
 test_absolute_path() {
@@ -484,18 +525,15 @@ test_absolute_path() {
 }
 
 test_relative_path() {
-  (
-    cd "$(dirname "${TEST_DIR}")"
-    local basename
-    basename=$(basename "${TEST_DIR}")
-    local output
-    output=$("${FSEARCH}" --output paths "*.log" "./${basename}" 2>&1)
-    if [[ -n "$output" ]]; then
-      pass "Relative path works"
-    else
-      fail "Should work with relative paths"
-    fi
-  )
+  local output
+  local basename
+  basename=$(basename "${TEST_DIR}")
+  output=$(cd "$(dirname "${TEST_DIR}")" && "${FSEARCH}" --output paths "*.log" "./${basename}" 2>&1)
+  if [[ -n "$output" ]]; then
+    pass "Relative path works"
+  else
+    fail "Should work with relative paths"
+  fi
 }
 
 # ============================================================================
@@ -634,6 +672,8 @@ main() {
   run_test "--include filter" test_include_pattern
   run_test "--exclude filter" test_exclude_pattern
   run_test "Combined include and exclude" test_include_and_exclude_combined
+  run_test "Default ignore filters dependency trees" test_default_ignore_filters_dependency_trees
+  run_test "--no-default-ignore restores dependency trees" test_no_default_ignore_restores_dependency_trees
 
   # Output formats
   run_test "Pretty output format" test_pretty_output
@@ -666,6 +706,7 @@ main() {
   run_test "Default path" test_default_path
   run_test "Absolute path" test_absolute_path
   run_test "Relative path" test_relative_path
+  run_test "Tilde path expansion" test_tilde_path_expansion
 
   # Integration
   run_test "JSON parseable" test_json_parseable

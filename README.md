@@ -108,7 +108,7 @@ And once those reads are happening in the real world:
 
 ```text
 AFTER execution:
-  ... -> fcontent -o json -> fedit -o json -> fmetrics import -> fmetrics stats / predict
+  ... -> fcontent -o json (only if exact text confirmation is needed) -> fedit -o json -> fmetrics import -> fmetrics stats / predict
   Search inside the narrowed set, patch surgically, then measure what actually happened and plan the next pass.
 ```
 
@@ -164,8 +164,8 @@ If your harness reads repo instructions automatically, use the bundled [AGENTS.m
 If an agent only remembers one thing, it should remember this:
 
 ```text
-ftree  ->  fsearch  ->  fmap / fcontent  ->  fread  ->  fedit  ->  fmetrics
-Scout     Find         Map / Search         Read       Edit       Measure
+ftree  ->  fsearch  ->  fmap  ->  fread  ->  fcontent?  ->  fedit  ->  fmetrics
+Scout     Find         Map      Read       Confirm         Edit       Measure
 ```
 
 ### What Each Tool Is For
@@ -175,7 +175,7 @@ Scout     Find         Map / Search         Read       Edit       Measure
 | `ftree` | "What is in this project, how big is it, and where should I look first?" | `-o json` |
 | `fsearch` | "Which files match this name, extension, or glob?" | `-o paths` or `-o json` |
 | `fmap` | "What symbols exist in these source files?" | `-o json` |
-| `fcontent` | "Which files contain this text?" | `-o json` or `-o paths` |
+| `fcontent` | "Which narrowed files contain this exact text?" | `-o json` or `-o paths` |
 | `fread` | "Show me the exact lines around this function, match, or diff hunk." | `-o json` |
 | `fedit` | "Preview and apply a surgical patch against the exact symbol or anchor I just inspected." | `-o json` |
 | `fmetrics` | "What did these runs cost, and what will the next one cost?" | `stats -o json`, `predict` |
@@ -198,26 +198,32 @@ ftree --snapshot -o json /project
 # 2) Narrow to candidate files
 fsearch -o paths '*.py' /project/src
 
-# 3a) If you need structure, map the files
+# 3) Map structure before broad reads
 fsearch -o paths '*.py' /project/src | fmap -o json
-
-# 3b) If you need text matches, search inside the files
-fsearch -o paths '*.py' /project/src | fcontent -o json "authenticate"
 
 # 4) Read the exact code neighborhood you care about
 fread -o json /project/src/auth.py --around "def authenticate" -B 5 -A 20
 
-# 5) Preview and then apply the patch
+# 5) Only if you still need exact text confirmation, search inside the narrowed set
+fsearch -o paths '*.py' /project/src | fcontent -o json "authenticate"
+
+# 6) Preview and then apply the patch
 fedit -o json /project/src/auth.py --symbol authenticate --replace "return False" --with "return deny()"
 fedit -o json /project/src/auth.py --symbol authenticate --replace "return False" --with "return deny()" --apply
 
-# 6) Import telemetry and inspect the cost of what just happened
+# 7) Import telemetry and inspect the cost of what just happened
 fmetrics import
 fmetrics stats -o json
 fmetrics predict /project
 ```
 
 ### Decision Rule for Agents
+
+- Run `ftree` once to establish territory.
+- Run one narrowing pass with `fsearch`.
+- Prefer `fmap` + `fread` before broad `fcontent`.
+- Use `fcontent` as exact-text confirmation after narrowing, not as the first conceptual repo search.
+- Do not rediscover the repo twice unless the target changes or a contradiction appears.
 
 | If you need... | Use... |
 |----------------|--------|
@@ -283,6 +289,9 @@ fsearch [OPTIONS] <pattern_or_ext> [path]
 - Auto-selects `fd`/`fdfind` when available, falls back to POSIX `find`
 - Interactive mode (prompts for missing args) or fully headless
 - `--include/--exclude` support for post-search filtering, both repeatable and wildcard-aware
+- Built-in low-signal directory suppression by default:
+  - `node_modules`, `dist`, `build`, `.next`, `coverage`, `.git`, `vendor`, `target`
+  - disable with `--no-default-ignore`
 - Quiet mode (`-q`) for existence checks — exit 0 if found, 1 if not
 - Three output formats: `pretty` (default), `paths` (one per line), `json`
 
@@ -323,10 +332,15 @@ fcontent [OPTIONS] <query> [path]
 
 - Directory mode: recursively searches a path
 - Piped mode: reads file paths from stdin (pairs with `fsearch --output paths`)
+- Directory mode suppresses low-signal dependency/build trees by default:
+  - `node_modules`, `dist`, `build`, `.next`, `coverage`, `.git`, `vendor`, `target`
+  - disable with `--no-default-ignore`
 - Three output formats: `pretty` (default), `paths` (matched files only), `json`
 - Configurable match (`-m`) and file (`-n`) caps to prevent terminal floods
 - Quiet mode (`-q`) for existence checks — exit 0 if found, 1 if not
 - Pass-through for extra `rg` flags via `--rg-args`
+
+**Operational note:** use `fcontent` after narrowing with `fsearch`/`fmap`/`fread`. It is an exact-text confirmation tool, not the best first-pass repo exploration step.
 
 **Examples:**
 

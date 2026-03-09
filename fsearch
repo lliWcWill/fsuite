@@ -115,6 +115,16 @@ DEFAULT_PATH="."
 DEFAULT_MAX=50
 DEFAULT_BACKEND="auto"   # auto|find|fd
 DEFAULT_OUTPUT="pretty"  # pretty|json|paths
+DEFAULT_EXCLUDE_PATTERNS=(
+  "*/node_modules/*"
+  "*/dist/*"
+  "*/build/*"
+  "*/.next/*"
+  "*/coverage/*"
+  "*/.git/*"
+  "*/vendor/*"
+  "*/target/*"
+)
 
 # -------------------------
 # Helpers
@@ -122,6 +132,32 @@ DEFAULT_OUTPUT="pretty"  # pretty|json|paths
 die() { echo "Error: $*" >&2; exit 1; }
 
 has() { command -v "$1" >/dev/null 2>&1; }
+
+normalize_input_path() {
+  local p="$1"
+  [[ -n "$p" ]] || return 0
+
+  if [[ "$p" == "~/"* ]]; then
+    p="${HOME}/${p#\~/}"
+  elif [[ "$p" == "~" ]]; then
+    p="$HOME"
+  fi
+
+  if [[ "$p" != /* ]]; then
+    p="$(pwd)/$p"
+  fi
+
+  if [[ -e "$p" ]]; then
+    realpath -e "$p" 2>/dev/null || printf "%s" "$p"
+  else
+    printf "%s" "$p"
+  fi
+}
+
+path_is_low_signal_root() {
+  local p="$1"
+  [[ "$p" =~ (^|/)(node_modules|dist|build|\.next|coverage|\.git|vendor|target)(/|$) ]]
+}
 
 has_wildcard() {
   local token="$1"
@@ -217,6 +253,11 @@ OPTIONS
       Exclude paths matching any pattern.
       Can be repeated for broader filtering.
       Pattern supports wildcard matching if it contains *, ?, or [ ].
+
+  --no-default-ignore
+      Disable built-in low-signal directory filtering.
+      By default, fsearch suppresses dependency/build trees such as:
+        node_modules, dist, build, .next, coverage, .git, vendor, target
 
   -b, --backend auto|find|fd
       Choose search backend.
@@ -421,6 +462,7 @@ FORCE_INTERACTIVE=0
 INSTALL_HINTS=0
 SELF_CHECK=0
 QUIET=0
+NO_DEFAULT_IGNORE=0
 INCLUDE_PATTERNS=()
 EXCLUDE_PATTERNS=()
 
@@ -452,6 +494,11 @@ while [[ $# -gt 0 ]]; do
       EXCLUDE_PATTERNS+=("$2")
       _TELEM_FLAGS+=" -x $2"
       shift 2
+      ;;
+    --no-default-ignore)
+      NO_DEFAULT_IGNORE=1
+      _TELEM_FLAGS+=" --no-default-ignore"
+      shift
       ;;
     -b|--backend) BACKEND="${2:-}"; _TELEM_FLAGS+=" -b $2"; shift 2 ;;
     -o|--output) OUTPUT="${2:-}"; shift 2 ;;
@@ -516,6 +563,12 @@ if (( FORCE_INTERACTIVE == 1 )) || [[ -z "$PATTERN" ]]; then
   read -r -p "Enter pattern or extension (e.g. upscale* or log): " PATTERN
   read -r -p "Enter search path (default: $SEARCH_PATH): " INPUT_PATH
   if [[ -n "${INPUT_PATH:-}" ]]; then SEARCH_PATH="$INPUT_PATH"; fi
+fi
+
+SEARCH_PATH="$(normalize_input_path "$SEARCH_PATH")"
+
+if (( NO_DEFAULT_IGNORE == 0 )) && ! path_is_low_signal_root "$SEARCH_PATH"; then
+  EXCLUDE_PATTERNS=("${DEFAULT_EXCLUDE_PATTERNS[@]}" "${EXCLUDE_PATTERNS[@]}")
 fi
 
 [[ -n "$PATTERN" ]] || die "Missing pattern. Try: fsearch --help"

@@ -5,8 +5,8 @@ Use `fsuite` for filesystem reconnaissance before opening files blindly or spawn
 ## Mental Model
 
 ```text
-ftree  ->  fsearch  ->  fmap / fcontent  ->  fread  ->  fmetrics
-Scout     Find         Map / Search         Read       Measure
+ftree  ->  fsearch  ->  fmap  ->  fread  ->  fcontent?  ->  fedit  ->  fmetrics
+Scout     Find         Map      Read       Confirm         Edit       Measure
 ```
 
 ## Headless Defaults
@@ -26,28 +26,37 @@ ftree --snapshot -o json /project
 # 2) Narrow to candidate files
 fsearch -o paths '*.py' /project/src
 
-# 3a) Map structure
+# 3) Map structure before broad reads
 fsearch -o paths '*.py' /project/src | fmap -o json
-
-# 3b) Search content
-fsearch -o paths '*.py' /project/src | fcontent -o json "authenticate"
 
 # 4) Read exact context
 fread -o json /project/src/auth.py --around "def authenticate" -B 5 -A 20
 
-# 5) Measure and predict
+# 5) Only if exact text confirmation is still needed
+fsearch -o paths '*.py' /project/src | fcontent -o json "authenticate"
+
+# 6) Measure and predict
 fmetrics import
 fmetrics stats -o json
 fmetrics predict /project
 ```
+
+## Workflow Discipline
+
+- Run `ftree` once to establish territory.
+- Run one narrowing pass with `fsearch`.
+- Prefer `fmap` and `fread` before broad `fcontent`.
+- Use `fcontent` as exact-text confirmation after narrowing, not as the first conceptual repo search.
+- Do not rediscover the repo unless the target changes or a contradiction appears.
 
 ## Tool Selection
 
 - Need project shape or likely hotspots: `ftree`
 - Need candidate filenames: `fsearch`
 - Need symbol skeleton without full reads: `fmap`
-- Need text matches across files: `fcontent`
+- Need exact text confirmation across already narrowed files: `fcontent`
 - Need bounded file context: `fread`
+- Need surgical edits with preview/apply: `fedit`
 - Need runtime history or preflight cost: `fmetrics`
 
 For detailed flags and examples, use each tool's `--help`.
