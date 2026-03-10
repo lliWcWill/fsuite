@@ -1040,6 +1040,33 @@ PY
   rm -f "$tmp_json"
 }
 
+test_name_go_receiver_method() {
+  local output tmp_json
+  output=$(FSUITE_TELEMETRY=0 "${FMAP}" --name Start -o json "${TEST_DIR}/src/main.go" 2>&1)
+  tmp_json="$(mktemp)"
+  printf '%s\n' "$output" > "$tmp_json"
+
+  if python3 - "$tmp_json" <<'PY' 2>/dev/null
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    d = json.load(fh)
+assert d["query"] == "Start"
+assert d["shown_symbols"] == 1
+assert len(d["matches"]) == 1
+m = d["matches"][0]
+assert m["symbol"] == "Start"
+assert m["symbol_type"] == "function"
+assert m["match_kind"] == "exact"
+assert m["path"].endswith("main.go")
+PY
+  then
+    pass "fmap --name resolves Go receiver methods by method name"
+  else
+    fail "fmap --name should resolve Go receiver methods by method name" "Got: $output"
+  fi
+  rm -f "$tmp_json"
+}
+
 test_name_no_matches_json() {
   local output tmp_json
   output=$(FSUITE_TELEMETRY=0 "${FMAP}" --name totallyMissingSymbol -o json "${TEST_DIR}/src" 2>&1)
@@ -2058,6 +2085,7 @@ main() {
   run_test "Name exact hit JSON" test_name_exact_hit_json
   run_test "Name ranking exact before substring" test_name_ranking_exact_before_substring
   run_test "Name type filter after matching" test_name_type_filter_after_matching
+  run_test "Name Go receiver method" test_name_go_receiver_method
   run_test "Name no matches JSON" test_name_no_matches_json
   run_test "Name no matches paths" test_name_no_matches_paths
 

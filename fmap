@@ -794,7 +794,7 @@ extract_symbols() {
 extract_symbol_name() {
   local sym_type="$1"
   local text="$2"
-  local trimmed before_paren name
+  local trimmed before_paren name go_method_re
 
   trimmed="${text#"${text%%[![:space:]]*}"}"
 
@@ -805,6 +805,11 @@ extract_symbol_name() {
         return 0
       fi
       if [[ "$trimmed" =~ (^|[[:space:]])function[[:space:]]+([_[:alpha:]][_[:alnum:]]*) ]]; then
+        printf '%s\n' "${BASH_REMATCH[2]}"
+        return 0
+      fi
+      go_method_re='(^|[[:space:]])func[[:space:]]+\([^)]*\)[[:space:]]+([_[:alpha:]][_[:alnum:]]*)'
+      if [[ "$trimmed" =~ $go_method_re ]]; then
         printf '%s\n' "${BASH_REMATCH[2]}"
         return 0
       fi

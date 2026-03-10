@@ -550,6 +550,7 @@ Reads **just enough file content** for the next step in an investigation. It fil
 
 ```bash
 fread [OPTIONS] <file>
+fread [OPTIONS] <dir> --symbol <name>
 ```
 
 **Key features:**
@@ -737,6 +738,8 @@ The six operational tools (`fsearch`, `fcontent`, `ftree`, `fmap`, `fread`, `fed
 
 ### JSON schema (`fmap`)
 
+Base fields are always present. `query` and `matches` are emitted when `--name` is active.
+
 ```json
 {
   "tool": "fmap",
@@ -776,6 +779,8 @@ The six operational tools (`fsearch`, `fcontent`, `ftree`, `fmap`, `fread`, `fed
 ```
 
 ### JSON schema (`fread`)
+
+Base fields are always present. `symbol_resolution` and `candidates` are emitted when `--symbol` is active.
 
 ```json
 {

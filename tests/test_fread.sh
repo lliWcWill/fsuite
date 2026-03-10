@@ -86,6 +86,16 @@ def duplicate():
     return 2
 PYEOF
 
+  cat > "${TEST_DIR}/symbols/server.go" <<'GOEOF'
+import "fmt"
+
+type Server struct{}
+
+func (s *Server) Start() {
+    fmt.Println("started")
+}
+GOEOF
+
   # File for around-pattern tests
   cat > "${TEST_DIR}/search_target.txt" <<'EOF'
 header line 1
@@ -720,6 +730,36 @@ PY
   rm -f "$tmp_json"
 }
 
+test_symbol_go_receiver_method() {
+  local output tmp_json
+  output=$(FSUITE_TELEMETRY=0 "${FREAD}" "${TEST_DIR}/symbols/server.go" --symbol Start -o json 2>/dev/null)
+  tmp_json="$(mktemp)"
+  printf '%s\n' "$output" > "$tmp_json"
+
+  if python3 - "$tmp_json" <<'PY' 2>/dev/null
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    d = json.load(fh)
+assert d["errors"] == []
+assert len(d["chunks"]) == 1
+chunk = d["chunks"][0]
+assert chunk["path"].endswith("server.go")
+assert chunk["start_line"] == 5
+assert any("func (s *Server) Start()" in line for line in chunk["content"])
+resolution = d["symbol_resolution"]
+assert resolution["symbol"] == "Start"
+assert resolution["symbol_type"] == "function"
+assert resolution["path"].endswith("server.go")
+assert resolution["line_start"] == 5
+PY
+  then
+    pass "fread --symbol resolves Go receiver methods by method name"
+  else
+    fail "fread --symbol should resolve Go receiver methods by method name" "Got: $output"
+  fi
+  rm -f "$tmp_json"
+}
+
 test_symbol_ambiguous_failure() {
   local output rc tmp_json
   set +e
@@ -1038,6 +1078,7 @@ main() {
   run_test "Symbol exact single match" test_symbol_exact_single_match
   run_test "Symbol directory scope" test_symbol_directory_scope
   run_test "Symbol file scope is local" test_symbol_file_scope_is_local
+  run_test "Symbol Go receiver method" test_symbol_go_receiver_method
   run_test "Symbol ambiguous failure" test_symbol_ambiguous_failure
   run_test "Symbol not found failure" test_symbol_not_found_failure
 
