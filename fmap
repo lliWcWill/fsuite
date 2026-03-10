@@ -200,6 +200,9 @@ OPTIONS
   -t, --type <type>
       Filter symbol types: function, class, import, type, export, constant
 
+  --name <symbol>
+      Rank/filter extracted symbols by exact then substring symbol-name match.
+
   --no-imports
       Skip import lines. Overridden by -t import.
 
@@ -257,6 +260,7 @@ MAX_SYMBOLS="$DEFAULT_MAX_SYMBOLS"
 MAX_FILES=""
 FORCE_LANG=""
 FILTER_TYPE=""
+NAME_QUERY=""
 NO_IMPORTS=0
 NO_DEFAULT_IGNORE=0
 INSTALL_HINTS=0
@@ -282,6 +286,7 @@ while [[ $# -gt 0 ]]; do
     -n|--max-files) [[ -n "${2:-}" ]] || die "Missing value for --max-files"; MAX_FILES="$2"; _TELEM_FLAGS+=" -n ${2:-}"; shift 2 ;;
     -L|--lang) [[ -n "${2:-}" ]] || die "Missing value for --lang"; FORCE_LANG="$2"; _TELEM_FLAGS+=" -L ${2:-}"; shift 2 ;;
     -t|--type) [[ -n "${2:-}" ]] || die "Missing value for --type"; FILTER_TYPE="$2"; _TELEM_FLAGS+=" -t ${2:-}"; shift 2 ;;
+    --name) [[ -n "${2:-}" ]] || die "Missing value for --name"; NAME_QUERY="$2"; _TELEM_FLAGS+=" --name ${2:-}"; shift 2 ;;
     --no-imports) NO_IMPORTS=1; _TELEM_FLAGS+=" --no-imports"; shift ;;
     --no-default-ignore) NO_DEFAULT_IGNORE=1; _TELEM_FLAGS+=" --no-default-ignore"; shift ;;
     -q|--quiet) QUIET=1; _TELEM_FLAGS+=" -q"; shift ;;
@@ -383,10 +388,14 @@ fi
 # Temp file and cleanup
 # -------------------------
 TMP_LIST=""
+TMP_RAW_SYMBOLS=""
 TMP_SYMBOLS=""
+TMP_MATCHES=""
 cleanup() {
   [[ -n "$TMP_LIST" && -f "$TMP_LIST" ]] && rm -f "$TMP_LIST" || true
+  [[ -n "$TMP_RAW_SYMBOLS" && -f "$TMP_RAW_SYMBOLS" ]] && rm -f "$TMP_RAW_SYMBOLS" || true
   [[ -n "$TMP_SYMBOLS" && -f "$TMP_SYMBOLS" ]] && rm -f "$TMP_SYMBOLS" || true
+  [[ -n "$TMP_MATCHES" && -f "$TMP_MATCHES" ]] && rm -f "$TMP_MATCHES" || true
 }
 trap '_exit_code=$?; _TELEM_EXIT_CODE=$_exit_code; _fsuite_record_telemetry; cleanup; exit $_exit_code' EXIT
 
@@ -781,13 +790,101 @@ extract_symbols() {
   rm -f "$_tmp_raw"
 }
 
+extract_symbol_name() {
+  local sym_type="$1"
+  local text="$2"
+  local trimmed before_paren name
+
+  trimmed="${text#"${text%%[![:space:]]*}"}"
+
+  case "$sym_type" in
+    function)
+      if [[ "$trimmed" =~ (^|[[:space:]])def[[:space:]]+([_[:alpha:]][_[:alnum:]]*) ]]; then
+        printf '%s\n' "${BASH_REMATCH[2]}"
+        return 0
+      fi
+      if [[ "$trimmed" =~ (^|[[:space:]])function[[:space:]]+([_[:alpha:]][_[:alnum:]]*) ]]; then
+        printf '%s\n' "${BASH_REMATCH[2]}"
+        return 0
+      fi
+      if [[ "$trimmed" =~ (^|[[:space:]])(func|fun|fn)[[:space:]]+([_[:alpha:]][_[:alnum:].:]*) ]]; then
+        name="${BASH_REMATCH[3]}"
+        name="${name##*.}"
+        name="${name##*::}"
+        printf '%s\n' "$name"
+        return 0
+      fi
+      if [[ "$trimmed" =~ (^|[[:space:]])(const|let|var)[[:space:]]+([_[:alpha:]][_[:alnum:]]*)[[:space:]]*= ]]; then
+        printf '%s\n' "${BASH_REMATCH[3]}"
+        return 0
+      fi
+      before_paren="${trimmed%%(*}"
+      if [[ "$before_paren" != "$trimmed" ]]; then
+        name="${before_paren##* }"
+        name="${name##*&}"
+        name="${name##*\*}"
+        name="${name##*.}"
+        name="${name##*::}"
+        if [[ "$name" =~ ^[_[:alpha:]][_[:alnum:]]*$ ]]; then
+          printf '%s\n' "$name"
+          return 0
+        fi
+      fi
+      ;;
+    class)
+      if [[ "$trimmed" =~ ^\<([A-Za-z_][A-Za-z0-9_.-]*) ]]; then
+        name="${BASH_REMATCH[1]}"
+        name="${name##*.}"
+        printf '%s\n' "$name"
+        return 0
+      fi
+      if [[ "$trimmed" =~ (^|[[:space:]])(class|struct|enum|interface|protocol|trait|module|object|extension|actor)[[:space:]]+([_[:alpha:]][_[:alnum:]]*) ]]; then
+        printf '%s\n' "${BASH_REMATCH[3]}"
+        return 0
+      fi
+      ;;
+    type)
+      if [[ "$trimmed" =~ (^|[[:space:]])(interface|typealias|type|enum|associatedtype)[[:space:]]+([_[:alpha:]][_[:alnum:]]*) ]]; then
+        printf '%s\n' "${BASH_REMATCH[3]}"
+        return 0
+      fi
+      ;;
+    constant)
+      if [[ "$trimmed" =~ (^|[[:space:]])(const|let|var|readonly|val|ENV|ARG)[[:space:]]+([_[:alpha:]][_[:alnum:]]*) ]]; then
+        printf '%s\n' "${BASH_REMATCH[3]}"
+        return 0
+      fi
+      if [[ "$trimmed" =~ ^#define[[:space:]]+([_[:alpha:]][_[:alnum:]]*) ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return 0
+      fi
+      ;;
+    export)
+      if [[ "$trimmed" =~ ^exports\.([_[:alpha:]][_[:alnum:]]*) ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return 0
+      fi
+      if [[ "$trimmed" =~ module\.exports\.([_[:alpha:]][_[:alnum:]]*) ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+        return 0
+      fi
+      if [[ "$trimmed" =~ (^|[[:space:]])(function|class|const|let|var|interface|type|enum)[[:space:]]+([_[:alpha:]][_[:alnum:]]*) ]]; then
+        printf '%s\n' "${BASH_REMATCH[3]}"
+        return 0
+      fi
+      ;;
+  esac
+
+  return 1
+}
+
 # -------------------------
 # Main processing loop
 # -------------------------
 # We collect all symbols, then output
+TMP_RAW_SYMBOLS="$(mktemp)"
 TMP_SYMBOLS="$(mktemp)"
-
-declare -A LANG_COUNTS=()
+TMP_MATCHES="$(mktemp)"
 
 for file in "${FILE_LIST[@]}"; do
   [[ -f "$file" ]] || continue
@@ -810,8 +907,8 @@ for file in "${FILE_LIST[@]}"; do
       continue
     fi
 
-    # -t type filter
-    if [[ -n "$FILTER_TYPE" ]] && [[ "$sym_type" != "$FILTER_TYPE" ]]; then
+    # -t type filter applies during raw collection unless --name is active.
+    if [[ -z "$NAME_QUERY" ]] && [[ -n "$FILTER_TYPE" ]] && [[ "$sym_type" != "$FILTER_TYPE" ]]; then
       continue
     fi
 
@@ -820,26 +917,84 @@ for file in "${FILE_LIST[@]}"; do
 
   [[ -z "$filtered_symbols" ]] && continue
 
-  TOTAL_FILES_WITH_SYMBOLS=$((TOTAL_FILES_WITH_SYMBOLS + 1))
-
-  # Count language
-  LANG_COUNTS[$lang]=$(( ${LANG_COUNTS[$lang]:-0} + 1 ))
-
-  printf '%s' "$filtered_symbols" >> "$TMP_SYMBOLS"
+  printf '%s' "$filtered_symbols" >> "$TMP_RAW_SYMBOLS"
 done
 
 # Count total symbols
-if [[ -s "$TMP_SYMBOLS" ]]; then
-  TOTAL_SYMBOLS=$(wc -l < "$TMP_SYMBOLS")
+if [[ -s "$TMP_RAW_SYMBOLS" ]]; then
+  TOTAL_SYMBOLS=$(wc -l < "$TMP_RAW_SYMBOLS")
   TOTAL_SYMBOLS="${TOTAL_SYMBOLS//[[:space:]]/}"
 else
   TOTAL_SYMBOLS=0
 fi
 
+# Optional post-extraction symbol-name ranking/filtering.
+if [[ -n "$NAME_QUERY" ]] && [[ -s "$TMP_RAW_SYMBOLS" ]]; then
+  while IFS=$'\t' read -r _file _lineno _sym_type _indent _text; do
+    [[ -z "$_file" ]] && continue
+    _symbol_name="$(extract_symbol_name "$_sym_type" "$_text" || true)"
+    [[ -n "$_symbol_name" ]] || continue
+
+    _match_kind=""
+    _match_rank_key=""
+    if [[ "$_symbol_name" == "$NAME_QUERY" ]]; then
+      _match_kind="exact"
+      _match_rank_key="0"
+    elif [[ "$_symbol_name" == *"$NAME_QUERY"* ]]; then
+      _match_kind="substring"
+      _match_rank_key="1"
+    else
+      continue
+    fi
+
+    if [[ -n "$FILTER_TYPE" ]] && [[ "$_sym_type" != "$FILTER_TYPE" ]]; then
+      continue
+    fi
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$_match_rank_key" "$_file" "$_lineno" "$_sym_type" "$_symbol_name" "$_indent" "$_text" "$_match_kind" >> "$TMP_MATCHES"
+  done < "$TMP_RAW_SYMBOLS"
+
+  if [[ -s "$TMP_MATCHES" ]]; then
+    _tmp_sorted_matches="$(mktemp)"
+    sort -t$'\t' -k1,1n -k2,2 -k3,3n -k4,4 "$TMP_MATCHES" > "$_tmp_sorted_matches"
+    mv "$_tmp_sorted_matches" "$TMP_MATCHES"
+
+    while IFS=$'\t' read -r _match_rank_key _file _lineno _sym_type _symbol_name _indent _text _match_kind; do
+      printf '%s\t%s\t%s\t%s\t%s\n' "$_file" "$_lineno" "$_sym_type" "$_indent" "$_text" >> "$TMP_SYMBOLS"
+    done < "$TMP_MATCHES"
+  fi
+elif [[ -s "$TMP_RAW_SYMBOLS" ]]; then
+  cp "$TMP_RAW_SYMBOLS" "$TMP_SYMBOLS"
+fi
+
+OUTPUT_SYMBOLS=0
+if [[ -s "$TMP_SYMBOLS" ]]; then
+  OUTPUT_SYMBOLS=$(wc -l < "$TMP_SYMBOLS")
+  OUTPUT_SYMBOLS="${OUTPUT_SYMBOLS//[[:space:]]/}"
+fi
+
+TOTAL_FILES_WITH_SYMBOLS=0
+unset LANG_COUNTS 2>/dev/null || true
+declare -A LANG_COUNTS=()
+declare -A _seen_symbol_files=()
+if [[ -s "$TMP_SYMBOLS" ]]; then
+  while IFS=$'\t' read -r _f _lineno _sym_type _indent _text; do
+    [[ -z "$_f" ]] && continue
+    if [[ -z "${_seen_symbol_files[$_f]:-}" ]]; then
+      _seen_symbol_files[$_f]=1
+      TOTAL_FILES_WITH_SYMBOLS=$((TOTAL_FILES_WITH_SYMBOLS + 1))
+      _lang_for_count=$(detect_language "$_f")
+      [[ -n "$_lang_for_count" ]] && LANG_COUNTS[$_lang_for_count]=$(( ${LANG_COUNTS[$_lang_for_count]:-0} + 1 ))
+    fi
+  done < "$TMP_SYMBOLS"
+fi
+unset _seen_symbol_files
+
 # Apply max-symbols cap
-SHOWN_SYMBOLS="$TOTAL_SYMBOLS"
+SHOWN_SYMBOLS="$OUTPUT_SYMBOLS"
 TRUNCATED=false
-if (( TOTAL_SYMBOLS > MAX_SYMBOLS )); then
+if (( OUTPUT_SYMBOLS > MAX_SYMBOLS )); then
   SHOWN_SYMBOLS="$MAX_SYMBOLS"
   TRUNCATED=true
 fi
@@ -886,6 +1041,9 @@ if [[ "$OUTPUT" == "json" ]]; then
   echo -n "\"total_symbols\":$TOTAL_SYMBOLS,"
   echo -n "\"shown_symbols\":$SHOWN_SYMBOLS,"
   echo -n "\"truncated\":$TRUNCATED,"
+  if [[ -n "$NAME_QUERY" ]]; then
+    echo -n "\"query\":\"$(printf "%s" "$NAME_QUERY" | json_escape)\","
+  fi
 
   # Languages object
   echo -n "\"languages\":{"
@@ -896,6 +1054,28 @@ if [[ "$OUTPUT" == "json" ]]; then
     echo -n "\"$_l\":${LANG_COUNTS[$_l]}"
   done
   echo -n "},"
+
+  if [[ -n "$NAME_QUERY" ]]; then
+    echo -n "\"matches\":["
+    if [[ -s "$TMP_MATCHES" ]]; then
+      _match_first=1
+      _match_rank=0
+      while IFS=$'\t' read -r _match_rank_key _file _lineno _sym_type _symbol_name _indent _text _match_kind; do
+        (( _match_rank >= SHOWN_SYMBOLS )) && break
+        _match_rank=$((_match_rank + 1))
+        (( _match_first )) || echo -n ","
+        _match_first=0
+        echo -n "{\"path\":\"$(printf "%s" "$_file" | json_escape)\","
+        echo -n "\"symbol\":\"$(printf "%s" "$_symbol_name" | json_escape)\","
+        echo -n "\"symbol_type\":\"$_sym_type\","
+        echo -n "\"line_start\":$_lineno,"
+        echo -n "\"line_end\":null,"
+        echo -n "\"match_kind\":\"$_match_kind\","
+        echo -n "\"rank\":$_match_rank}"
+      done < "$TMP_MATCHES"
+    fi
+    echo -n "],"
+  fi
 
   # Files array
   echo -n "\"files\":["
@@ -956,7 +1136,12 @@ if (( QUIET == 0 )); then
   echo "fmap (${ABS_PATH:-stdin})"
   echo "  mode: $_mode_label"
   echo "  files_scanned: $TOTAL_FILES_SCANNED (cap=$MAX_FILES)"
-  echo "  symbols: $TOTAL_SYMBOLS (cap=$MAX_SYMBOLS)"
+  if [[ -n "$NAME_QUERY" ]]; then
+    echo "  query: $NAME_QUERY"
+    echo "  symbols: $SHOWN_SYMBOLS matched (from $TOTAL_SYMBOLS total, cap=$MAX_SYMBOLS)"
+  else
+    echo "  symbols: $TOTAL_SYMBOLS (cap=$MAX_SYMBOLS)"
+  fi
 
   # Languages line
   _lang_line=""
@@ -998,11 +1183,17 @@ if [[ -s "$TMP_SYMBOLS" ]]; then
     fi
     echo "${_display_indent}[$_lineno] $_sym_type: $_text"
   done < "$TMP_SYMBOLS"
+elif [[ -n "$NAME_QUERY" ]]; then
+  echo "  no symbol matches for query: $NAME_QUERY"
 fi
 
 if [[ "$TRUNCATED" == "true" ]]; then
   echo ""
-  echo "  ⚠ Showing $SHOWN_SYMBOLS of $TOTAL_SYMBOLS symbols (cap=$MAX_SYMBOLS)"
+  if [[ -n "$NAME_QUERY" ]]; then
+    echo "  ⚠ Showing $SHOWN_SYMBOLS of $OUTPUT_SYMBOLS matched symbols (cap=$MAX_SYMBOLS)"
+  else
+    echo "  ⚠ Showing $SHOWN_SYMBOLS of $TOTAL_SYMBOLS symbols (cap=$MAX_SYMBOLS)"
+  fi
 fi
 
 exit 0

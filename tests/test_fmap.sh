@@ -946,6 +946,138 @@ else:
   fi
 }
 
+test_name_exact_hit_json() {
+  local output tmp_json
+  output=$(FSUITE_TELEMETRY=0 "${FMAP}" --name bootstrapUser -o json "${TEST_DIR}/src" 2>&1)
+  tmp_json="$(mktemp)"
+  printf '%s\n' "$output" > "$tmp_json"
+
+  if python3 - "$tmp_json" <<'PY' 2>/dev/null
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    d = json.load(fh)
+assert d["query"] == "bootstrapUser"
+assert d["total_symbols"] > d["shown_symbols"] == 1
+assert len(d["matches"]) == 1
+m = d["matches"][0]
+assert m["symbol"] == "bootstrapUser"
+assert m["match_kind"] == "exact"
+assert isinstance(m["rank"], int)
+assert "path" in m and m["path"].endswith("types.ts")
+assert m["symbol_type"] == "function"
+assert isinstance(m["line_start"], int)
+assert "line_end" in m
+assert len(d["files"]) == 1
+assert d["files"][0]["path"].endswith("types.ts")
+assert d["files"][0]["symbol_count"] == 1
+assert len(d["files"][0]["symbols"]) == 1
+assert d["files"][0]["symbols"][0]["text"].startswith("export default async function bootstrapUser")
+PY
+  then
+    pass "fmap --name exact hit returns one ranked match and filtered file output"
+  else
+    fail "fmap --name exact hit did not return expected JSON" "Got: $output"
+  fi
+  rm -f "$tmp_json"
+}
+
+test_name_ranking_exact_before_substring() {
+  local output tmp_json
+  output=$(FSUITE_TELEMETRY=0 "${FMAP}" --name bootstrap -o json "${TEST_DIR}/src" 2>&1)
+  tmp_json="$(mktemp)"
+  printf '%s\n' "$output" > "$tmp_json"
+
+  if python3 - "$tmp_json" <<'PY' 2>/dev/null
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    d = json.load(fh)
+matches = d["matches"]
+assert d["query"] == "bootstrap"
+assert len(matches) >= 4
+assert [m["match_kind"] for m in matches[:3]] == ["exact", "exact", "exact"]
+assert matches[0]["symbol"] == "bootstrap" and matches[0]["match_kind"] == "exact"
+assert matches[1]["symbol"] == "bootstrap" and matches[1]["match_kind"] == "exact"
+assert matches[2]["symbol"] == "bootstrap" and matches[2]["match_kind"] == "exact"
+assert matches[0]["path"].endswith("App.kt")
+assert matches[1]["path"].endswith("App.swift")
+assert matches[2]["path"].endswith("app.js")
+assert matches[3]["symbol"] == "bootstrapUser" and matches[3]["match_kind"] == "substring"
+assert [m["rank"] for m in matches] == list(range(1, len(matches) + 1))
+PY
+  then
+    pass "fmap --name ranks exact symbol hits before substring matches deterministically"
+  else
+    fail "fmap --name ranking did not match exact-before-substring contract" "Got: $output"
+  fi
+  rm -f "$tmp_json"
+}
+
+test_name_type_filter_after_matching() {
+  local output tmp_json
+  output=$(FSUITE_TELEMETRY=0 "${FMAP}" --name Auth -t class -o json "${TEST_DIR}/src" 2>&1)
+  tmp_json="$(mktemp)"
+  printf '%s\n' "$output" > "$tmp_json"
+
+  if python3 - "$tmp_json" <<'PY' 2>/dev/null
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    d = json.load(fh)
+matches = d["matches"]
+assert d["query"] == "Auth"
+assert d["total_symbols"] > d["shown_symbols"] == len(matches)
+assert len(matches) >= 3
+assert all(m["symbol_type"] == "class" for m in matches)
+assert matches[0]["path"].endswith("App.kt")
+assert matches[-1]["path"].endswith("auth.py")
+assert all("Auth" in m["symbol"] for m in matches)
+assert all(file["path"].endswith(("App.kt", "App.swift", "auth.py")) for file in d["files"])
+PY
+  then
+    pass "fmap --name applies -t after name matching and keeps counts honest"
+  else
+    fail "fmap --name with -t did not filter matched results correctly" "Got: $output"
+  fi
+  rm -f "$tmp_json"
+}
+
+test_name_no_matches_json() {
+  local output tmp_json
+  output=$(FSUITE_TELEMETRY=0 "${FMAP}" --name totallyMissingSymbol -o json "${TEST_DIR}/src" 2>&1)
+  tmp_json="$(mktemp)"
+  printf '%s\n' "$output" > "$tmp_json"
+
+  if python3 - "$tmp_json" <<'PY' 2>/dev/null
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    d = json.load(fh)
+assert d["query"] == "totallyMissingSymbol"
+assert d["shown_symbols"] == 0
+assert d["matches"] == []
+assert d["files"] == []
+assert d["total_symbols"] > 0
+PY
+  then
+    pass "fmap --name no-match JSON stays valid and non-error"
+  else
+    fail "fmap --name no-match JSON contract failed" "Got: $output"
+  fi
+  rm -f "$tmp_json"
+}
+
+test_name_no_matches_paths() {
+  local output rc
+  set +e
+  output=$(FSUITE_TELEMETRY=0 "${FMAP}" --name totallyMissingSymbol -o paths "${TEST_DIR}/src" 2>&1)
+  rc=$?
+  set -e
+
+  if [[ $rc -eq 0 && -z "$output" ]]; then
+    pass "fmap --name no-match paths output stays empty with zero exit"
+  else
+    fail "fmap --name no-match paths output was not empty/non-error" "rc=$rc output=$output"
+  fi
+}
+
 # ============================================================================
 # Filter Tests
 # ============================================================================
@@ -1923,6 +2055,11 @@ main() {
   run_test "JSON valid" test_json_valid
   run_test "JSON fields" test_json_fields
   run_test "JSON file structure" test_json_file_structure
+  run_test "Name exact hit JSON" test_name_exact_hit_json
+  run_test "Name ranking exact before substring" test_name_ranking_exact_before_substring
+  run_test "Name type filter after matching" test_name_type_filter_after_matching
+  run_test "Name no matches JSON" test_name_no_matches_json
+  run_test "Name no matches paths" test_name_no_matches_paths
 
   # Filters
   run_test "No imports" test_no_imports
