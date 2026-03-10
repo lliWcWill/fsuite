@@ -665,10 +665,10 @@ test_version() {
 test_help() {
   local output
   output=$("${FMAP}" --help 2>&1)
-  if [[ "$output" =~ USAGE ]] && [[ "$output" =~ fmap ]]; then
-    pass "Help output is displayed"
+  if [[ "$output" =~ USAGE ]] && [[ "$output" =~ fmap ]] && [[ "$output" =~ --name ]]; then
+    pass "Help output documents fmap and --name"
   else
-    fail "Help output missing USAGE or fmap" "Got: $output"
+    fail "Help output missing USAGE, fmap, or --name" "Got: $output"
   fi
 }
 

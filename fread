@@ -1110,6 +1110,8 @@ fread — budgeted file reading with line numbers, token estimates, and pipeline
 
 USAGE
   fread <file>                                   Read file (capped)
+  fread <file> --symbol authenticate             Read one exact symbol block
+  fread <dir> --symbol authenticate              Resolve one exact symbol within a directory scope
   fread <file> -r 120:220                        Line range
   fread <file> --head 50                         First N lines
   fread <file> --tail 30                         Last N lines
@@ -1125,6 +1127,7 @@ OPTIONS
   --around-line N             Context around specific line number
   --around PATTERN            Context around first literal pattern match
   --all-matches               With --around: include all matches up to caps
+  --symbol NAME               Read exactly one exact symbol match within file or directory scope
   -B, --before N              Lines before (default 5)
   -A, --after N               Lines after (default 10)
   --max-lines N               Cap total emitted lines (default 200)
@@ -1144,6 +1147,7 @@ OPTIONS
 
 NOTES
   Budget precedence: token_budget > max_bytes > max_lines
+  --symbol is strict: exactly one exact symbol match succeeds; ambiguous or missing matches fail
   --stdin-format=unified-diff reads NEW-side hunk ranges from +++ path and @@ +start,count
 EOF
 }

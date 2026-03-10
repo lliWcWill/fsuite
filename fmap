@@ -233,6 +233,7 @@ OPTIONS
 
 HEADLESS / AI AGENT USAGE
   fmap -o json /project
+  fmap --name authenticate -o json /project/src
   fsearch -o paths '*.py' /project | fmap -o json
   fmap -t function -o json /project
 

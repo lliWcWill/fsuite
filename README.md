@@ -528,6 +528,9 @@ fmap /project/src/auth.py
 # JSON output for agents
 fmap -o json /project
 
+# Rank exact then substring symbol-name hits
+fmap --name authenticate -o json /project/src
+
 # Pipeline: find Python files, extract structure
 fsearch -o paths '*.py' /project | fmap -o json
 
@@ -571,6 +574,10 @@ fread /project/src/auth.py -r 120:220
 
 # Read around a literal pattern
 fread /project/src/auth.py --around "def authenticate" -B 5 -A 20
+
+# Read one exact symbol block from a known file or directory scope
+fread /project/src/auth.py --symbol authenticate -o json
+fread /project/src --symbol authenticate -o json
 
 # Read around a changed hunk from git diff
 git diff | fread --from-stdin --stdin-format=unified-diff -B 3 -A 10
@@ -741,7 +748,19 @@ The six operational tools (`fsearch`, `fcontent`, `ftree`, `fmap`, `fread`, `fed
   "total_symbols": 12,
   "shown_symbols": 12,
   "truncated": false,
+  "query": "authenticate",
   "languages": {"python": 1},
+  "matches": [
+    {
+      "path": "/project/src/auth.py",
+      "symbol": "authenticate",
+      "symbol_type": "function",
+      "line_start": 14,
+      "line_end": 27,
+      "match_kind": "exact",
+      "rank": 1
+    }
+  ],
   "files": [
     {
       "path": "auth.py",
@@ -762,7 +781,7 @@ The six operational tools (`fsearch`, `fcontent`, `ftree`, `fmap`, `fread`, `fed
 {
   "tool": "fread",
   "version": "2.1.0",
-  "mode": "around",
+  "mode": "symbol",
   "truncated": false,
   "truncation_reason": "none",
   "token_estimate": 148,
@@ -793,6 +812,15 @@ The six operational tools (`fsearch`, `fcontent`, `ftree`, `fmap`, `fread`, `fed
       "status": "read"
     }
   ],
+  "symbol_resolution": {
+    "query": "authenticate",
+    "symbol": "authenticate",
+    "symbol_type": "function",
+    "path": "/project/src/auth.py",
+    "line_start": 120,
+    "line_end": 137
+  },
+  "candidates": [],
   "warnings": [],
   "errors": []
 }
@@ -960,6 +988,7 @@ Copy-paste ready. Every command runs headless (no prompts, no TTY needed) unless
 | `fmap /project` | Map all source files under `/project` (pretty output) |
 | `fmap /project/src/auth.py` | Map a single file |
 | `fmap -o json /project` | JSON output with symbol metadata |
+| `fmap --name authenticate -o json /project` | Rank/filter symbols by exact then substring symbol-name matches |
 | `fmap -o paths /project` | File paths that contain symbols |
 | `fmap -t function /project` | Show only function definitions |
 | `fmap -t class /project` | Show only class definitions |
@@ -984,6 +1013,8 @@ Copy-paste ready. Every command runs headless (no prompts, no TTY needed) unless
 | `fread /project/src/auth.py --tail 40` | Read the last 40 lines |
 | `fread /project/src/auth.py --around-line 150 -B 5 -A 15` | Read context around line 150 |
 | `fread /project/src/auth.py --around "def authenticate" -B 5 -A 20` | Read around the first literal pattern match |
+| `fread /project/src/auth.py --symbol authenticate -o json` | Read one exact symbol block from a file |
+| `fread /project/src --symbol authenticate -o json` | Resolve and read one exact symbol block from a directory scope |
 | `fread /project/src/auth.py --all-matches --around "TODO"` | Read around every match until caps are hit |
 | `fread /project/src/auth.py --max-lines 80 --max-bytes 12000` | Enforce hard output budgets |
 | `fread /project/src/auth.py --token-budget 2000 -o json` | Cap by estimated token cost |
@@ -1218,6 +1249,7 @@ These are designed for AI agents, CI pipelines, cron jobs, and automation script
 | `--around-line` | — | any integer | — |
 | `--around` | — | literal pattern | — |
 | `--all-matches` | — | — | off |
+| `--symbol` | — | exact symbol name | — |
 | `--before` | `-B` | any integer | `5` |
 | `--after` | `-A` | any integer | `10` |
 | `--max-lines` | — | any integer | `200` |

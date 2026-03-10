@@ -177,8 +177,8 @@ test_version() {
 test_help() {
   local output
   output=$("${FREAD}" --help 2>&1)
-  if [[ "$output" == *"fread"* ]] && [[ "$output" == *"--lines"* ]] && [[ "$output" == *"--around"* ]]; then
-    pass "Help output is displayed"
+  if [[ "$output" == *"fread"* ]] && [[ "$output" == *"--lines"* ]] && [[ "$output" == *"--around"* ]] && [[ "$output" == *"--symbol"* ]]; then
+    pass "Help output documents fread and --symbol"
   else
     fail "Help output is missing key sections"
   fi
