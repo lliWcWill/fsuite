@@ -181,16 +181,16 @@ The event stream records:
 
 The v0.1 CLI should stay intentionally narrow:
 
-- `fcase init <slug> --goal ... [--priority ...]`
+- `fcase init <slug> --goal ... [--priority ...] [-o pretty|json]`
 - `fcase list [-o pretty|json]`
 - `fcase status <slug> [-o pretty|json]`
 - `fcase note <slug> --body ...`
 - `fcase target add <slug> --path ... [--symbol ... --symbol-type ... --rank ... --reason ... --state ...]`
-- `fcase evidence <slug> --tool ... [--path ... --symbol ... --lines ... --match-line ... --summary ...]`
+- `fcase evidence <slug> --tool ... [--path ... --symbol ... --lines <start:end> --match-line ... --summary ...] (--body ... | --body-file <path>)`
 - `fcase hypothesis add <slug> --body ... [--confidence ...]`
 - `fcase hypothesis set <slug> --id ... --status ... [--reason ... --confidence ...]`
-- `fcase reject <slug> ...`
-- `fcase next <slug> [-o pretty|json]`
+- `fcase reject <slug> (--target-id <id> | --hypothesis-id <id>) [--reason ...]`
+- `fcase next <slug> --body ... [-o pretty|json]`
 - `fcase handoff <slug> [-o pretty|json]`
 - `fcase export <slug> [-o json]`
 
@@ -207,6 +207,11 @@ The v0.1 CLI should stay intentionally narrow:
 
 `reject` is a convenience alias, not a separate data model.
 
+In v0.1, selector semantics are explicit and ID-based only:
+
+- `--target-id <id>`
+- `--hypothesis-id <id>`
+
 It must resolve cleanly to a typed state change:
 
 - target -> `state=ruled_out`
@@ -218,6 +223,84 @@ If the input cannot be resolved to a typed state transition, the command must fa
 
 - `pretty` for human-centric status and handoff views
 - `json` for automation and export
+
+#### `init -o json`
+
+`init` should return the created state in an explicit envelope:
+
+```json
+{
+  "case": {
+    "slug": "auth-bug",
+    "goal": "Find auth failure root cause",
+    "status": "open",
+    "priority": "high",
+    "next_move": "",
+    "created_at": "2026-03-09T12:00:00Z",
+    "updated_at": "2026-03-09T12:00:00Z"
+  },
+  "session": {
+    "id": 1,
+    "actor": "codex",
+    "started_at": "2026-03-09T12:00:00Z",
+    "ended_at": null,
+    "summary": ""
+  },
+  "event": {
+    "event_type": "case_init",
+    "created_at": "2026-03-09T12:00:00Z"
+  }
+}
+```
+
+#### `status -o json`
+
+`status` should return a stable read-model envelope:
+
+```json
+{
+  "case": {
+    "slug": "auth-bug",
+    "goal": "Find auth failure root cause",
+    "status": "open",
+    "priority": "high",
+    "next_move": "Inspect refresh-token branch in auth.py",
+    "created_at": "2026-03-09T12:00:00Z",
+    "updated_at": "2026-03-09T12:05:00Z"
+  },
+  "active_session": {
+    "id": 1,
+    "actor": "codex",
+    "started_at": "2026-03-09T12:00:00Z",
+    "ended_at": null,
+    "summary": ""
+  },
+  "targets": [],
+  "evidence": [],
+  "hypotheses": [],
+  "recent_events": []
+}
+```
+
+The `case` object is the authoritative current state. `recent_events` provides history context, not reconstruction authority.
+
+### Evidence payload rules
+
+Manual evidence entry requires exactly one body source:
+
+- `--body <text>`
+- `--body-file <path>`
+
+`evidence import` is the future explicit stdin path for structured JSON ingestion.
+
+`--lines` format is `start:end`:
+
+- 1-based
+- inclusive
+- positive integers only
+- `start <= end`
+
+If `--match-line` is provided alongside `--lines`, it must fall within that inclusive range.
 
 ## Structured Imports
 
