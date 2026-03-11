@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# fcase — continuity and handoff ledger for fsuite investigations.
+
+set -euo pipefail
+
+VERSION="0.1.0"
+
+usage() {
+  cat <<'EOF'
+fcase — continuity and handoff ledger for fsuite investigations
+
+USAGE
+  fcase --help
+  fcase --version
+  fcase init <slug> --goal ...
+  fcase list
+  fcase status <slug>
+
+DESCRIPTION
+  fcase preserves investigation state once the seam is known:
+    init         Create a case and open a session
+    list         Show known cases
+    status       Show current case state
+    note         Append a note to a case
+    next         Update the next best move
+    handoff      Generate a concise handoff packet
+    export       Export the full case envelope
+EOF
+}
+
+case "${1:---help}" in
+  --help|-h|help)
+    usage
+    ;;
+  --version|version)
+    echo "fcase ${VERSION}"
+    ;;
+  *)
+    echo "fcase: unknown or unimplemented subcommand: $1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
