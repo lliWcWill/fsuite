@@ -231,22 +231,30 @@ parse_lines_range() {
   printf '%s|%s' "$start" "$end"
 }
 
-read_import_payload() {
+materialize_import_payload_file() {
   local input_path="${1:-}"
-  if [[ -n "$input_path" ]]; then
-    if [[ "$input_path" == "-" ]]; then
-      cat
-    else
-      [[ -f "$input_path" ]] || die "import input file not found: $input_path"
-      cat "$input_path"
-    fi
-    return 0
+  if [[ -n "$input_path" && "$input_path" != "-" ]]; then
+    [[ -f "$input_path" ]] || die "import input file not found: $input_path"
+    printf '%s\n' "$input_path"
+    return
+  fi
+
+  local payload_file
+  payload_file="$(mktemp)"
+
+  if [[ -n "$input_path" && "$input_path" == "-" ]]; then
+    cat > "$payload_file"
+    printf '%s\n' "$payload_file"
+    return
   fi
 
   if [[ -t 0 ]]; then
+    rm -f "$payload_file"
     die "import requires piped JSON or --input <path|- >"
   fi
-  cat
+
+  cat > "$payload_file"
+  printf '%s\n' "$payload_file"
 }
 
 status_json() {
@@ -809,15 +817,15 @@ cmd_target_import() {
   has python3 || die 3 "python3 is required for target import"
 
   ensure_db
-  local case_id session_id now input_json err_file result_json rc=0 imported err_msg
+  local case_id session_id now payload_path err_file result_json rc=0 imported err_msg cleanup_payload=0
   case_id="$(case_exists_or_die "$slug")"
   session_id="$(latest_session_id_for_case "$case_id")"
   now="$(now_utc)"
-  input_json="$(read_import_payload "$input_path")"
+  payload_path="$(materialize_import_payload_file "$input_path")"
+  [[ -z "$input_path" || "$input_path" == "-" ]] && cleanup_payload=1
   err_file="$(mktemp)"
-  result_json="$(IMPORT_JSON="$input_json" python3 - "$DB_FILE" "$case_id" "${session_id:-}" "$now" 2>"$err_file" <<'PY'
+  result_json="$(python3 - "$DB_FILE" "$case_id" "${session_id:-}" "$now" "$payload_path" 2>"$err_file" <<'PY'
 import json
-import os
 import re
 import sqlite3
 import sys
@@ -826,11 +834,16 @@ db_path = sys.argv[1]
 case_id = int(sys.argv[2])
 session_id = None if sys.argv[3] in ("", "NULL") else int(sys.argv[3])
 now = sys.argv[4]
+payload_path = sys.argv[5]
 
 try:
-    payload = json.loads(os.environ.get("IMPORT_JSON", ""))
+    with open(payload_path, "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
 except json.JSONDecodeError as exc:
     print(f"target import requires valid JSON: {exc}", file=sys.stderr)
+    sys.exit(2)
+except OSError as exc:
+    print(f"target import could not read payload: {exc}", file=sys.stderr)
     sys.exit(2)
 
 if payload.get("tool") != "fmap":
@@ -909,9 +922,12 @@ finally:
 
 json.dump({"imported": imported, "event_type": "target_import"}, sys.stdout, separators=(",", ":"))
 PY
-)" || rc=$?
+  )" || rc=$?
   err_msg="$(cat "$err_file")"
   rm -f "$err_file"
+  if (( cleanup_payload )); then
+    rm -f "$payload_path"
+  fi
   (( rc == 0 )) || die "${err_msg:-target import failed}"
 
   imported="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["imported"])' <<< "$result_json" 2>/dev/null || printf '0')"
@@ -1022,16 +1038,16 @@ cmd_evidence_import() {
   has python3 || die 3 "python3 is required for evidence import"
 
   ensure_db
-  local case_id session_id now input_json err_file result_json rc=0 imported err_msg
+  local case_id session_id now payload_path err_file result_json rc=0 imported err_msg cleanup_payload=0
   case_id="$(case_exists_or_die "$slug")"
   session_id="$(latest_session_id_for_case "$case_id")"
   now="$(now_utc)"
-  input_json="$(read_import_payload "$input_path")"
+  payload_path="$(materialize_import_payload_file "$input_path")"
+  [[ -z "$input_path" || "$input_path" == "-" ]] && cleanup_payload=1
   err_file="$(mktemp)"
-  result_json="$(IMPORT_JSON="$input_json" python3 - "$DB_FILE" "$case_id" "${session_id:-}" "$now" 2>"$err_file" <<'PY'
+  result_json="$(python3 - "$DB_FILE" "$case_id" "${session_id:-}" "$now" "$payload_path" 2>"$err_file" <<'PY'
 import hashlib
 import json
-import os
 import sqlite3
 import sys
 
@@ -1039,11 +1055,16 @@ db_path = sys.argv[1]
 case_id = int(sys.argv[2])
 session_id = None if sys.argv[3] in ("", "NULL") else int(sys.argv[3])
 now = sys.argv[4]
+payload_path = sys.argv[5]
 
 try:
-    payload = json.loads(os.environ.get("IMPORT_JSON", ""))
+    with open(payload_path, "r", encoding="utf-8") as fh:
+        payload = json.load(fh)
 except json.JSONDecodeError as exc:
     print(f"evidence import requires valid JSON: {exc}", file=sys.stderr)
+    sys.exit(2)
+except OSError as exc:
+    print(f"evidence import could not read payload: {exc}", file=sys.stderr)
     sys.exit(2)
 
 if payload.get("tool") != "fread":
@@ -1107,9 +1128,12 @@ finally:
 
 json.dump({"imported": imported, "event_type": "evidence_import"}, sys.stdout, separators=(",", ":"))
 PY
-)" || rc=$?
+  )" || rc=$?
   err_msg="$(cat "$err_file")"
   rm -f "$err_file"
+  if (( cleanup_payload )); then
+    rm -f "$payload_path"
+  fi
   (( rc == 0 )) || die "${err_msg:-evidence import failed}"
 
   imported="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["imported"])' <<< "$result_json" 2>/dev/null || printf '0')"

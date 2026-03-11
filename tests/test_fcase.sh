@@ -324,6 +324,65 @@ EOF
   fi
 }
 
+test_target_import_handles_large_fmap_json_file() {
+  run_fcase init import-targets-large --goal "Import large fmap targets safely" >/dev/null 2>&1 || true
+
+  local payload_path="${TEST_HOME}/huge-fmap.json"
+  local arg_max target_bytes payload_size output rc=0 status_output
+  arg_max=$(getconf ARG_MAX 2>/dev/null || echo 2097152)
+  target_bytes=$((arg_max + 65536))
+
+  python3 - "$payload_path" "$target_bytes" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+target_bytes = int(sys.argv[2])
+symbol_count = max(2000, target_bytes // 110)
+symbols = [
+    {
+        "line": i + 1,
+        "type": "function",
+        "indent": 0,
+        "text": f"def giant_symbol_{i:05d}(): return {'x' * 48}",
+    }
+    for i in range(symbol_count)
+]
+payload = {
+    "tool": "fmap",
+    "version": "2.1.0",
+    "mode": "single_file",
+    "path": "/repo/src/big.py",
+    "files": [
+        {
+            "path": "/repo/src/big.py",
+            "language": "python",
+            "symbol_count": len(symbols),
+            "symbols": symbols,
+        }
+    ],
+}
+encoded = json.dumps(payload)
+with open(path, "w", encoding="utf-8") as fh:
+    fh.write(encoded)
+PY
+
+  payload_size=$(wc -c < "$payload_path")
+  if (( payload_size <= arg_max )); then
+    fail "large fmap import fixture should exceed ARG_MAX" "size=$payload_size arg_max=$arg_max"
+    return
+  fi
+
+  output=$(run_fcase target import import-targets-large --input "$payload_path" 2>&1) || rc=$?
+  status_output=$(run_fcase status import-targets-large -o json 2>&1 || true)
+
+  if [[ $rc -eq 0 ]] && python3 -c 'import json,sys; data=json.loads(sys.stdin.read()); targets=data["targets"]; assert len(targets) > 1000; assert any(t["path"] == "/repo/src/big.py" for t in targets)' <<< "$status_output" 2>/dev/null; then
+    pass "target import handles large fmap JSON files without env-size failure"
+  else
+    fail "target import should handle large fmap JSON files" "rc=$rc size=$payload_size output=$output status=$status_output"
+  fi
+}
+
 test_evidence_import_ingests_fread_json() {
   run_fcase init import-evidence --goal "Import fread evidence" >/dev/null 2>&1 || true
   local fread_json
@@ -341,6 +400,62 @@ EOF
     pass "evidence import ingests fread JSON into structured evidence"
   else
     fail "evidence import should ingest fread JSON" "rc=$rc output=$output status=$status_output"
+  fi
+}
+
+test_evidence_import_handles_large_fread_json_file() {
+  run_fcase init import-evidence-large --goal "Import large fread evidence safely" >/dev/null 2>&1 || true
+
+  local payload_path="${TEST_HOME}/huge-fread.json"
+  local arg_max target_bytes payload_size output rc=0 status_output
+  arg_max=$(getconf ARG_MAX 2>/dev/null || echo 2097152)
+  target_bytes=$((arg_max + 65536))
+
+  python3 - "$payload_path" "$target_bytes" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+target_bytes = int(sys.argv[2])
+chunk_count = max(4000, target_bytes // 220)
+content_lines = ["40  def authenticate(user):", "41      return " + ("x" * 140)]
+chunks = [
+    {
+        "path": "/repo/src/big.py",
+        "start_line": i + 1,
+        "end_line": i + 2,
+        "match_line": i + 1,
+        "content": content_lines,
+    }
+    for i in range(chunk_count)
+]
+payload = {
+    "tool": "fread",
+    "version": "2.1.0",
+    "mode": "around",
+    "chunks": chunks,
+    "files": [{"path": "/repo/src/big.py", "status": "read"}],
+    "warnings": [],
+    "errors": [],
+}
+encoded = json.dumps(payload)
+with open(path, "w", encoding="utf-8") as fh:
+    fh.write(encoded)
+PY
+
+  payload_size=$(wc -c < "$payload_path")
+  if (( payload_size <= arg_max )); then
+    fail "large fread import fixture should exceed ARG_MAX" "size=$payload_size arg_max=$arg_max"
+    return
+  fi
+
+  output=$(run_fcase evidence import import-evidence-large --input "$payload_path" 2>&1) || rc=$?
+  status_output=$(run_fcase status import-evidence-large -o json 2>&1 || true)
+
+  if [[ $rc -eq 0 ]] && python3 -c 'import json,sys; data=json.loads(sys.stdin.read()); evidence=data["evidence"]; assert len(evidence) > 1000; assert all(ev["tool"] == "fread" for ev in evidence[:10])' <<< "$status_output" 2>/dev/null; then
+    pass "evidence import handles large fread JSON files without env-size failure"
+  else
+    fail "evidence import should handle large fread JSON files" "rc=$rc size=$payload_size output=$output status=$status_output"
   fi
 }
 
@@ -394,7 +509,9 @@ main() {
   run_test test_event_payload_json_escapes_control_chars
   run_test test_source_routes_db_access_through_fk_helpers
   run_test test_target_import_ingests_fmap_json
+  run_test test_target_import_handles_large_fmap_json_file
   run_test test_evidence_import_ingests_fread_json
+  run_test test_evidence_import_handles_large_fread_json_file
   run_test test_target_import_rejects_wrong_tool_json
 
   echo ""

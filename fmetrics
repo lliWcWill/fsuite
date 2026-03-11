@@ -512,6 +512,80 @@ _predict_get_avg() {
   echo "$result"
 }
 
+_predict_get_count() {
+  local tool_name="$1"
+  local mode_name="${2:-}"
+  local safe_tool="${tool_name//\'/\'\'}"
+  local sql="SELECT COUNT(*) FROM telemetry WHERE tool='${safe_tool}' AND exit_code=0"
+  if [[ -n "$mode_name" ]]; then
+    local safe_mode="${mode_name//\'/\'\'}"
+    sql="${sql} AND mode='${safe_mode}'"
+  fi
+  sql="${sql};"
+  local result
+  result=$(sqlite3 "$DB_FILE" "$sql" 2>/dev/null) || result=0
+  [[ -z "$result" ]] && result=0
+  echo "$result"
+}
+
+_python3_runtime_available() {
+  has python3 || return 1
+  python3 -c 'pass' >/dev/null 2>&1
+}
+
+_predict_json_average_fallback() {
+  local target="$1"
+  local total_items="$2"
+  local total_bytes="$3"
+  local total_samples="$4"
+  local target_json
+  target_json="$(printf '%s' "$target" | json_escape)"
+  local tools=()
+  if [[ -n "${PREDICT_TOOL:-}" ]]; then
+    tools+=("${PREDICT_TOOL}")
+  else
+    tools+=(ftree fsearch fcontent)
+  fi
+
+  printf '{"tool":"fmetrics","version":"%s","subcommand":"predict","path":"%s","features":{"items":%s,"bytes":%s},"predictions":[' \
+    "$VERSION" "$target_json" "$total_items" "$total_bytes"
+
+  local first=1 tool avg_ms samples mode tree_avg tree_samples recon_avg recon_samples snapshot_avg snapshot_samples total_mode_samples
+  for tool in "${tools[@]}"; do
+    if (( first )); then
+      first=0
+    else
+      printf ','
+    fi
+
+    if [[ "$tool" == "ftree" ]]; then
+      if [[ -n "${PREDICT_MODE:-}" ]]; then
+        avg_ms=$(_predict_get_avg "$tool" "${PREDICT_MODE}")
+        samples=$(_predict_get_count "$tool" "${PREDICT_MODE}")
+        printf '{"tool":"ftree","mode":"%s","predicted_ms":%s,"method":"average","confidence":"low","samples":%s}' \
+          "${PREDICT_MODE}" "$avg_ms" "$samples"
+      else
+        tree_avg=$(_predict_get_avg ftree tree)
+        tree_samples=$(_predict_get_count ftree tree)
+        recon_avg=$(_predict_get_avg ftree recon)
+        recon_samples=$(_predict_get_count ftree recon)
+        snapshot_avg=$(_predict_get_avg ftree snapshot)
+        snapshot_samples=$(_predict_get_count ftree snapshot)
+        total_mode_samples=$((tree_samples + recon_samples + snapshot_samples))
+        printf '{"tool":"ftree","mode":"mixed","predicted_ms":-1,"method":"average","confidence":"low","samples":%s,"advisory":true,"error":"mixed ftree modes; use --mode for actionable predictions","by_mode":{"tree":{"predicted_ms":%s,"method":"average","confidence":"low","samples":%s},"recon":{"predicted_ms":%s,"method":"average","confidence":"low","samples":%s},"snapshot":{"predicted_ms":%s,"method":"average","confidence":"low","samples":%s}}}' \
+          "$total_mode_samples" "$tree_avg" "$tree_samples" "$recon_avg" "$recon_samples" "$snapshot_avg" "$snapshot_samples"
+      fi
+    else
+      avg_ms=$(_predict_get_avg "$tool")
+      samples=$(_predict_get_count "$tool")
+      printf '{"tool":"%s","predicted_ms":%s,"method":"average","confidence":"low","samples":%s}' \
+        "$tool" "$avg_ms" "$samples"
+    fi
+  done
+
+  printf '],"total_historical_samples":%s,"method":"average_fallback"}\n' "$total_samples"
+}
+
 cmd_predict() {
   local target="${PREDICT_PATH:-.}"
   [[ -d "$target" ]] || die "Not a directory: $target"
@@ -532,8 +606,11 @@ cmd_predict() {
 
   ensure_db
 
-  local count
+  local count python3_ok=0
   count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM telemetry WHERE exit_code=0;" 2>/dev/null) || count=0
+  if _python3_runtime_available; then
+    python3_ok=1
+  fi
 
   # Quick recon scan to get project features
   local recon_json
@@ -568,7 +645,7 @@ cmd_predict() {
   # Check for Python predict helper
   local predict_py
   predict_py=$(_find_predict_script) || predict_py=""
-  if [[ -n "$predict_py" ]] && has python3; then
+  if [[ -n "$predict_py" ]] && (( python3_ok )); then
     local _tool_arg=""
     [[ -n "${PREDICT_TOOL:-}" ]] && _tool_arg="--tool $PREDICT_TOOL"
     local _mode_arg=""
@@ -653,7 +730,8 @@ for pred in data.get("predictions", []):
   # Fallback: simple average-based prediction
   if [[ "$OUTPUT" == "json" ]]; then
     local predictions_json
-    predictions_json=$(python3 - "$DB_FILE" "${PREDICT_TOOL:-}" "${PREDICT_MODE:-}" "$count" "$target" "$total_items" "$total_bytes" <<'PY'
+    if (( python3_ok )); then
+      predictions_json=$(python3 - "$DB_FILE" "${PREDICT_TOOL:-}" "${PREDICT_MODE:-}" "$count" "$target" "$total_items" "$total_bytes" <<'PY'
 import json
 import sqlite3
 import sys
@@ -737,6 +815,10 @@ finally:
     conn.close()
 PY
 )
+    else
+      predictions_json=""
+    fi
+    [[ -n "$predictions_json" ]] || predictions_json=$(_predict_json_average_fallback "$target" "$total_items" "$total_bytes" "$count")
     echo "$predictions_json"
   else
     echo "fmetrics predict -- $target"
@@ -763,9 +845,9 @@ PY
         printf "    %-20s ~%s\n" "$t" "$(human_ms "$avg_ms")"
       fi
     done
-    if ! has python3; then
-      echo ""
-      echo "  Note: Install python3 for k-NN predictions (more accurate)."
+      if (( ! python3_ok )); then
+        echo ""
+        echo "  Note: Install python3 for k-NN predictions (more accurate)."
     elif ! _find_predict_script >/dev/null 2>&1; then
       echo ""
       echo "  Note: fmetrics-predict.py not found. Reinstall fsuite or check PATH."

@@ -813,6 +813,39 @@ test_v16_predict_helper_pretty_preserves_ftree_mixed_contract() {
   fi
 }
 
+test_v16_predict_json_fallback_survives_broken_python3() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "predict fallback test skipped (sqlite3 not available)"
+    return 0
+  fi
+
+  seed_ftree_predict_fixture_db
+
+  local shim_dir="${TEST_DIR}/shim-bin"
+  mkdir -p "${shim_dir}"
+  cat > "${shim_dir}/python3" <<'SH'
+#!/bin/sh
+exit 127
+SH
+  cat > "${shim_dir}/sqlite3" <<'SH'
+#!/bin/sh
+exec /usr/bin/python3 /home/player3vsgpt/.local/bin/sqlite3 "$@"
+SH
+  chmod +x "${shim_dir}/python3" "${shim_dir}/sqlite3"
+
+  local target_dir="${TEST_DIR}/predict_target_broken_python"
+  mkdir -p "${target_dir}"
+
+  local output rc=0
+  output=$(PATH="${shim_dir}:/bin:/usr/bin" FSUITE_TELEMETRY=0 "${FMETRICS}" predict -o json "${target_dir}" 2>&1) || rc=$?
+
+  if [[ $rc -eq 0 ]] && python3 -c 'import json,sys; data=json.loads(sys.stdin.read()); assert data["method"] == "average_fallback"; assert data["predictions"][0]["tool"] == "ftree"' <<< "$output" 2>/dev/null; then
+    pass "fmetrics JSON fallback survives missing or broken python3"
+  else
+    fail "predict -o json should fall back without a working python3 helper" "rc=$rc output=$output"
+  fi
+}
+
 test_v16_predict_rejects_mode_without_ftree_tool() {
   local output
   output=$(run_fmetrics predict --mode snapshot -o json "${TEST_DIR}" 2>&1) && {
@@ -1001,6 +1034,7 @@ main() {
   run_test "fmetrics predict --mode snapshot stays in snapshot cluster" test_v16_predict_ftree_mode_snapshot_stays_in_cluster
   run_test "predict helper lowers confidence on zero-spread features" test_v16_predict_helper_degrades_confidence_on_zero_spread
   run_test "fmetrics-predict pretty output preserves collapsed ftree contract" test_v16_predict_helper_pretty_preserves_ftree_mixed_contract
+  run_test "fmetrics JSON fallback survives broken python3" test_v16_predict_json_fallback_survives_broken_python3
   run_test "fmetrics predict rejects --mode without --tool ftree" test_v16_predict_rejects_mode_without_ftree_tool
   run_test "fmetrics predict rejects --mode with non-ftree tool" test_v16_predict_rejects_mode_with_non_ftree_tool
 

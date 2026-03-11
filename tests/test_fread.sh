@@ -87,6 +87,8 @@ def duplicate():
 PYEOF
 
   cat > "${TEST_DIR}/symbols/server.go" <<'GOEOF'
+package main
+
 import "fmt"
 
 type Server struct{}
@@ -744,13 +746,13 @@ assert d["errors"] == []
 assert len(d["chunks"]) == 1
 chunk = d["chunks"][0]
 assert chunk["path"].endswith("server.go")
-assert chunk["start_line"] == 5
+assert chunk["start_line"] == 7
 assert any("func (s *Server) Start()" in line for line in chunk["content"])
 resolution = d["symbol_resolution"]
 assert resolution["symbol"] == "Start"
 assert resolution["symbol_type"] == "function"
 assert resolution["path"].endswith("server.go")
-assert resolution["line_start"] == 5
+assert resolution["line_start"] == 7
 PY
   then
     pass "fread --symbol resolves Go receiver methods by method name"
