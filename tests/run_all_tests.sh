@@ -18,6 +18,10 @@ TOTAL_TESTS=0
 TOTAL_PASSED=0
 TOTAL_FAILED=0
 
+# run_test_suite runs the given test script, prints a header and pass/fail message, and returns 0 on success or 1 on failure.
+# test_script is the path to the test script file to execute.
+# test_name is the human-readable name shown in banners and result messages.
+# If the script file does not exist the function prints an error and returns 1.
 run_test_suite() {
   local test_script="$1"
   local test_name="$2"
@@ -27,8 +31,8 @@ run_test_suite() {
   echo -e "${BLUE}======================================${NC}"
   echo ""
 
-  if [[ ! -x "${test_script}" ]]; then
-    echo -e "${RED}Error: ${test_script} not found or not executable${NC}"
+  if [[ ! -f "${test_script}" ]]; then
+    echo -e "${RED}Error: ${test_script} not found${NC}"
     return 1
   fi
 
@@ -43,6 +47,7 @@ run_test_suite() {
   fi
 }
 
+# main orchestrates execution of all test suites, aggregates pass/fail counts, prints a summary of results (including failed suites), and exits with status 0 if all suites passed or 1 if any failed.
 main() {
   echo ""
   echo -e "${BLUE}============================================${NC}"
@@ -69,6 +74,15 @@ main() {
   else
     TOTAL_FAILED=$((TOTAL_FAILED + 1))
     failed_suites+=("fcontent")
+  fi
+
+  # Run fcase tests
+  echo ""
+  if run_test_suite "${SCRIPT_DIR}/test_fcase.sh" "fcase Test Suite"; then
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+  else
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+    failed_suites+=("fcase")
   fi
 
   # Run fmap tests

@@ -15,7 +15,7 @@ TESTS_FAILED=0
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m' # setup creates a temporary TEST_DIR populated with a predefined file hierarchy and sample files used by the test suite.
 
 setup() {
   TEST_DIR="$(mktemp -d)"
@@ -65,6 +65,11 @@ import sys
 # TODO: Add logging
 def helper():
     pass
+EOF
+
+  cat > "${TEST_DIR}/code/flags.txt" <<'EOF'
+literal token: --test
+literal token: --helpful
 EOF
 
   cat > "${TEST_DIR}/node_modules/dep.js" <<'EOF'
@@ -686,6 +691,7 @@ test_invalid_max_files() {
   fi
 }
 
+# test_unknown_option verifies that fcontent rejects unrecognized command-line options and prints an "Unknown option" diagnostic.
 test_unknown_option() {
   local output rc=0
   output=$("${FCONTENT}" --unknown-flag "ERROR" "${TEST_DIR}" 2>&1) || rc=$?
@@ -693,6 +699,45 @@ test_unknown_option() {
     pass "Correctly rejects unknown option"
   else
     fail "Should error on unknown option"
+  fi
+}
+
+# test_dash_prefixed_query_hint verifies that fcontent emits an "Unknown option" error and a targeted hint (including an example using `-- '--test'`) when the provided query begins with a dash.
+test_dash_prefixed_query_hint() {
+  local output rc=0
+  output=$("${FCONTENT}" --test "${TEST_DIR}" 2>&1) || rc=$?
+  if [[ $rc -ne 0 ]] \
+    && [[ "$output" =~ "Unknown option: --test" ]] \
+    && [[ "$output" =~ "Query starts with '-'. If you mean a literal search term, use:" ]] \
+    && [[ "$output" =~ "fcontent -o json -- '--test' /path" ]]; then
+    pass "Dash-prefixed literal query gets targeted hint"
+  else
+    fail "Should emit targeted hint for dash-prefixed literal query" "rc=$rc output=$output"
+  fi
+}
+
+# test_literal_dash_query_with_double_dash verifies that using a double-dash preserves a dash-prefixed literal query when invoking fcontent.
+# It runs fcontent with `--` followed by the literal `--test` against TEST_DIR and marks the test as passed if the command output contains `--test`, otherwise it marks the test as failed.
+test_literal_dash_query_with_double_dash() {
+  check_rg || return
+  local output
+  output=$("${FCONTENT}" -- '--test' "${TEST_DIR}" 2>&1)
+  if [[ "$output" =~ "--test" ]]; then
+    pass "Double-dash preserves dash-prefixed literal query"
+  else
+    fail "Double-dash should allow dash-prefixed literal query" "$output"
+  fi
+}
+
+# test_unknown_option_typo_still_fails_clearly verifies that a misspelled option (--outpt) causes fcontent to exit with a nonzero status and emit an "Unknown option: --outpt" diagnostic.
+test_unknown_option_typo_still_fails_clearly() {
+  local output rc=0
+  output=$("${FCONTENT}" --outpt json "ERROR" "${TEST_DIR}" 2>&1) || rc=$?
+  if [[ $rc -ne 0 ]] \
+    && [[ "$output" =~ "Unknown option: --outpt" ]]; then
+    pass "Unknown option typos still fail clearly"
+  else
+    fail "Unknown option typos should stay hard failures" "rc=$rc output=$output"
   fi
 }
 
@@ -807,7 +852,8 @@ test_stdin_project_inference() {
 
 # ============================================================================
 # Main Test Runner
-# ============================================================================
+# main orchestrates and runs the fcontent test suite: it verifies prerequisites, prepares the test environment, executes all test cases, tears down, and prints a summarized pass/fail report.
+# Exits with a nonzero status if the fcontent executable is missing or if any test failed; warns and skips certain tests when ripgrep (rg) is unavailable.
 
 main() {
   echo "======================================"
@@ -896,6 +942,9 @@ main() {
   run_test "Invalid max-matches" test_invalid_max_matches
   run_test "Invalid max-files" test_invalid_max_files
   run_test "Unknown option" test_unknown_option
+  run_test "Dash-prefixed query hint" test_dash_prefixed_query_hint
+  run_test "Literal dash query with --" test_literal_dash_query_with_double_dash
+  run_test "Unknown option typo stays clear" test_unknown_option_typo_still_fails_clearly
 
   # Performance
   run_test "Deep directory structure" test_deep_directory_structure

@@ -16,6 +16,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 NC='\033[0m'
 
+# setup creates a temporary TEST_DIR and populates it with fixture files and directories used by the test suite (sample.txt, auth.py, short.txt, empty.txt, image.png, "file with spaces.txt", special_chars.txt, src/, symbols/ with one.py/two.py/server.go, search_target.txt, sample.diff, delete.diff, binary.diff).
 setup() {
   TEST_DIR="$(mktemp -d)"
 
@@ -69,6 +70,32 @@ PYEOF
   echo "def foo(): pass" > "${TEST_DIR}/src/foo.py"
   echo "def bar(): pass" > "${TEST_DIR}/src/bar.py"
   echo "class Baz: pass" > "${TEST_DIR}/src/baz.py"
+
+  # Symbol-resolution fixtures
+  mkdir -p "${TEST_DIR}/symbols"
+  cat > "${TEST_DIR}/symbols/one.py" <<'PYEOF'
+def duplicate():
+    value = 1
+    return value
+
+def unique_dir_symbol():
+    return duplicate()
+PYEOF
+
+  cat > "${TEST_DIR}/symbols/two.py" <<'PYEOF'
+def duplicate():
+    return 2
+PYEOF
+
+  cat > "${TEST_DIR}/symbols/server.go" <<'GOEOF'
+import "fmt"
+
+type Server struct{}
+
+func (s *Server) Start() {
+    fmt.Println("started")
+}
+GOEOF
 
   # File for around-pattern tests
   cat > "${TEST_DIR}/search_target.txt" <<'EOF'
@@ -158,11 +185,12 @@ test_version() {
   fi
 }
 
+# test_help checks that the `fread --help` output contains the expected sections: "fread", "--lines", "--around", and "--symbol".
 test_help() {
   local output
   output=$("${FREAD}" --help 2>&1)
-  if [[ "$output" == *"fread"* ]] && [[ "$output" == *"--lines"* ]] && [[ "$output" == *"--around"* ]]; then
-    pass "Help output is displayed"
+  if [[ "$output" == *"fread"* ]] && [[ "$output" == *"--lines"* ]] && [[ "$output" == *"--around"* ]] && [[ "$output" == *"--symbol"* ]]; then
+    pass "Help output documents fread and --symbol"
   else
     fail "Help output is missing key sections"
   fi
@@ -603,6 +631,7 @@ test_quiet_suppresses_headers() {
   fi
 }
 
+# test_paths_output verifies that fread's paths output includes the tested file's path.
 test_paths_output() {
   local output
   output=$(FSUITE_TELEMETRY=0 "${FREAD}" "${TEST_DIR}/sample.txt" -o paths 2>/dev/null)
@@ -611,6 +640,191 @@ test_paths_output() {
   else
     fail "Paths output should show file path" "Got: $output"
   fi
+}
+
+# ============================================================================
+# Symbol Resolution Tests
+# test_symbol_exact_single_match verifies that fread resolves the exact symbol "authenticate" in auth.py and emits a single chunk whose start/end lines, content, and symbol_resolution fields match expected values.
+
+test_symbol_exact_single_match() {
+  local output tmp_json
+  output=$(FSUITE_TELEMETRY=0 "${FREAD}" "${TEST_DIR}/auth.py" --symbol authenticate -o json 2>/dev/null)
+  tmp_json="$(mktemp)"
+  printf '%s\n' "$output" > "$tmp_json"
+
+  if python3 - "$tmp_json" <<'PY' 2>/dev/null
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    d = json.load(fh)
+assert d["errors"] == []
+assert len(d["chunks"]) == 1
+chunk = d["chunks"][0]
+assert chunk["path"].endswith("auth.py")
+assert chunk["start_line"] == 4
+assert chunk["end_line"] == 9
+assert any("def authenticate" in line for line in chunk["content"])
+resolution = d["symbol_resolution"]
+assert resolution["query"] == "authenticate"
+assert resolution["symbol"] == "authenticate"
+assert resolution["symbol_type"] == "function"
+assert resolution["path"].endswith("auth.py")
+assert resolution["line_start"] == 4
+assert resolution["line_end"] == 9
+PY
+  then
+    pass "fread --symbol exact single match resolves and reads the correct chunk"
+  else
+    fail "fread --symbol exact single match JSON contract failed" "Got: $output"
+  fi
+  rm -f "$tmp_json"
+}
+
+# test_symbol_directory_scope verifies that fread resolves a directory-scoped symbol to the correct file and returns a single chunk with the expected symbol_resolution.
+test_symbol_directory_scope() {
+  local output tmp_json
+  output=$(FSUITE_TELEMETRY=0 "${FREAD}" "${TEST_DIR}/symbols" --symbol unique_dir_symbol -o json 2>/dev/null)
+  tmp_json="$(mktemp)"
+  printf '%s\n' "$output" > "$tmp_json"
+
+  if python3 - "$tmp_json" <<'PY' 2>/dev/null
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    d = json.load(fh)
+assert d["errors"] == []
+assert len(d["chunks"]) == 1
+chunk = d["chunks"][0]
+assert chunk["path"].endswith("one.py")
+assert any("def unique_dir_symbol" in line for line in chunk["content"])
+resolution = d["symbol_resolution"]
+assert resolution["path"].endswith("one.py")
+assert resolution["symbol"] == "unique_dir_symbol"
+PY
+  then
+    pass "fread --symbol resolves within directory mapping scope"
+  else
+    fail "fread --symbol directory scope failed" "Got: $output"
+  fi
+  rm -f "$tmp_json"
+}
+
+# test_symbol_file_scope_is_local verifies that resolving the symbol `duplicate` for a single-file target remains local to that file and does not return sibling matches.
+test_symbol_file_scope_is_local() {
+  local output tmp_json
+  output=$(FSUITE_TELEMETRY=0 "${FREAD}" "${TEST_DIR}/symbols/one.py" --symbol duplicate -o json 2>/dev/null)
+  tmp_json="$(mktemp)"
+  printf '%s\n' "$output" > "$tmp_json"
+
+  if python3 - "$tmp_json" <<'PY' 2>/dev/null
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    d = json.load(fh)
+assert d["errors"] == []
+assert len(d["chunks"]) == 1
+chunk = d["chunks"][0]
+assert chunk["path"].endswith("one.py")
+assert any("value = 1" in line for line in chunk["content"])
+resolution = d["symbol_resolution"]
+assert resolution["path"].endswith("one.py")
+assert resolution["symbol"] == "duplicate"
+PY
+  then
+    pass "fread file target keeps --symbol resolution file-local"
+  else
+    fail "fread file target should not resolve sibling symbols" "Got: $output"
+  fi
+  rm -f "$tmp_json"
+}
+
+# test_symbol_go_receiver_method verifies that fread resolves Go receiver methods by method name and returns the expected chunk and symbol_resolution metadata.
+test_symbol_go_receiver_method() {
+  local output tmp_json
+  output=$(FSUITE_TELEMETRY=0 "${FREAD}" "${TEST_DIR}/symbols/server.go" --symbol Start -o json 2>/dev/null)
+  tmp_json="$(mktemp)"
+  printf '%s\n' "$output" > "$tmp_json"
+
+  if python3 - "$tmp_json" <<'PY' 2>/dev/null
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    d = json.load(fh)
+assert d["errors"] == []
+assert len(d["chunks"]) == 1
+chunk = d["chunks"][0]
+assert chunk["path"].endswith("server.go")
+assert chunk["start_line"] == 5
+assert any("func (s *Server) Start()" in line for line in chunk["content"])
+resolution = d["symbol_resolution"]
+assert resolution["symbol"] == "Start"
+assert resolution["symbol_type"] == "function"
+assert resolution["path"].endswith("server.go")
+assert resolution["line_start"] == 5
+PY
+  then
+    pass "fread --symbol resolves Go receiver methods by method name"
+  else
+    fail "fread --symbol should resolve Go receiver methods by method name" "Got: $output"
+  fi
+  rm -f "$tmp_json"
+}
+
+# test_symbol_ambiguous_failure verifies that running fread --symbol with a name present in multiple files fails and emits JSON reporting an `symbol_ambiguous` error, no chunks, and deterministic candidate entries (one.py and two.py).
+test_symbol_ambiguous_failure() {
+  local output rc tmp_json
+  set +e
+  output=$(FSUITE_TELEMETRY=0 "${FREAD}" "${TEST_DIR}/symbols" --symbol duplicate -o json 2>/dev/null)
+  rc=$?
+  set -e
+  tmp_json="$(mktemp)"
+  printf '%s\n' "$output" > "$tmp_json"
+
+  if (( rc != 0 )) && python3 - "$tmp_json" <<'PY' 2>/dev/null
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    d = json.load(fh)
+assert d["chunks"] == []
+assert len(d["errors"]) == 1
+err = d["errors"][0]
+assert err["error_code"] == "symbol_ambiguous"
+candidates = d["candidates"]
+assert len(candidates) == 2
+assert [c["path"].rsplit("/", 1)[-1] for c in candidates] == ["one.py", "two.py"]
+assert all(c["symbol"] == "duplicate" for c in candidates)
+assert [c["line_start"] for c in candidates] == [1, 1]
+PY
+  then
+    pass "fread --symbol ambiguous exact matches fail with deterministic candidates"
+  else
+    fail "fread --symbol ambiguity failure contract failed" "rc=$rc output=$output"
+  fi
+  rm -f "$tmp_json"
+}
+
+# test_symbol_not_found_failure verifies that fread invoked with --symbol for a missing exact symbol fails and emits JSON with no chunks, a single error with error_code "symbol_not_found", empty candidates, and null symbol_resolution.
+test_symbol_not_found_failure() {
+  local output rc tmp_json
+  set +e
+  output=$(FSUITE_TELEMETRY=0 "${FREAD}" "${TEST_DIR}/symbols" --symbol duplic -o json 2>/dev/null)
+  rc=$?
+  set -e
+  tmp_json="$(mktemp)"
+  printf '%s\n' "$output" > "$tmp_json"
+
+  if (( rc != 0 )) && python3 - "$tmp_json" <<'PY' 2>/dev/null
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    d = json.load(fh)
+assert d["chunks"] == []
+assert len(d["errors"]) == 1
+err = d["errors"][0]
+assert err["error_code"] == "symbol_not_found"
+assert d["candidates"] == []
+assert d["symbol_resolution"] is None
+PY
+  then
+    pass "fread --symbol missing exact match fails without substring fallback"
+  else
+    fail "fread --symbol missing exact match contract failed" "rc=$rc output=$output"
+  fi
+  rm -f "$tmp_json"
 }
 
 # ============================================================================
@@ -785,7 +999,7 @@ test_language_detection() {
 
 # ============================================================================
 # Main
-# ============================================================================
+# main runs the fread test suite: it sets a teardown trap, verifies the fread executable, prepares fixtures, executes all grouped tests via run_test, prints a summary of results, and exits non-zero if any tests failed.
 
 main() {
   trap 'teardown' EXIT INT TERM
@@ -866,6 +1080,15 @@ main() {
   run_test "Pretty headers" test_pretty_has_headers
   run_test "Quiet mode" test_quiet_suppresses_headers
   run_test "Paths output" test_paths_output
+
+  echo ""
+  echo "== Symbol Resolution =="
+  run_test "Symbol exact single match" test_symbol_exact_single_match
+  run_test "Symbol directory scope" test_symbol_directory_scope
+  run_test "Symbol file scope is local" test_symbol_file_scope_is_local
+  run_test "Symbol Go receiver method" test_symbol_go_receiver_method
+  run_test "Symbol ambiguous failure" test_symbol_ambiguous_failure
+  run_test "Symbol not found failure" test_symbol_not_found_failure
 
   echo ""
   echo "== Budget / Truncation =="

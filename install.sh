@@ -11,9 +11,10 @@ MODE="source"
 PACKAGE_PATH=""
 VERIFY=1
 
-TOOLS=(fsuite ftree fsearch fcontent fmap fread fedit fmetrics)
+TOOLS=(fsuite ftree fsearch fcontent fmap fread fcase fedit fmetrics)
 SHARE_FILES=(_fsuite_common.sh fmetrics-predict.py)
 
+# die prints an error message to stderr and exits; if the first argument is a number it is used as the exit code, otherwise exits with 1.
 die() {
   local code=1
   if [[ "${1:-}" =~ ^[0-9]+$ ]]; then code="$1"; shift; fi
@@ -88,8 +89,15 @@ install_from_package() {
   run_privileged dpkg -i "$PACKAGE_PATH"
 }
 
+# verify_install verifies the installed fsuite tools, checks sqlite3 functionality, and performs an fcase runtime verification.
+# When MODE is "source" it prepends PREFIX/bin to PATH and sets FSUITE_SHARE_DIR for the verification run.
+# The function runs each tool with `--version`, probes sqlite3 in-memory (returns exit code 3 on failure), and runs `fcase list -o json` with a temporary HOME to validate fcase; any fcase failure is reported and its exit code is returned.
+# Temporary files and directories created for verification are removed before returning.
 verify_install() {
   local path_prefix="$PATH"
+  local verify_home=""
+  local rc=0
+  local verify_output=""
   if [[ "$MODE" == "source" ]]; then
     path_prefix="${PREFIX}/bin:${path_prefix}"
     export PATH="$path_prefix"
@@ -100,8 +108,26 @@ verify_install() {
   for tool in "${TOOLS[@]}"; do
     "${tool}" --version
   done
+
+  verify_home="$(mktemp -d)"
+  if ! verify_output="$(sqlite3 ':memory:' 'SELECT 1;' 2>&1 >/dev/null)"; then
+    rm -rf "$verify_home"
+    echo "install.sh: sqlite3 must be functional for fcase verification: ${verify_output:-sqlite3 probe failed}" >&2
+    return 3
+  fi
+
+  HOME="$verify_home" fcase list -o json >/dev/null 2>"${verify_home}/fcase-verify.err" || rc=$?
+  if (( rc != 0 )); then
+    verify_output="$(cat "${verify_home}/fcase-verify.err" 2>/dev/null || true)"
+  fi
+  rm -rf "$verify_home"
+  if (( rc != 0 )) && [[ -n "$verify_output" ]]; then
+    echo "install.sh: fcase verification failed: ${verify_output}" >&2
+  fi
+  (( rc == 0 )) || return "$rc"
 }
 
+# print_next_steps prints a post-installation summary showing the install location or package path, suggested PATH modification, required runtime dependencies by tool, recommended extras, and platform-specific install suggestions.
 print_next_steps() {
   echo
   echo "fsuite installed."
@@ -115,9 +141,19 @@ print_next_steps() {
     echo "  Package: ${PACKAGE_PATH}"
   fi
   echo
-  echo "Recommended optional dependencies:"
-  echo "  Debian/Ubuntu: sudo apt install tree ripgrep fd-find sqlite3 python3 perl"
-  echo "  macOS:         brew install tree ripgrep fd sqlite python3"
+  echo "Required runtime dependencies by tool:"
+  echo "  sqlite3  - required by fcase and fmetrics"
+  echo "  ripgrep  - required by fcontent"
+  echo "  tree     - required by ftree tree mode"
+  echo "  perl     - required by fread"
+  echo
+  echo "Recommended extras:"
+  echo "  fd-find  - faster backend for fsearch"
+  echo "  python3  - required for fmetrics predict and fcase imports"
+  echo
+  echo "Install suggestions:"
+  echo "  Debian/Ubuntu: sudo apt install sqlite3 ripgrep tree perl fd-find python3"
+  echo "  macOS:         brew install sqlite ripgrep tree python3"
 }
 
 while [[ $# -gt 0 ]]; do
