@@ -170,6 +170,77 @@ test_export_emits_full_case_envelope() {
   fi
 }
 
+test_target_add_records_symbol_state() {
+  run_fcase init target-bug --goal "Track a target" >/dev/null 2>&1 || true
+  run_fcase target add target-bug --path /repo/src/auth.py --symbol authenticate --symbol-type function --rank 9 --reason "entry suspect" --state active >/dev/null 2>&1 || true
+  local output rc=0
+  output=$(run_fcase status target-bug -o json 2>&1) || rc=$?
+  if [[ $rc -eq 0 ]] && [[ "$output" == *'"symbol":"authenticate"'* ]] && [[ "$output" == *'"state":"active"'* ]]; then
+    pass "target add records structured target state"
+  else
+    fail "target add should record structured target state" "rc=$rc output=$output"
+  fi
+}
+
+test_evidence_records_body_and_line_metadata() {
+  run_fcase init evidence-bug --goal "Track evidence" >/dev/null 2>&1 || true
+  run_fcase evidence evidence-bug --tool fread --path /repo/src/auth.py --lines 120:148 --match-line 125 --summary "refresh path excerpt" --body "if refresh_token is invalid then return 401" >/dev/null 2>&1 || true
+  local output rc=0
+  output=$(run_fcase status evidence-bug -o json 2>&1) || rc=$?
+  if [[ $rc -eq 0 ]] && python3 -c 'import json,sys; data=json.loads(sys.stdin.read()); ev=data["evidence"][0]; assert ev["line_start"] == 120; assert ev["line_end"] == 148; assert ev["match_line"] == 125; assert "refresh_token" in ev["body"]' <<< "$output" 2>/dev/null; then
+    pass "evidence records body and line metadata"
+  else
+    fail "evidence should record body and line metadata" "rc=$rc output=$output"
+  fi
+}
+
+test_hypothesis_add_and_set_update_state() {
+  run_fcase init hypothesis-bug --goal "Track hypothesis state" >/dev/null 2>&1 || true
+  run_fcase hypothesis add hypothesis-bug --body "Cache bypass causes failure" --confidence medium >/dev/null 2>&1 || true
+  run_fcase hypothesis set hypothesis-bug --id 1 --status active --reason "Repro still points at cache path" --confidence high >/dev/null 2>&1 || true
+  local output rc=0
+  output=$(run_fcase status hypothesis-bug -o json 2>&1) || rc=$?
+  if [[ $rc -eq 0 ]] && [[ "$output" == *'"status":"active"'* ]] && [[ "$output" == *'"confidence":"high"'* ]]; then
+    pass "hypothesis add and set update structured state"
+  else
+    fail "hypothesis set should update structured state" "rc=$rc output=$output"
+  fi
+}
+
+test_reject_maps_to_hypothesis_rejected() {
+  run_fcase init reject-bug --goal "Reject a hypothesis" >/dev/null 2>&1 || true
+  run_fcase hypothesis add reject-bug --body "Cache bypass causes failure" --confidence medium >/dev/null 2>&1 || true
+  local before_output hypothesis_id
+  before_output=$(run_fcase status reject-bug -o json 2>&1)
+  hypothesis_id=$(python3 -c 'import json,sys; data=json.loads(sys.stdin.read()); print(data["hypotheses"][0]["id"])' <<< "$before_output" 2>/dev/null || true)
+  run_fcase reject reject-bug --hypothesis-id "${hypothesis_id}" --reason "Repro disproves cache path" >/dev/null 2>&1 || true
+  local output rc=0
+  output=$(run_fcase status reject-bug -o json 2>&1) || rc=$?
+  if [[ $rc -eq 0 ]] && [[ "$output" == *'"status":"rejected"'* ]]; then
+    pass "reject maps cleanly to hypothesis rejected"
+  else
+    fail "reject should map to a typed hypothesis rejection" "rc=$rc output=$output"
+  fi
+}
+
+test_reject_fails_without_selector() {
+  run_fcase init reject-missing-selector --goal "Reject needs selector" >/dev/null 2>&1 || true
+  if run_fcase reject reject-missing-selector --reason "No selector provided" >/dev/null 2>&1; then
+    fail "reject should fail without a selector"
+  else
+    pass "reject fails without a selector"
+  fi
+}
+
+test_evidence_rejects_invalid_line_range() {
+  run_fcase init bad-lines-bug --goal "Reject invalid line ranges" >/dev/null 2>&1 || true
+  if run_fcase evidence bad-lines-bug --tool fread --lines 148:120 --body "bad range" >/dev/null 2>&1; then
+    fail "evidence should fail on descending line ranges"
+  else
+    pass "evidence rejects invalid line ranges"
+  fi
+}
+
 main() {
   echo "======================================"
   echo "  fcase Test Suite"
@@ -192,6 +263,12 @@ main() {
   run_test test_note_records_recent_event
   run_test test_handoff_includes_current_state_and_recent_events
   run_test test_export_emits_full_case_envelope
+  run_test test_target_add_records_symbol_state
+  run_test test_evidence_records_body_and_line_metadata
+  run_test test_hypothesis_add_and_set_update_state
+  run_test test_reject_maps_to_hypothesis_rejected
+  run_test test_reject_fails_without_selector
+  run_test test_evidence_rejects_invalid_line_range
 
   echo ""
   echo "======================================"

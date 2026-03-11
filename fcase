@@ -145,6 +145,14 @@ latest_session_id_for_case() {
   sqlite3 "$DB_FILE" "SELECT id FROM case_sessions WHERE case_id = $case_id ORDER BY id DESC LIMIT 1;"
 }
 
+case_exists_or_die() {
+  local slug="$1"
+  local case_id
+  case_id="$(case_id_for_slug "$slug")"
+  [[ -n "$case_id" ]] || die "case not found: $slug"
+  printf '%s' "$case_id"
+}
+
 append_event() {
   local case_id="$1"
   local session_id="$2"
@@ -152,6 +160,31 @@ append_event() {
   local payload_json="$4"
   local created_at="$5"
   sqlite3 "$DB_FILE" "INSERT INTO events (case_id, session_id, event_type, payload_json, created_at) VALUES ($case_id, ${session_id:-NULL}, $(sql_quote "$event_type"), $(sql_quote "$payload_json"), $(sql_quote "$created_at"));"
+}
+
+is_valid_target_state() {
+  case "$1" in
+    candidate|active|validated|ruled_out) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_valid_hypothesis_status() {
+  case "$1" in
+    open|active|validated|rejected) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+parse_lines_range() {
+  local raw="$1"
+  [[ "$raw" =~ ^([0-9]+):([0-9]+)$ ]] || return 1
+  local start="${BASH_REMATCH[1]}"
+  local end="${BASH_REMATCH[2]}"
+  (( start > 0 )) || return 1
+  (( end > 0 )) || return 1
+  (( start <= end )) || return 1
+  printf '%s|%s' "$start" "$end"
 }
 
 status_json() {
@@ -643,6 +676,258 @@ cmd_status() {
   fi
 }
 
+cmd_target_add() {
+  local slug="${1:-}"
+  shift || true
+  [[ -n "$slug" ]] || die "target add requires <slug>"
+
+  local path="" symbol="" symbol_type="" rank="" reason="" state="candidate"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --path) path="${2:-}"; shift 2 ;;
+      --symbol) symbol="${2:-}"; shift 2 ;;
+      --symbol-type) symbol_type="${2:-}"; shift 2 ;;
+      --rank) rank="${2:-}"; shift 2 ;;
+      --reason) reason="${2:-}"; shift 2 ;;
+      --state) state="${2:-}"; shift 2 ;;
+      *) die "Unknown option for target add: $1" ;;
+    esac
+  done
+  [[ -n "$path" ]] || die "target add requires --path"
+  [[ -z "$rank" || "$rank" =~ ^[0-9]+$ ]] || die "target add --rank must be an integer"
+  is_valid_target_state "$state" || die "target add --state must be one of: candidate, active, validated, ruled_out"
+
+  ensure_db
+  local case_id session_id now payload rank_sql
+  case_id="$(case_exists_or_die "$slug")"
+  session_id="$(latest_session_id_for_case "$case_id")"
+  now="$(now_utc)"
+  if [[ -n "$rank" ]]; then rank_sql="$rank"; else rank_sql="NULL"; fi
+  sqlite3 "$DB_FILE" <<SQL >/dev/null
+INSERT INTO targets (case_id, path, symbol, symbol_type, rank, reason, state, created_at, updated_at)
+VALUES (
+  $case_id,
+  $(sql_quote "$path"),
+  $(sql_quote "$symbol"),
+  $(sql_quote "$symbol_type"),
+  $rank_sql,
+  $(sql_quote "$reason"),
+  $(sql_quote "$state"),
+  $(sql_quote "$now"),
+  $(sql_quote "$now")
+);
+UPDATE cases SET updated_at = $(sql_quote "$now") WHERE id = $case_id;
+SQL
+  payload="$(printf '{"path":"%s","symbol":"%s","symbol_type":"%s","rank":%s,"reason":"%s","state":"%s"}' \
+    "$(printf '%s' "$path" | json_escape)" \
+    "$(printf '%s' "$symbol" | json_escape)" \
+    "$(printf '%s' "$symbol_type" | json_escape)" \
+    "${rank_sql/NULL/null}" \
+    "$(printf '%s' "$reason" | json_escape)" \
+    "$(printf '%s' "$state" | json_escape)")"
+  append_event "$case_id" "$session_id" "target_add" "$payload" "$now"
+  echo "Added target to ${slug}"
+}
+
+cmd_evidence() {
+  local slug="${1:-}"
+  shift || true
+  [[ -n "$slug" ]] || die "evidence requires <slug>"
+
+  local tool="" path="" symbol="" lines="" match_line="" summary="" body="" body_file=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --tool) tool="${2:-}"; shift 2 ;;
+      --path) path="${2:-}"; shift 2 ;;
+      --symbol) symbol="${2:-}"; shift 2 ;;
+      --lines) lines="${2:-}"; shift 2 ;;
+      --match-line) match_line="${2:-}"; shift 2 ;;
+      --summary) summary="${2:-}"; shift 2 ;;
+      --body) body="${2:-}"; shift 2 ;;
+      --body-file) body_file="${2:-}"; shift 2 ;;
+      *) die "Unknown option for evidence: $1" ;;
+    esac
+  done
+  [[ -n "$tool" ]] || die "evidence requires --tool"
+  if [[ -n "$body" && -n "$body_file" ]]; then
+    die "evidence requires exactly one body source"
+  fi
+  if [[ -z "$body" && -z "$body_file" ]]; then
+    die "evidence requires exactly one body source"
+  fi
+  if [[ -n "$body_file" ]]; then
+    [[ -f "$body_file" ]] || die "evidence body file not found: $body_file"
+    body="$(cat "$body_file")"
+  fi
+
+  local line_start_sql="NULL" line_end_sql="NULL"
+  if [[ -n "$lines" ]]; then
+    local parsed start end
+    parsed="$(parse_lines_range "$lines")" || die "evidence --lines must be start:end with positive ascending integers"
+    IFS='|' read -r start end <<<"$parsed"
+    line_start_sql="$start"
+    line_end_sql="$end"
+    if [[ -n "$match_line" ]]; then
+      [[ "$match_line" =~ ^[0-9]+$ ]] || die "evidence --match-line must be an integer"
+      (( match_line >= start && match_line <= end )) || die "evidence --match-line must fall within --lines"
+    fi
+  elif [[ -n "$match_line" ]]; then
+    die "evidence --match-line requires --lines"
+  fi
+
+  local match_line_sql="NULL"
+  if [[ -n "$match_line" ]]; then match_line_sql="$match_line"; fi
+
+  ensure_db
+  local case_id session_id now payload
+  case_id="$(case_exists_or_die "$slug")"
+  session_id="$(latest_session_id_for_case "$case_id")"
+  now="$(now_utc)"
+  sqlite3 "$DB_FILE" <<SQL >/dev/null
+INSERT INTO evidence (case_id, tool, path, symbol, line_start, line_end, match_line, summary, body, payload_json, fingerprint, created_at)
+VALUES (
+  $case_id,
+  $(sql_quote "$tool"),
+  $(sql_quote "$path"),
+  $(sql_quote "$symbol"),
+  $line_start_sql,
+  $line_end_sql,
+  $match_line_sql,
+  $(sql_quote "$summary"),
+  $(sql_quote "$body"),
+  NULL,
+  NULL,
+  $(sql_quote "$now")
+);
+UPDATE cases SET updated_at = $(sql_quote "$now") WHERE id = $case_id;
+SQL
+  payload="$(printf '{"tool":"%s","path":"%s","symbol":"%s","summary":"%s"}' \
+    "$(printf '%s' "$tool" | json_escape)" \
+    "$(printf '%s' "$path" | json_escape)" \
+    "$(printf '%s' "$symbol" | json_escape)" \
+    "$(printf '%s' "$summary" | json_escape)")"
+  append_event "$case_id" "$session_id" "evidence_add" "$payload" "$now"
+  echo "Added evidence to ${slug}"
+}
+
+cmd_hypothesis_add() {
+  local slug="${1:-}"
+  shift || true
+  [[ -n "$slug" ]] || die "hypothesis add requires <slug>"
+
+  local body="" confidence=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --body) body="${2:-}"; shift 2 ;;
+      --confidence) confidence="${2:-}"; shift 2 ;;
+      *) die "Unknown option for hypothesis add: $1" ;;
+    esac
+  done
+  [[ -n "$body" ]] || die "hypothesis add requires --body"
+
+  ensure_db
+  local case_id session_id now payload
+  case_id="$(case_exists_or_die "$slug")"
+  session_id="$(latest_session_id_for_case "$case_id")"
+  now="$(now_utc)"
+  sqlite3 "$DB_FILE" <<SQL >/dev/null
+INSERT INTO hypotheses (case_id, body, status, confidence, reason, created_at, updated_at)
+VALUES (
+  $case_id,
+  $(sql_quote "$body"),
+  'open',
+  $( [[ -n "$confidence" ]] && sql_quote "$confidence" || printf 'NULL' ),
+  NULL,
+  $(sql_quote "$now"),
+  $(sql_quote "$now")
+);
+UPDATE cases SET updated_at = $(sql_quote "$now") WHERE id = $case_id;
+SQL
+  payload="$(printf '{"body":"%s","confidence":"%s"}' "$(printf '%s' "$body" | json_escape)" "$(printf '%s' "$confidence" | json_escape)")"
+  append_event "$case_id" "$session_id" "hypothesis_add" "$payload" "$now"
+  echo "Added hypothesis to ${slug}"
+}
+
+cmd_hypothesis_set() {
+  local slug="${1:-}"
+  shift || true
+  [[ -n "$slug" ]] || die "hypothesis set requires <slug>"
+
+  local hypothesis_id="" status="" reason="" confidence=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --id) hypothesis_id="${2:-}"; shift 2 ;;
+      --status) status="${2:-}"; shift 2 ;;
+      --reason) reason="${2:-}"; shift 2 ;;
+      --confidence) confidence="${2:-}"; shift 2 ;;
+      *) die "Unknown option for hypothesis set: $1" ;;
+    esac
+  done
+  [[ "$hypothesis_id" =~ ^[0-9]+$ ]] || die "hypothesis set requires --id"
+  is_valid_hypothesis_status "$status" || die "hypothesis set --status must be one of: open, active, validated, rejected"
+
+  ensure_db
+  local case_id session_id now count_sql update_confidence
+  case_id="$(case_exists_or_die "$slug")"
+  count_sql="$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM hypotheses WHERE id = $hypothesis_id AND case_id = $case_id;")"
+  [[ "$count_sql" == "1" ]] || die "hypothesis not found for case: $hypothesis_id"
+  session_id="$(latest_session_id_for_case "$case_id")"
+  now="$(now_utc)"
+  if [[ -n "$confidence" ]]; then
+    update_confidence=", confidence = $(sql_quote "$confidence")"
+  else
+    update_confidence=""
+  fi
+  sqlite3 "$DB_FILE" "UPDATE hypotheses SET status = $(sql_quote "$status"), reason = $(sql_quote "$reason"), updated_at = $(sql_quote "$now")${update_confidence} WHERE id = $hypothesis_id AND case_id = $case_id;"
+  sqlite3 "$DB_FILE" "UPDATE cases SET updated_at = $(sql_quote "$now") WHERE id = $case_id;"
+  append_event "$case_id" "$session_id" "hypothesis_set" "$(printf '{"id":%s,"status":"%s","reason":"%s","confidence":"%s"}' "$hypothesis_id" "$(printf '%s' "$status" | json_escape)" "$(printf '%s' "$reason" | json_escape)" "$(printf '%s' "$confidence" | json_escape)")" "$now"
+  echo "Updated hypothesis ${hypothesis_id} for ${slug}"
+}
+
+cmd_reject() {
+  local slug="${1:-}"
+  shift || true
+  [[ -n "$slug" ]] || die "reject requires <slug>"
+
+  local target_id="" hypothesis_id="" reason=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --target-id) target_id="${2:-}"; shift 2 ;;
+      --hypothesis-id) hypothesis_id="${2:-}"; shift 2 ;;
+      --reason) reason="${2:-}"; shift 2 ;;
+      *) die "Unknown option for reject: $1" ;;
+    esac
+  done
+
+  local selectors=0
+  [[ -n "$target_id" ]] && selectors=$((selectors + 1))
+  [[ -n "$hypothesis_id" ]] && selectors=$((selectors + 1))
+  (( selectors == 1 )) || die "reject requires exactly one selector"
+
+  ensure_db
+  local case_id session_id now count_sql
+  case_id="$(case_exists_or_die "$slug")"
+  session_id="$(latest_session_id_for_case "$case_id")"
+  now="$(now_utc)"
+
+  if [[ -n "$target_id" ]]; then
+    [[ "$target_id" =~ ^[0-9]+$ ]] || die "reject --target-id must be an integer"
+    count_sql="$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM targets WHERE id = $target_id AND case_id = $case_id;")"
+    [[ "$count_sql" == "1" ]] || die "target not found for case: $target_id"
+    sqlite3 "$DB_FILE" "UPDATE targets SET state = 'ruled_out', reason = $(sql_quote "$reason"), updated_at = $(sql_quote "$now") WHERE id = $target_id AND case_id = $case_id;"
+    append_event "$case_id" "$session_id" "target_rejected" "$(printf '{"target_id":%s,"reason":"%s"}' "$target_id" "$(printf '%s' "$reason" | json_escape)")" "$now"
+  else
+    [[ "$hypothesis_id" =~ ^[0-9]+$ ]] || die "reject --hypothesis-id must be an integer"
+    count_sql="$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM hypotheses WHERE id = $hypothesis_id AND case_id = $case_id;")"
+    [[ "$count_sql" == "1" ]] || die "hypothesis not found for case: $hypothesis_id"
+    sqlite3 "$DB_FILE" "UPDATE hypotheses SET status = 'rejected', reason = $(sql_quote "$reason"), updated_at = $(sql_quote "$now") WHERE id = $hypothesis_id AND case_id = $case_id;"
+    append_event "$case_id" "$session_id" "hypothesis_rejected" "$(printf '{"hypothesis_id":%s,"reason":"%s"}' "$hypothesis_id" "$(printf '%s' "$reason" | json_escape)")" "$now"
+  fi
+
+  sqlite3 "$DB_FILE" "UPDATE cases SET updated_at = $(sql_quote "$now") WHERE id = $case_id;"
+  echo "Rejected item in ${slug}"
+}
+
 cmd_note() {
   local slug="${1:-}"
   shift || true
@@ -806,6 +1091,42 @@ main() {
     export)
       shift
       cmd_export "$@"
+      ;;
+    target)
+      shift
+      case "${1:-}" in
+        add)
+          shift
+          cmd_target_add "$@"
+          ;;
+        *)
+          die 2 "unknown target subcommand: ${1:-}"
+          ;;
+      esac
+      ;;
+    evidence)
+      shift
+      cmd_evidence "$@"
+      ;;
+    hypothesis)
+      shift
+      case "${1:-}" in
+        add)
+          shift
+          cmd_hypothesis_add "$@"
+          ;;
+        set)
+          shift
+          cmd_hypothesis_set "$@"
+          ;;
+        *)
+          die 2 "unknown hypothesis subcommand: ${1:-}"
+          ;;
+      esac
+      ;;
+    reject)
+      shift
+      cmd_reject "$@"
       ;;
     *)
       die 2 "unknown or unimplemented subcommand: $cmd"
