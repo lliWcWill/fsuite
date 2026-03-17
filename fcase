@@ -90,16 +90,16 @@ db_query() {
   mkdir -p "$FCASE_DIR" 2>/dev/null || die "Cannot create $FCASE_DIR"
 
   if [[ -n "$separator" ]]; then
-    { printf 'PRAGMA foreign_keys=ON;\n'; cat; } | sqlite3 -separator "$separator" "$DB_FILE"
+      { printf 'PRAGMA busy_timeout=5000;\nPRAGMA foreign_keys=ON;\n'; cat; } | sqlite3 -separator "$separator" "$DB_FILE"
   else
-    { printf 'PRAGMA foreign_keys=ON;\n'; cat; } | sqlite3 "$DB_FILE"
+      { printf 'PRAGMA busy_timeout=5000;\nPRAGMA foreign_keys=ON;\n'; cat; } | sqlite3 "$DB_FILE"
   fi
 }
 
 db_exec() {
   has sqlite3 || die 3 "sqlite3 is required"
   mkdir -p "$FCASE_DIR" 2>/dev/null || die "Cannot create $FCASE_DIR"
-  { printf 'PRAGMA foreign_keys=ON;\n'; cat; } | sqlite3 "$DB_FILE" >/dev/null
+    { printf 'PRAGMA busy_timeout=5000;\nPRAGMA foreign_keys=ON;\n'; cat; } | sqlite3 "$DB_FILE" >/dev/null
 }
 
 ensure_db() {
