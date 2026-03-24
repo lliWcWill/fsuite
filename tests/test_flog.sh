@@ -40,13 +40,29 @@ fail() {
 
 run_test() {
   TESTS_RUN=$((TESTS_RUN + 1))
-  local test_name="$1"
   shift
   "$@" || true
 }
 
 # Helper: create a temp file, caller must rm it
 mkfixture() { mktemp /tmp/flog_test_XXXXXX; }
+
+wait_for_output_match() {
+  local file="$1"
+  local pattern="$2"
+  local attempts="${3:-20}"
+  local i=0
+
+  while (( i < attempts )); do
+    if grep -q -- "$pattern" "$file" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+
+  return 1
+}
 
 # ============================================================================
 # Sanity (should always pass)
@@ -356,6 +372,7 @@ test_gap1_tail_binary_unsafe() {
   rm -f "$f"
 
   # Code verification: every grep --line-buffered in cmd_tail must have -a
+  # If cmd_tail is renamed or split up, update this range probe with the new seam.
   local missing
   missing=$(sed -n '/^cmd_tail/,/^}/p' "$FLOG" | grep "grep.*--line-buffered" | grep -cv "\-a" 2>/dev/null) || missing=0
 
@@ -511,16 +528,16 @@ test_bug8_tail_pretty_streams() {
   # Start flog tail in background, capturing output
   "$FLOG" tail -f "$f" > "$out" 2>&1 &
   local tailpid=$!
-  sleep 0.3
 
   # Append a matching line while tail is watching
   echo "2026-03-24 14:44:01,123    DEBUG: test_framework.radi_status_plugin Thread-6:MainProcess ->   send_request   71 - Pretty stream line" >> "$f"
-  sleep 1.5
+
+  local captured
+  wait_for_output_match "$out" "Pretty stream line" 20 || true
 
   kill "$tailpid" 2>/dev/null
   wait "$tailpid" 2>/dev/null || true
 
-  local captured
   captured=$(cat "$out")
   rm -f "$f" "$out"
 
@@ -537,15 +554,15 @@ test_bug8_tail_slim_streams() {
 
   "$FLOG" tail -o slim -f "$f" > "$out" 2>&1 &
   local tailpid=$!
-  sleep 0.3
 
   echo "2026-03-24 14:44:01,123    DEBUG: test_framework.radi_status_plugin Thread-6:MainProcess ->   send_request   71 - Slim stream line" >> "$f"
-  sleep 1.5
+
+  local captured
+  wait_for_output_match "$out" "Slim stream line" 20 || true
 
   kill "$tailpid" 2>/dev/null
   wait "$tailpid" 2>/dev/null || true
 
-  local captured
   captured=$(cat "$out")
   rm -f "$f" "$out"
 
@@ -562,15 +579,15 @@ test_bug8_tail_npi_streams() {
 
   "$FLOG" tail -o npi -f "$f" > "$out" 2>&1 &
   local tailpid=$!
-  sleep 0.3
 
   echo "2026-03-24 14:44:01,123    DEBUG: test_framework.radi_status_plugin Thread-6:MainProcess ->   send_request   71 - NPI stream line" >> "$f"
-  sleep 1.5
+
+  local captured
+  wait_for_output_match "$out" "NPI stream line" 20 || true
 
   kill "$tailpid" 2>/dev/null
   wait "$tailpid" 2>/dev/null || true
 
-  local captured
   captured=$(cat "$out")
   rm -f "$f" "$out"
 
@@ -578,6 +595,42 @@ test_bug8_tail_npi_streams() {
     pass "Bug8: tail npi mode streams cleaned lines"
   else
     fail "Bug8: tail npi mode stalls (sed buffering)" "Got: ${captured:0:300}"
+  fi
+}
+
+# ============================================================================
+# Bug 9: missing argument validation for -f/-o/-n
+# CodeRabbit: shift 2 on a missing value fails cryptically. These should die with
+# a direct message before touching positional parsing.
+# ============================================================================
+
+test_bug9_missing_file_argument() {
+  local output rc=0
+  output=$("$FLOG" -f 2>&1) || rc=$?
+  if [[ $rc -ne 0 ]] && echo "$output" | grep -q "Missing argument for -f"; then
+    pass "Bug9: -f without a value gives a helpful error"
+  else
+    fail "Bug9: -f without a value not handled cleanly" "rc=$rc output: ${output:0:200}"
+  fi
+}
+
+test_bug9_missing_output_argument() {
+  local output rc=0
+  output=$("$FLOG" -o 2>&1) || rc=$?
+  if [[ $rc -ne 0 ]] && echo "$output" | grep -q "Missing argument for -o"; then
+    pass "Bug9: -o without a value gives a helpful error"
+  else
+    fail "Bug9: -o without a value not handled cleanly" "rc=$rc output: ${output:0:200}"
+  fi
+}
+
+test_bug9_missing_lines_argument() {
+  local output rc=0
+  output=$("$FLOG" -n 2>&1) || rc=$?
+  if [[ $rc -ne 0 ]] && echo "$output" | grep -q "Missing argument for -n"; then
+    pass "Bug9: -n without a value gives a helpful error"
+  else
+    fail "Bug9: -n without a value not handled cleanly" "rc=$rc output: ${output:0:200}"
   fi
 }
 
@@ -653,6 +706,12 @@ main() {
   run_test "tail_pretty" test_bug8_tail_pretty_streams
   run_test "tail_slim" test_bug8_tail_slim_streams
   run_test "tail_npi" test_bug8_tail_npi_streams
+
+  echo ""
+  echo "--- Bug 9: missing flag arguments ---"
+  run_test "missing_f" test_bug9_missing_file_argument
+  run_test "missing_o" test_bug9_missing_output_argument
+  run_test "missing_n" test_bug9_missing_lines_argument
 
   echo ""
   echo "=== Results: $TESTS_PASSED/$TESTS_RUN passed, $TESTS_FAILED failed ==="
