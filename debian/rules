@@ -14,6 +14,7 @@ override_dh_auto_install:
 	install -D -m 755 fcase $(CURDIR)/debian/fsuite/usr/bin/fcase
 	install -D -m 755 fedit $(CURDIR)/debian/fsuite/usr/bin/fedit
 	install -D -m 755 fmetrics $(CURDIR)/debian/fsuite/usr/bin/fmetrics
+	install -D -m 755 flog $(CURDIR)/debian/fsuite/usr/bin/flog
 	install -D -m 755 freplay $(CURDIR)/debian/fsuite/usr/bin/freplay
 	install -D -m 755 fprobe $(CURDIR)/debian/fsuite/usr/bin/fprobe
 	install -D -m 755 fs $(CURDIR)/debian/fsuite/usr/bin/fs
