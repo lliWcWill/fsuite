@@ -195,7 +195,7 @@ OPTIONS
   -L, --lang <lang>
       Force language (auto-detect by default).
         Supported: python, javascript, typescript, kotlin, swift, rust, go, java,
-                   c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml
+                   c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml, markdown
 
   -t, --type <type>
       Filter symbol types: function, class, import, type, export, constant
@@ -229,7 +229,7 @@ OPTIONS
 
   SUPPORTED LANGUAGES
     Python, JavaScript, TypeScript, Kotlin, Swift, Rust, Go, Java, C, C++,
-    Ruby, Lua, PHP, Bash/Shell, Dockerfile, Makefile, YAML
+    Ruby, Lua, PHP, Bash/Shell, Dockerfile, Makefile, YAML, Markdown
 
 HEADLESS / AI AGENT USAGE
   fmap -o json /project
@@ -335,8 +335,8 @@ if [[ -n "$FILTER_TYPE" ]]; then
 fi
 if [[ -n "$FORCE_LANG" ]]; then
   case "$FORCE_LANG" in
-      python|javascript|typescript|kotlin|swift|rust|go|java|c|cpp|ruby|lua|php|bash|dockerfile|makefile|yaml) ;;
-      *) die "Invalid --lang: $FORCE_LANG (valid: python, javascript, typescript, kotlin, swift, rust, go, java, c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml)" ;;
+      python|javascript|typescript|kotlin|swift|rust|go|java|c|cpp|ruby|lua|php|bash|dockerfile|makefile|yaml|markdown) ;;
+      *) die "Invalid --lang: $FORCE_LANG (valid: python, javascript, typescript, kotlin, swift, rust, go, java, c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml, markdown)" ;;
   esac
 fi
 
@@ -532,6 +532,7 @@ detect_language() {
     dockerfile|Dockerfile|containerfile|Containerfile) echo "dockerfile"; return ;;
     mk) echo "makefile"; return ;;
     yml|yaml) echo "yaml"; return ;;
+    md|markdown|mdx) echo "markdown"; return ;;
   esac
 
   # Shebang fallback for extensionless files
@@ -753,6 +754,14 @@ extract_symbols() {
         "constant:^[[:space:]]+[A-Z][A-Z0-9_]*:[[:space:]]"
       )
       ;;
+    markdown)
+      patterns=(
+        "class:^#{1,2}[[:space:]]"
+        "function:^#{3,6}[[:space:]]"
+        "import:^\[.*\]\(https?://[^)]+\)"
+        "constant:^\`\`\`[a-zA-Z]"
+      )
+      ;;
   esac
 
   # Collect all matches to a temp file, then deduplicate by line number (first type wins)
@@ -800,6 +809,11 @@ extract_symbol_name() {
 
   case "$sym_type" in
     function)
+      # Markdown headings: "### Subsection" → "Subsection"
+      if [[ "$trimmed" =~ ^(#{1,6})[[:space:]]+(.*) ]]; then
+        printf '%s\n' "${BASH_REMATCH[2]}"
+        return 0
+      fi
       if [[ "$trimmed" =~ (^|[[:space:]])def[[:space:]]+([_[:alpha:]][_[:alnum:]]*) ]]; then
         printf '%s\n' "${BASH_REMATCH[2]}"
         return 0
@@ -838,6 +852,11 @@ extract_symbol_name() {
       fi
       ;;
     class)
+      # Markdown headings: "## Title" → "Title"
+      if [[ "$trimmed" =~ ^(#{1,6})[[:space:]]+(.*) ]]; then
+        printf '%s\n' "${BASH_REMATCH[2]}"
+        return 0
+      fi
       if [[ "$trimmed" =~ ^\<([A-Za-z_][A-Za-z0-9_.-]*) ]]; then
         name="${BASH_REMATCH[1]}"
         name="${name##*.}"
