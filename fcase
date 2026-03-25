@@ -78,6 +78,38 @@ DESCRIPTION
 EOF
 }
 
+SQLITE_BUSY_TIMEOUT_MS=5000
+SQLITE_SUPPORTS_DOT_TIMEOUT=""
+
+sqlite_supports_dot_timeout() {
+  if [[ -n "$SQLITE_SUPPORTS_DOT_TIMEOUT" ]]; then
+    [[ "$SQLITE_SUPPORTS_DOT_TIMEOUT" == "1" ]]
+    return
+  fi
+
+  local probe_output="" probe_rc=0
+  probe_output=$(sqlite3 ':memory:' ".timeout 1" "SELECT 1;" 2>/dev/null) || probe_rc=$?
+  if [[ $probe_rc -eq 0 && "$probe_output" == "1" ]]; then
+    SQLITE_SUPPORTS_DOT_TIMEOUT="1"
+  else
+    SQLITE_SUPPORTS_DOT_TIMEOUT="0"
+  fi
+
+  [[ "$SQLITE_SUPPORTS_DOT_TIMEOUT" == "1" ]]
+}
+
+emit_db_session_prefix() {
+  if sqlite_supports_dot_timeout; then
+    # Prefer the sqlite shell timeout command when available because it does
+    # not leak a result row into stdout before JSON payloads.
+    printf '.timeout %s\nPRAGMA foreign_keys=ON;\n' "$SQLITE_BUSY_TIMEOUT_MS"
+  else
+    # Some environments provide a minimal sqlite3 shim that echoes PRAGMA
+    # assignment results. Preserve clean stdout for JSON commands there.
+    printf 'PRAGMA foreign_keys=ON;\n'
+  fi
+}
+
 db_query() {
   local separator=""
   if [[ "${1:-}" == "--separator" ]]; then
@@ -90,16 +122,16 @@ db_query() {
   mkdir -p "$FCASE_DIR" 2>/dev/null || die "Cannot create $FCASE_DIR"
 
   if [[ -n "$separator" ]]; then
-      { printf 'PRAGMA busy_timeout=5000;\nPRAGMA foreign_keys=ON;\n'; cat; } | sqlite3 -separator "$separator" "$DB_FILE"
+    { emit_db_session_prefix; cat; } | sqlite3 -separator "$separator" "$DB_FILE"
   else
-      { printf 'PRAGMA busy_timeout=5000;\nPRAGMA foreign_keys=ON;\n'; cat; } | sqlite3 "$DB_FILE"
+    { emit_db_session_prefix; cat; } | sqlite3 "$DB_FILE"
   fi
 }
 
 db_exec() {
   has sqlite3 || die 3 "sqlite3 is required"
   mkdir -p "$FCASE_DIR" 2>/dev/null || die "Cannot create $FCASE_DIR"
-    { printf 'PRAGMA busy_timeout=5000;\nPRAGMA foreign_keys=ON;\n'; cat; } | sqlite3 "$DB_FILE" >/dev/null
+  { emit_db_session_prefix; cat; } | sqlite3 "$DB_FILE" >/dev/null
 }
 
 ensure_db() {
