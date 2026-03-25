@@ -601,6 +601,62 @@ volumes:
 YMLEOF
 
   # YAML fixture (GitHub Actions style for uses: detection)
+  # Markdown fixture
+  cat > "${TEST_DIR}/src/guide.md" <<'MDEOF'
+---
+title: Test Guide
+author: player3
+---
+
+# Main Title
+
+Some intro paragraph.
+
+## Getting Started
+
+Setext Heading H1
+=================
+
+Setext Heading H2
+-----------------
+
+### Installation
+
+Here is a [local link](./install.md) and an [external link](https://example.com/docs).
+
+```bash
+# This is a comment inside a fence
+echo "not a heading"
+## also not a heading
+export FOO=bar
+```
+
+#### Advanced Config
+
+Some text between headings.
+
+~~~python
+# Another fenced block with tildes
+def not_a_symbol():
+    pass
+~~~
+
+```
+bare fence no lang tag
+# still not a heading
+```
+
+  ## Indented Heading
+
+##### Deep Heading Level 5 ###
+
+## Trailing Hashes ##
+
+[Reference](https://github.com/example/repo)
+
+## Final Section
+MDEOF
+
   cat > "${TEST_DIR}/src/ci.yaml" <<'CIEOF'
 name: CI
 on:
@@ -2016,10 +2072,137 @@ test_force_lang_yaml() {
 test_bad_lang_lists_new_languages() {
   local output rc
   output=$(FSUITE_TELEMETRY=0 "${FMAP}" -L badlang "${TEST_DIR}" 2>&1) || rc=$?
-  if [[ "${rc:-0}" -eq 2 ]] && [[ "$output" =~ "kotlin" ]] && [[ "$output" =~ "swift" ]] && [[ "$output" =~ "dockerfile" ]] && [[ "$output" =~ "makefile" ]] && [[ "$output" =~ "yaml" ]]; then
-    pass "Invalid --lang error lists new languages"
+  if [[ "${rc:-0}" -eq 2 ]] && [[ "$output" =~ "kotlin" ]] && [[ "$output" =~ "swift" ]] && [[ "$output" =~ "dockerfile" ]] && [[ "$output" =~ "makefile" ]] && [[ "$output" =~ "yaml" ]] && [[ "$output" =~ "markdown" ]]; then
+    pass "Invalid --lang error lists new languages (incl markdown)"
   else
     fail "Invalid --lang error missing new languages" "rc=${rc:-0}, output=$output"
+  fi
+}
+
+# ============================================================================
+# Markdown Tests
+# ============================================================================
+
+test_markdown_detection() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" "${TEST_DIR}/src/guide.md" 2>&1)
+  if [[ "$output" =~ "(markdown)" ]]; then
+    pass "Markdown auto-detected from .md extension"
+  else
+    fail "Markdown not detected" "Got: $output"
+  fi
+}
+
+test_markdown_atx_headings() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" "${TEST_DIR}/src/guide.md" 2>&1)
+  if [[ "$output" =~ "class:" ]] && [[ "$output" =~ "function:" ]]; then
+    pass "Markdown ATX headings: h1/h2 as class, h3+ as function"
+  else
+    fail "Markdown missing heading symbols" "Got: $output"
+  fi
+}
+
+test_markdown_setext_headings() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" "${TEST_DIR}/src/guide.md" 2>&1)
+  if [[ "$output" =~ "Setext Heading H1" ]] && [[ "$output" =~ "Setext Heading H2" ]]; then
+    pass "Markdown setext headings detected (=== and ---)"
+  else
+    fail "Markdown setext headings missing" "Got: $output"
+  fi
+}
+
+test_markdown_fence_suppression() {
+  local output
+  output=$(FSUITE_TELEMETRY=0 "${FMAP}" -o json "${TEST_DIR}/src/guide.md" 2>&1)
+  # Check that bash comments inside fences are NOT in output
+  if [[ "$output" =~ "This is a comment inside a fence" ]] || [[ "$output" =~ "also not a heading" ]] || [[ "$output" =~ "not_a_symbol" ]] || [[ "$output" =~ "still not a heading" ]]; then
+    fail "Markdown fence suppression failed — content inside fences leaked" "Got: $output"
+  else
+    pass "Markdown fenced code contents are suppressed"
+  fi
+}
+
+test_markdown_fence_as_constant() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" "${TEST_DIR}/src/guide.md" 2>&1)
+  # Fence openers themselves should appear as constants
+  if [[ "$output" =~ 'constant:' ]] && [[ "$output" =~ '```' ]]; then
+    pass "Markdown fence openers appear as constant symbols"
+  else
+    fail "Markdown fence openers not showing as constants" "Got: $output"
+  fi
+}
+
+test_markdown_tilde_fence() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" "${TEST_DIR}/src/guide.md" 2>&1)
+  if [[ "$output" =~ "~~~" ]]; then
+    pass "Markdown tilde fences detected"
+  else
+    fail "Markdown tilde fences not detected" "Got: $output"
+  fi
+}
+
+test_markdown_frontmatter_skipped() {
+  local output
+  output=$(FSUITE_TELEMETRY=0 "${FMAP}" -o json "${TEST_DIR}/src/guide.md" 2>&1)
+  # Frontmatter content should not appear
+  if [[ "$output" =~ "Test Guide" ]] || [[ "$output" =~ "player3" ]]; then
+    fail "Markdown frontmatter leaked into symbols" "Got: $output"
+  else
+    pass "Markdown YAML frontmatter suppressed"
+  fi
+}
+
+test_markdown_links() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" "${TEST_DIR}/src/guide.md" 2>&1)
+  if [[ "$output" =~ "import:" ]]; then
+    pass "Markdown links detected as imports"
+  else
+    fail "Markdown links not detected" "Got: $output"
+  fi
+}
+
+test_markdown_indented_heading() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" "${TEST_DIR}/src/guide.md" 2>&1)
+  if [[ "$output" =~ "Indented Heading" ]]; then
+    pass "Markdown indented heading (up to 3 spaces) detected"
+  else
+    fail "Markdown indented heading not detected" "Got: $output"
+  fi
+}
+
+test_markdown_exact_parse() {
+  local result
+  result=$(_validate_lang_json "${TEST_DIR}/src/guide.md" "markdown" "class,function,constant,import" 8)
+  if [[ "$result" == "OK" ]]; then
+    pass "Markdown exact parse: all types found, no dupes, 8+ symbols"
+  else
+    fail "Markdown exact parse failed" "$result"
+  fi
+}
+
+test_force_lang_markdown() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" -L markdown "${TEST_DIR}/src/guide.md" 2>&1)
+  if [[ "$output" =~ "(markdown)" ]]; then
+    pass "-L markdown forces language detection"
+  else
+    fail "-L markdown not effective" "Got: $output"
+  fi
+}
+
+test_markdown_name_query() {
+  local output
+  output=$(FSUITE_TELEMETRY=3 "${FMAP}" --name "Installation" "${TEST_DIR}/src/guide.md" 2>&1)
+  if [[ "$output" =~ "Installation" ]] && [[ "$output" =~ "function:" ]]; then
+    pass "Markdown --name query finds heading by name"
+  else
+    fail "Markdown --name query failed" "Got: $output"
   fi
 }
 
@@ -2199,6 +2382,20 @@ main() {
     run_test "Android manifest excludes activity-alias" test_android_manifest_activity_alias_is_excluded
     run_test "Android layout exact parse" test_parse_android_layout_exact
     run_test "Android layout path scoping" test_android_layout_is_path_scoped
+
+    # Markdown
+    run_test "Markdown detection" test_markdown_detection
+    run_test "Markdown ATX headings" test_markdown_atx_headings
+    run_test "Markdown setext headings" test_markdown_setext_headings
+    run_test "Markdown fence suppression" test_markdown_fence_suppression
+    run_test "Markdown fence as constant" test_markdown_fence_as_constant
+    run_test "Markdown tilde fence" test_markdown_tilde_fence
+    run_test "Markdown frontmatter skipped" test_markdown_frontmatter_skipped
+    run_test "Markdown links" test_markdown_links
+    run_test "Markdown indented heading" test_markdown_indented_heading
+    run_test "Markdown exact parse" test_markdown_exact_parse
+    run_test "Force lang markdown" test_force_lang_markdown
+    run_test "Markdown name query" test_markdown_name_query
 
     # New language validation
     run_test "Invalid --lang lists new langs" test_bad_lang_lists_new_languages
