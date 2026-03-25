@@ -2293,6 +2293,67 @@ print(count)
   fi
 }
 
+test_markdown_setext_rejects_non_paragraph() {
+  # Bug 5: setext underlines after list items, blockquotes, ATX headings
+  # must NOT produce heading symbols
+  local tmpfile="${TEST_DIR}/src/setext-false.md"
+  cat > "$tmpfile" <<'SFEOF'
+- list item
+-----
+
+> blockquote
+---
+
+Real Setext Title
+=================
+SFEOF
+  local output
+  output=$(FSUITE_TELEMETRY=0 "${FMAP}" -o json "$tmpfile" 2>&1)
+  local count
+  count=$(printf '%s' "$output" | python3 -c "
+import json,sys
+d = json.load(sys.stdin)
+f = d.get('files', [])
+if not f: print(0); sys.exit()
+# Count class symbols — should be exactly 1 (Real Setext Title)
+count = sum(1 for s in f[0]['symbols'] if s['type'] == 'class')
+print(count)
+" 2>/dev/null) || count=0
+  if [[ "$count" -eq 1 ]]; then
+    pass "Markdown setext rejects non-paragraph lines (1 heading found)"
+  else
+    fail "Markdown setext false positives from non-paragraph text" "Expected 1 class, got $count. Output: $output"
+  fi
+}
+
+test_markdown_trailing_hash_no_space_preserved() {
+  # Bug 6: ## Topic## must keep literal Topic## (no space before #)
+  # CommonMark: trailing # is closing sequence ONLY when preceded by space/tab
+  local tmpfile="${TEST_DIR}/src/hash-nospace.md"
+  cat > "$tmpfile" <<'HNEOF'
+## Topic##
+
+## C# Programming
+
+## Proper Trailing ##
+HNEOF
+  local output
+  # "Topic##" must be an exact match (# is part of the title)
+  output=$(FSUITE_TELEMETRY=0 "${FMAP}" -o json --name "Topic##" "$tmpfile" 2>&1)
+  local match_kind
+  match_kind=$(printf '%s' "$output" | python3 -c "
+import json,sys
+d = json.load(sys.stdin)
+m = d.get('matches', [])
+print(m[0]['match_kind'] if m else 'none')
+" 2>/dev/null) || match_kind="error"
+  if [[ "$match_kind" == "exact" ]]; then
+    pass "Markdown trailing # without space preserved in heading name"
+  else
+    fail "Markdown trailing # without space was stripped — match_kind=$match_kind (expected exact)" "Got: $output"
+  fi
+}
+
 # ============================================================================
 # Pipeline Test
 # ============================================================================
@@ -2487,6 +2548,8 @@ main() {
     run_test "Markdown setext H2 is class" test_markdown_setext_h2_is_class
     run_test "Markdown trailing # stripped" test_markdown_trailing_hash_stripped
     run_test "Markdown inline links in prose" test_markdown_inline_links_in_prose
+    run_test "Markdown setext rejects non-paragraph" test_markdown_setext_rejects_non_paragraph
+    run_test "Markdown trailing # no-space preserved" test_markdown_trailing_hash_no_space_preserved
 
     # New language validation
     run_test "Invalid --lang lists new langs" test_bad_lang_lists_new_languages

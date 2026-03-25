@@ -838,18 +838,33 @@ extract_symbols() {
     in_fence { suppress[NR] = 1; n_suppress++; next }
 
     # Setext headings: current line is ===+ or ---+ (not in fence),
-    # and previous line was non-empty text
-    /^[[:space:]]{0,3}=+[[:space:]]*$/ && prev_text != "" && !in_fence {
+    # and previous line was paragraph text (not list, blockquote, ATX, HTML, blank)
+    # CommonMark: setext underline only applies after paragraph content
+    /^[[:space:]]{0,3}=+[[:space:]]*$/ && prev_is_para && !in_fence {
       setext_lines[n_setext] = (NR - 1) "\tclass\t0\t" prev_text
       n_setext++
+      prev_is_para = 0; prev_text = ""
       next
     }
-    /^[[:space:]]{0,3}-{2,}[[:space:]]*$/ && prev_text != "" && !in_fence {
+    /^[[:space:]]{0,3}-{2,}[[:space:]]*$/ && prev_is_para && !in_fence {
       setext_lines[n_setext] = (NR - 1) "\tclass\t0\t" prev_text
       n_setext++
+      prev_is_para = 0; prev_text = ""
       next
     }
-    { prev_text = $0 }
+    {
+      prev_text = $0
+      # Determine if this line is paragraph content
+      # NOT paragraph: blank, list item (- * + or 1.), blockquote (>),
+      # ATX heading (#), HTML (<), thematic break (--- *** ___), fenced code
+      prev_is_para = 1
+      if ($0 ~ /^[[:space:]]*$/) prev_is_para = 0
+      else if ($0 ~ /^[[:space:]]{0,3}[-*+][[:space:]]/) prev_is_para = 0
+      else if ($0 ~ /^[[:space:]]{0,3}[0-9]+[.)][[:space:]]/) prev_is_para = 0
+      else if ($0 ~ /^[[:space:]]{0,3}>/) prev_is_para = 0
+      else if ($0 ~ /^[[:space:]]{0,3}#/) prev_is_para = 0
+      else if ($0 ~ /^[[:space:]]{0,3}</) prev_is_para = 0
+    }
     END {
       # Filter raw symbols: remove suppressed lines
       while ((getline line < raw_file) > 0) {
@@ -890,13 +905,10 @@ extract_symbol_name() {
       # Markdown headings: "### Subsection ###" → "Subsection"
       if [[ "$trimmed" =~ ^(#{1,6})[[:space:]]+(.*) ]]; then
         local _md_title="${BASH_REMATCH[2]}"
-        # Strip optional trailing # and whitespace (CommonMark ATX)
-        # Regex stored in var to avoid bash parsing # as comment
-        local _re_trail_hash='^(.*[^[:space:]#])[[:space:]]+#+ *$'
-        local _re_trail_hash2='^(.*[^#])#+$'
+        # CommonMark: trailing # is a closing sequence ONLY when preceded by space/tab
+        # "## Title ##" → "Title", but "## Topic##" → "Topic##" (literal)
+        local _re_trail_hash='^(.*[^[:space:]#])[[:space:]]+#+[[:space:]]*$'
         if [[ "$_md_title" =~ $_re_trail_hash ]]; then
-          _md_title="${BASH_REMATCH[1]}"
-        elif [[ "$_md_title" =~ $_re_trail_hash2 ]]; then
           _md_title="${BASH_REMATCH[1]}"
         fi
         _md_title="${_md_title%"${_md_title##*[![:space:]]}"}"
@@ -944,11 +956,9 @@ extract_symbol_name() {
       # Markdown headings: "## Title ##" → "Title"
       if [[ "$trimmed" =~ ^(#{1,6})[[:space:]]+(.*) ]]; then
         local _md_title="${BASH_REMATCH[2]}"
-        local _re_trail_hash='^(.*[^[:space:]#])[[:space:]]+#+ *$'
-        local _re_trail_hash2='^(.*[^#])#+$'
+        # CommonMark: trailing # only when preceded by space/tab
+        local _re_trail_hash='^(.*[^[:space:]#])[[:space:]]+#+[[:space:]]*$'
         if [[ "$_md_title" =~ $_re_trail_hash ]]; then
-          _md_title="${BASH_REMATCH[1]}"
-        elif [[ "$_md_title" =~ $_re_trail_hash2 ]]; then
           _md_title="${BASH_REMATCH[1]}"
         fi
         _md_title="${_md_title%"${_md_title##*[![:space:]]}"}"
