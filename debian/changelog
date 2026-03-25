@@ -1,3 +1,19 @@
+fsuite (2.1.1-1) unstable; urgency=medium
+
+  * feat(fmap): add Markdown language support (.md, .markdown, .mdx)
+  * feat(fmap): ATX headings h1-h6 with CommonMark rules (indented,
+    trailing # stripping only when preceded by space)
+  * feat(fmap): setext headings with paragraph validation (single and
+    multiline, rejects list/blockquote/ATX/HTML predecessors)
+  * feat(fmap): fenced code block suppression via awk stateful post-pass
+    (backtick, tilde, and bare fences)
+  * feat(fmap): YAML frontmatter suppression
+  * feat(fmap): inline links anywhere in line, reference link definitions,
+    image exclusion from imports
+  * fix(fmap): 122 tests passing, 21 markdown-specific regression tests
+
+ -- Chess Williams <chess.w.williams@gmail.com>  Tue, 25 Mar 2026 23:00:00 -0500
+
 fsuite (2.1.0-1) unstable; urgency=medium
 
   * feat(fmap): add Kotlin symbol mapping for .kt and .kts files

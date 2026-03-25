@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="2.1.0"
+VERSION="2.1.1"
 
 # -------------------------
 # Paths
@@ -800,7 +800,7 @@ try:
             })
     print(json.dumps({
         "tool": "fmetrics",
-        "version": "2.1.0",
+        "version": "2.1.1",
         "subcommand": "predict",
         "path": sys.argv[5],
         "features": {

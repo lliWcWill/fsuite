@@ -362,6 +362,7 @@ The table below tracks the **language-aware structural layer** in `fmap` and the
 | Dockerfile | Yes | Yes | Container workflows |
 | Makefile | Yes | Yes | Build systems |
 | YAML | Yes | Yes | CI / config / infra manifests |
+| Markdown | Yes | — | Headings, fences, frontmatter, links |
 
 ### Recommended Next Support (2026)
 
@@ -598,7 +599,7 @@ fmap [OPTIONS] [path]
 
 - Zero dependencies beyond `grep` (uses `grep -n -E -I`)
 - Three modes: directory (recursive), single file, piped file list from stdin
-  - 17 languages / formats: Python, JavaScript, TypeScript, Kotlin, Swift, Rust, Go, Java, C, C++, Ruby, Lua, PHP, Bash, Dockerfile, Makefile, YAML
+  - 18 languages / formats: Python, JavaScript, TypeScript, Kotlin, Swift, Rust, Go, Java, C, C++, Ruby, Lua, PHP, Bash, Dockerfile, Makefile, YAML, Markdown
 - Bash function detection: both `name() {` and `function name {` forms
 - Shebang fallback for extensionless files (`#!/usr/bin/env bash`)
 - Symbol type filtering (`-t function`, `-t class`, etc.)
@@ -1744,6 +1745,19 @@ For harnesses that read repo instructions, point them at [AGENTS.md](AGENTS.md).
 ---
 
 ## Changelog
+
+### v2.1.1
+
+`fmap` adds Markdown as its 18th language. Headings, fences, frontmatter, and links are mapped with CommonMark-compliant rules.
+
+- **feat(fmap):** Markdown language support (`.md`, `.markdown`, `.mdx`)
+- **feat(fmap):** ATX headings h1–h6 with up to 3 leading spaces, trailing `#` stripping per CommonMark (only when preceded by space)
+- **feat(fmap):** Setext headings with full paragraph accumulation (multiline) and paragraph validation (rejects list items, blockquotes, ATX headings, HTML)
+- **feat(fmap):** Fenced code block suppression via stateful awk post-pass — backtick, tilde, and bare fences. Zero false positives from code inside fences.
+- **feat(fmap):** YAML frontmatter (`---` at line 1) suppressed
+- **feat(fmap):** Inline links detected anywhere in line (not just line-start), reference link definitions (`[ref]: url`), images excluded from imports
+- **Known Markdown limitations:** escaped links (`\[`), autolinks (`<url>`), empty-text links, `.mdx` JSX/ESM
+- **test:** 21 markdown-specific regression tests, 122 total tests passing
 
 ### v2.1.0
 
