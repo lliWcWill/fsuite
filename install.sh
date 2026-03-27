@@ -11,8 +11,8 @@ MODE="source"
 PACKAGE_PATH=""
 VERIFY=1
 
-TOOLS=(fsuite ftree fsearch fcontent fmap fread fcase fedit fmetrics)
-SHARE_FILES=(_fsuite_common.sh fmetrics-predict.py)
+TOOLS=(fsuite ftree fsearch fcontent fmap fread fcase fedit fmetrics freplay)
+SHARE_FILES=(_fsuite_common.sh _fsuite_db.sh fmetrics-predict.py)
 
 die() {
   local code=1
@@ -136,7 +136,7 @@ print_next_steps() {
   fi
   echo
   echo "Required runtime dependencies by tool:"
-  echo "  sqlite3  - required by fcase and fmetrics"
+  echo "  sqlite3  - required by fcase, freplay, and fmetrics"
   echo "  ripgrep  - required by fcontent"
   echo "  tree     - required by ftree tree mode"
   echo "  perl     - required by fread"
