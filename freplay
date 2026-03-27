@@ -1019,11 +1019,70 @@ cmd_verify() {
 }
 
 cmd_promote() {
-  die 2 "not yet implemented"
+  local slug="${1:-}"
+  local replay_id="${2:-}"
+
+  [[ -n "$slug" ]]      || die 2 "case slug required"
+  [[ -n "$replay_id" ]] || die 2 "replay-id required"
+
+  ensure_db
+  local case_id
+  case_id="$(case_exists_or_die "$slug")"
+
+  # Validate replay exists and belongs to this case
+  local replay_status
+  replay_status="$(db_query <<<"SELECT status FROM replays WHERE id=$replay_id AND case_id=$case_id;")"
+  [[ -n "$replay_status" ]] || die "replay $replay_id not found for case '$slug'"
+
+  local now
+  now="$(now_utc)"
+
+  # Demote existing canonical → archived, then promote target → canonical, all in one transaction.
+  local sql_result attempt=0
+  local atomic_sql
+  atomic_sql="BEGIN IMMEDIATE;
+UPDATE replays SET status='archived', updated_at=$(sql_quote "$now") WHERE case_id=$case_id AND status='canonical';
+UPDATE replays SET status='canonical', updated_at=$(sql_quote "$now") WHERE id=$replay_id;
+COMMIT;"
+
+  while (( attempt < 3 )); do
+    if sql_result="$({ emit_db_session_prefix; echo "$atomic_sql"; } | sqlite3 "$DB_FILE" 2>&1)"; then
+      break
+    fi
+    if [[ "$sql_result" == *"database is locked"* || "$sql_result" == *"SQLITE_BUSY"* ]]; then
+      attempt=$((attempt + 1))
+      sleep 0.1
+    else
+      die "DB error: $sql_result"
+    fi
+  done
+  (( attempt < 3 )) || die "DB busy after 3 retries — could not promote replay"
+
+  echo "promoted replay $replay_id to canonical"
 }
 
 cmd_archive() {
-  die 2 "not yet implemented"
+  local slug="${1:-}"
+  local replay_id="${2:-}"
+
+  [[ -n "$slug" ]]      || die 2 "case slug required"
+  [[ -n "$replay_id" ]] || die 2 "replay-id required"
+
+  ensure_db
+  local case_id
+  case_id="$(case_exists_or_die "$slug")"
+
+  # Validate replay exists and belongs to this case
+  local replay_status
+  replay_status="$(db_query <<<"SELECT status FROM replays WHERE id=$replay_id AND case_id=$case_id;")"
+  [[ -n "$replay_status" ]] || die "replay $replay_id not found for case '$slug'"
+
+  local now
+  now="$(now_utc)"
+
+  db_exec <<<"UPDATE replays SET status='archived', updated_at=$(sql_quote "$now") WHERE id=$replay_id;"
+
+  echo "archived replay $replay_id"
 }
 
 # ---------------------------------------------------------------------------
