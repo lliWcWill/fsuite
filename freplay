@@ -368,10 +368,11 @@ elif tool == 'fmetrics':
                 break
 
 if result is None and raw:
-    result = raw[:240]
+    result = raw.replace('\n', ' ').replace('\r', ' ')[:240]
 
 if result is not None:
-    print(result[:240], end='')
+    result = result.replace('\n', ' ').replace('\r', ' ')[:240]
+    print(result, end='')
 " "$tool" "$stdout_file" 2>/dev/null)" || true
 
   echo "$summary"
@@ -720,142 +721,95 @@ _emit_replay() {
   local case_id="$3"
   local output="$4"
 
-  # Query replay metadata (pipe-delimited)
-  local replay_row
-  replay_row="$(db_query --separator '|' <<<"SELECT id, status, origin, fsuite_version, created_at, actor, label FROM replays WHERE id=$replay_id AND case_id=$case_id;")"
-  [[ -n "$replay_row" ]] || die "replay $replay_id not found for case '$slug'"
-
-  # Query case goal
-  local case_goal
-  case_goal="$(db_query <<<"SELECT goal FROM cases WHERE id=$case_id;")"
-
-  # Query steps (pipe-delimited, all columns needed)
-  local steps_rows
-  steps_rows="$(db_query --separator '|' <<<"SELECT id, order_num, tool, argv_json, cwd, mode, purpose, provenance, exit_code, duration_ms, started_at, result_summary, error_excerpt FROM replay_steps WHERE replay_id=$replay_id ORDER BY order_num;")"
-
-  # Query all links for steps of this replay, pipe-delimited
-  local links_rows
-  links_rows="$(db_query --separator '|' <<<"SELECT step_id, link_type, link_ref FROM replay_step_links WHERE step_id IN (SELECT id FROM replay_steps WHERE replay_id=$replay_id) ORDER BY step_id, id;")"
+  # Build the entire replay as a single JSON blob using SQLite's json functions.
+  # This avoids any pipe/newline delimiter issues in field values.
+  local json_blob
+  json_blob="$(db_query <<SQL
+SELECT json_object(
+  'version', '1.0',
+  'tool', 'freplay',
+  'case_slug', c.slug,
+  'case_goal', c.goal,
+  'replay_id', r.id,
+  'replay_status', r.status,
+  'replay_origin', r.origin,
+  'fsuite_version', r.fsuite_version,
+  'created_at', r.created_at,
+  'actor', r.actor,
+  'label', r.label,
+  'step_count', (SELECT COUNT(*) FROM replay_steps WHERE replay_id=r.id),
+  'steps', COALESCE(
+    (SELECT json_group_array(json(step_json)) FROM (
+      SELECT json_object(
+        'order', rs.order_num,
+        'tool', rs.tool,
+        'argv', json(rs.argv_json),
+        'cwd', rs.cwd,
+        'mode', rs.mode,
+        'purpose', rs.purpose,
+        'provenance', rs.provenance,
+        'exit_code', rs.exit_code,
+        'duration_ms', rs.duration_ms,
+        'started_at', rs.started_at,
+        'result_summary', rs.result_summary,
+        'error_excerpt', rs.error_excerpt,
+        'links', COALESCE(
+          (SELECT json_group_array(
+            json_object('type', rsl.link_type, 'ref', rsl.link_ref)
+          ) FROM replay_step_links rsl WHERE rsl.step_id = rs.id),
+          json('[]')
+        )
+      ) AS step_json
+      FROM replay_steps rs
+      WHERE rs.replay_id = r.id
+      ORDER BY rs.order_num
+    )),
+    json('[]')
+  )
+)
+FROM replays r
+JOIN cases c ON c.id = r.case_id
+WHERE r.id = $replay_id AND r.case_id = $case_id;
+SQL
+)"
+  [[ -n "$json_blob" ]] || die "replay $replay_id not found for case '$slug'"
 
   if [[ "$output" == "json" ]]; then
     python3 -c "
 import sys, json
-
-def parse_null(v):
-    return None if v == '' else v
-
-replay_row   = sys.argv[1]
-case_goal    = sys.argv[2]
-slug         = sys.argv[3]
-steps_raw    = sys.argv[4]
-links_raw    = sys.argv[5]
-
-# Parse replay row
-rparts = replay_row.split('|', 6)
-while len(rparts) < 7:
-    rparts.append('')
-r_id, r_status, r_origin, r_fsuite_ver, r_created_at, r_actor, r_label = rparts
-
-# Parse links into dict: step_id -> list of {type, ref}
-links_by_step = {}
-if links_raw.strip():
-    for line in links_raw.strip().splitlines():
-        lparts = line.split('|', 2)
-        if len(lparts) == 3:
-            lstep_id, ltype, lref = lparts
-            links_by_step.setdefault(lstep_id, []).append({'type': ltype, 'ref': lref})
-
-# Parse steps
-steps = []
-if steps_raw.strip():
-    for line in steps_raw.strip().splitlines():
-        # Split into 13 parts (last field may contain | if result_summary/error has pipes — unlikely but safe with maxsplit)
-        sparts = line.split('|', 12)
-        while len(sparts) < 13:
-            sparts.append('')
-        s_id, s_order, s_tool, s_argv_json, s_cwd, s_mode, s_purpose, s_provenance, s_exit_code, s_duration_ms, s_started_at, s_result_summary, s_error_excerpt = sparts
-
-        # Parse argv_json (already a JSON array in DB)
-        try:
-            argv = json.loads(s_argv_json)
-        except Exception:
-            argv = [s_argv_json] if s_argv_json else []
-
-        step = {
-            'order': int(s_order),
-            'tool': s_tool,
-            'argv': argv,
-            'cwd': s_cwd,
-            'mode': s_mode,
-            'purpose': parse_null(s_purpose),
-            'provenance': s_provenance,
-            'exit_code': int(s_exit_code) if s_exit_code else 0,
-            'duration_ms': int(s_duration_ms) if s_duration_ms else 0,
-            'started_at': s_started_at,
-            'result_summary': parse_null(s_result_summary),
-            'error_excerpt': parse_null(s_error_excerpt),
-            'links': links_by_step.get(s_id, []),
-        }
-        steps.append(step)
-
-envelope = {
-    'version': '1.0',
-    'tool': 'freplay',
-    'case_slug': slug,
-    'case_goal': case_goal,
-    'replay_id': int(r_id),
-    'replay_status': r_status,
-    'replay_origin': r_origin,
-    'fsuite_version': r_fsuite_ver,
-    'created_at': r_created_at,
-    'actor': r_actor,
-    'step_count': len(steps),
-    'steps': steps,
-}
-print(json.dumps(envelope, indent=2))
-" "$replay_row" "$case_goal" "$slug" "$steps_rows" "$links_rows"
+print(json.dumps(json.loads(sys.argv[1]), indent=2))
+" "$json_blob"
   else
-    # Pretty output
+    # Pretty output: parse the JSON and format for humans
     python3 -c "
 import sys, json
 
-def parse_null(v):
-    return None if v == '' else v
+d = json.loads(sys.argv[1])
 
-replay_row   = sys.argv[1]
-case_goal    = sys.argv[2]
-slug         = sys.argv[3]
-steps_raw    = sys.argv[4]
-
-rparts = replay_row.split('|', 6)
-while len(rparts) < 7:
-    rparts.append('')
-r_id, r_status, r_origin, r_fsuite_ver, r_created_at, r_actor, r_label = rparts
-
-print(f'Replay #{r_id}  [{r_status}]  {slug}')
-print(f'  goal:    {case_goal}')
-print(f'  origin:  {r_origin}  version: {r_fsuite_ver}  actor: {r_actor}')
-print(f'  created: {r_created_at}')
-if r_label:
-    print(f'  label:   {r_label}')
+print(f'Replay #{d[\"replay_id\"]}  [{d[\"replay_status\"]}]  {d[\"case_slug\"]}')
+print(f'  goal:    {d[\"case_goal\"]}')
+print(f'  origin:  {d[\"replay_origin\"]}  version: {d[\"fsuite_version\"]}  actor: {d[\"actor\"]}')
+print(f'  created: {d[\"created_at\"]}')
+if d.get('label'):
+    print(f'  label:   {d[\"label\"]}')
 print()
 
-if steps_raw.strip():
-    for line in steps_raw.strip().splitlines():
-        sparts = line.split('|', 12)
-        while len(sparts) < 13:
-            sparts.append('')
-        s_id, s_order, s_tool, s_argv_json, s_cwd, s_mode, s_purpose, s_provenance, s_exit_code, s_duration_ms, s_started_at, s_result_summary, s_error_excerpt = sparts
-        try:
-            argv = json.loads(s_argv_json)
-        except Exception:
-            argv = []
-        argv_str = ' '.join(argv)
-        purpose_str = f'  purpose: {s_purpose}' if s_purpose else ''
-        result_str = f'  result:  {s_result_summary}' if s_result_summary else ''
-        error_str = f'  error:   {s_error_excerpt}' if s_error_excerpt else ''
-        print(f'  Step {s_order}: {s_tool} {argv_str}')
-        print(f'    mode={s_mode}  exit={s_exit_code}  duration={s_duration_ms}ms  cwd={s_cwd}')
+steps = d.get('steps', [])
+if steps:
+    for s in steps:
+        argv = s.get('argv', [])
+        if isinstance(argv, list):
+            argv_str = ' '.join(str(a) for a in argv)
+        else:
+            argv_str = str(argv)
+        purpose = s.get('purpose')
+        result_summary = s.get('result_summary')
+        error_excerpt = s.get('error_excerpt')
+        purpose_str = f'  purpose: {purpose}' if purpose is not None else ''
+        result_str = f'  result:  {result_summary}' if result_summary is not None else ''
+        error_str = f'  error:   {error_excerpt}' if error_excerpt is not None else ''
+        print(f'  Step {s[\"order\"]}: {s[\"tool\"]} {argv_str}')
+        print(f'    mode={s[\"mode\"]}  exit={s[\"exit_code\"]}  duration={s[\"duration_ms\"]}ms  cwd={s[\"cwd\"]}')
         if purpose_str:
             print(f'   {purpose_str}')
         if result_str:
@@ -865,7 +819,7 @@ if steps_raw.strip():
         print()
 else:
     print('  (no steps recorded)')
-" "$replay_row" "$case_goal" "$slug" "$steps_rows"
+" "$json_blob"
   fi
 }
 
@@ -982,6 +936,7 @@ cmd_export() {
   done
 
   [[ -n "$slug" ]] || die 2 "case slug required"
+  [[ "$output" == "json" ]] || die 2 "export only supports -o json"
 
   db_exists || die "no fcase.db found"
 
