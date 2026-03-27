@@ -125,6 +125,15 @@ main() {
     failed_suites+=("fedit")
   fi
 
+  # Run freplay tests
+  echo ""
+  if run_test_suite "${SCRIPT_DIR}/test_freplay.sh" "freplay Test Suite"; then
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+  else
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+    failed_suites+=("freplay")
+  fi
+
   # Run installer tests
   echo ""
   if run_test_suite "${SCRIPT_DIR}/test_install.sh" "install.sh Test Suite"; then
