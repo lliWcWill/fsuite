@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+# freplay — deterministic replay engine for fsuite investigation commands.
+
+set -euo pipefail
+
+VERSION="2.1.2"
+_FSUITE_DB_TOOL_NAME="freplay"
+
+# ---------------------------------------------------------------------------
+# Source shared DB module (_fsuite_db.sh)
+# ---------------------------------------------------------------------------
+_FSUITE_SCRIPT_DIR="$(cd "$(dirname "$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
+_FSUITE_PARENT_DIR="$(cd "$_FSUITE_SCRIPT_DIR/.." 2>/dev/null && pwd || true)"
+
+_FSUITE_LIB_CANDIDATES=()
+[[ -n "${FSUITE_SHARE_DIR:-}" ]] && _FSUITE_LIB_CANDIDATES+=("${FSUITE_SHARE_DIR%/}/_fsuite_db.sh")
+_FSUITE_LIB_CANDIDATES+=(
+  "$_FSUITE_SCRIPT_DIR/_fsuite_db.sh"
+  "$_FSUITE_PARENT_DIR/share/fsuite/_fsuite_db.sh"
+  "/usr/local/share/fsuite/_fsuite_db.sh"
+  "/usr/share/fsuite/_fsuite_db.sh"
+)
+for _fsuite_candidate in "${_FSUITE_LIB_CANDIDATES[@]}"; do
+  if [[ -f "$_fsuite_candidate" ]]; then
+    # shellcheck disable=SC1090
+    source "$_fsuite_candidate"
+    break
+  fi
+done
+unset _fsuite_candidate
+
+if [[ -z "${_FSUITE_DB_LOADED:-}" ]]; then
+  echo "freplay: fatal: cannot find _fsuite_db.sh (searched: ${_FSUITE_LIB_CANDIDATES[*]})" >&2
+  exit 2
+fi
+
+# ---------------------------------------------------------------------------
+# Source shared common module (_fsuite_common.sh)
+# ---------------------------------------------------------------------------
+_FSUITE_COMMON_CANDIDATES=()
+[[ -n "${FSUITE_SHARE_DIR:-}" ]] && _FSUITE_COMMON_CANDIDATES+=("${FSUITE_SHARE_DIR%/}/_fsuite_common.sh")
+_FSUITE_COMMON_CANDIDATES+=(
+  "$_FSUITE_SCRIPT_DIR/_fsuite_common.sh"
+  "$_FSUITE_PARENT_DIR/share/fsuite/_fsuite_common.sh"
+  "/usr/local/share/fsuite/_fsuite_common.sh"
+  "/usr/share/fsuite/_fsuite_common.sh"
+)
+for _fsuite_candidate in "${_FSUITE_COMMON_CANDIDATES[@]}"; do
+  if [[ -f "$_fsuite_candidate" ]]; then
+    # shellcheck disable=SC1090
+    source "$_fsuite_candidate"
+    break
+  fi
+done
+unset _fsuite_candidate
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+# Tools that freplay will never record (denylist).
+RECORDING_DENYLIST=("freplay" "fmetrics")
+
+# Default mode classification per tool (tool → default mode).
+declare -A TOOL_MODE_DEFAULT=(
+  [ftree]="read_only"
+  [fsearch]="read_only"
+  [fcontent]="read_only"
+  [fmap]="read_only"
+  [fread]="read_only"
+  [fmetrics]="read_only"
+  [fedit]="read_only"
+)
+
+# Mode classification per fcase subcommand (subcommand → mode).
+declare -A FCASE_SUBCOMMAND_MODE=(
+  [status]="read_only"
+  [handoff]="read_only"
+  [export]="read_only"
+  [list]="read_only"
+  [init]="mutating"
+  [note]="mutating"
+  [next]="mutating"
+  [target]="mutating"
+  [evidence]="mutating"
+  [hypothesis]="mutating"
+  [reject]="mutating"
+)
+
+MAX_RESULT_SUMMARY=240
+MAX_ERROR_EXCERPT=240
+
+DEFAULT_OUTPUT="pretty"
+
+# ---------------------------------------------------------------------------
+# Usage
+# ---------------------------------------------------------------------------
+
+usage() {
+  cat <<'EOF'
+freplay — deterministic replay engine for fsuite investigation commands
+
+USAGE
+  freplay --help
+  freplay --version
+  freplay --self-check
+  freplay record <case-slug> [--purpose "..."] [--link <type:id>]... [--replay-id N] [--new] -- <fsuite-command...>
+  freplay show <case-slug> [--replay-id N] [-o pretty|json]
+  freplay list <case-slug> [-o pretty|json]
+  freplay export <case-slug> [--replay-id N] [-o json]
+  freplay verify <case-slug> [--replay-id N] [-o pretty|json]
+  freplay promote <case-slug> <replay-id>
+  freplay archive <case-slug> <replay-id>
+
+SUBCOMMANDS
+  record     Run an fsuite command and record its invocation, output, and result
+  show       Show a recorded replay (latest or by --replay-id)
+  list       List all replays for a case
+  export     Export a replay as JSON
+  verify     Re-run a recorded command and compare output to stored result
+  promote    Promote a replay to canonical status
+  archive    Archive (soft-delete) a replay
+
+OPTIONS
+  --purpose  Human-readable purpose for this recording
+  --link     Link this replay to a related entity (e.g. evidence:42)
+  --replay-id  Select a specific replay by integer ID
+  --new      Force creation of a new replay even if one exists for this command
+  -o         Output format: pretty (default) or json
+
+NOTES
+  The following tools are excluded from recording:
+    freplay, fmetrics
+  fedit is classified read_only by default; mutating when --apply is present.
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Self-check
+# ---------------------------------------------------------------------------
+
+cmd_self_check() {
+  local all_ok=1
+
+  if has sqlite3; then
+    echo "sqlite3: OK"
+  else
+    echo "sqlite3: MISSING"
+    all_ok=0
+  fi
+
+  if has perl; then
+    echo "perl: OK"
+  else
+    echo "perl: MISSING"
+    all_ok=0
+  fi
+
+  if db_exists; then
+    echo "fcase.db: OK (${DB_FILE})"
+  else
+    echo "fcase.db: MISSING (expected at ${DB_FILE})"
+    all_ok=0
+  fi
+
+  if [[ "$all_ok" -eq 1 ]]; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Stub commands (not yet implemented)
+# ---------------------------------------------------------------------------
+
+cmd_record() {
+  die 2 "not yet implemented"
+}
+
+cmd_show() {
+  die 2 "not yet implemented"
+}
+
+cmd_list() {
+  die 2 "not yet implemented"
+}
+
+cmd_export() {
+  die 2 "not yet implemented"
+}
+
+cmd_verify() {
+  die 2 "not yet implemented"
+}
+
+cmd_promote() {
+  die 2 "not yet implemented"
+}
+
+cmd_archive() {
+  die 2 "not yet implemented"
+}
+
+# ---------------------------------------------------------------------------
+# Main dispatch
+# ---------------------------------------------------------------------------
+
+main() {
+  local cmd="${1:---help}"
+  case "$cmd" in
+    --help|-h|help)
+      usage
+      ;;
+    --version|version)
+      echo "freplay ${VERSION}"
+      ;;
+    --self-check|self-check)
+      cmd_self_check
+      ;;
+    record)
+      shift
+      cmd_record "$@"
+      ;;
+    show)
+      shift
+      cmd_show "$@"
+      ;;
+    list)
+      shift
+      cmd_list "$@"
+      ;;
+    export)
+      shift
+      cmd_export "$@"
+      ;;
+    verify)
+      shift
+      cmd_verify "$@"
+      ;;
+    promote)
+      shift
+      cmd_promote "$@"
+      ;;
+    archive)
+      shift
+      cmd_archive "$@"
+      ;;
+    *)
+      die 2 "unknown subcommand: $cmd"
+      ;;
+  esac
+}
+
+main "$@"
