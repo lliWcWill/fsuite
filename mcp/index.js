@@ -921,35 +921,39 @@ server.registerTool(
     if (path) args.push("--path", path);
     if (scope) args.push("--scope", scope);
     if (intent) args.push("--intent", intent);
-    const { stdout } = await run(resolveTool("fs"), args, EXEC_OPTS);
     try {
-      const parsed = JSON.parse(stdout);
-      const chain = parsed.selected_chain?.join(" → ") || "?";
-      const hitCount = parsed.hits?.length || 0;
-      const summary = [
-        `${parsed.resolved_intent} (${parsed.route_confidence}) via ${chain}`,
-        `  ${parsed.route_reason}`,
-        `  ${parsed.budget?.candidate_files || 0} candidates, ${parsed.budget?.enriched_files || 0} enriched, ${parsed.budget?.time_ms || 0}ms`,
-        `  ${hitCount} hits${parsed.truncated ? " (truncated)" : ""}`,
-      ];
-      if (parsed.hits) {
-        for (const h of parsed.hits.slice(0, 15)) {
-          const syms = h.symbols ? ` [${h.symbols.slice(0, 5).join(", ")}]` : "";
-          const mc = h.match_count ? ` (${h.match_count} matches)` : "";
-          summary.push(`    ${h.file}${mc}${syms}`);
+      const { stdout } = await run(resolveTool("fs"), args, EXEC_OPTS);
+      try {
+        const parsed = JSON.parse(stdout);
+        const chain = parsed.selected_chain?.join(" → ") || "?";
+        const hitCount = parsed.hits?.length || 0;
+        const summary = [
+          `${parsed.resolved_intent} (${parsed.route_confidence}) via ${chain}`,
+          `  ${parsed.route_reason}`,
+          `  ${parsed.budget?.candidate_files || 0} candidates, ${parsed.budget?.enriched_files || 0} enriched, ${parsed.budget?.time_ms || 0}ms`,
+          `  ${hitCount} hits${parsed.truncated ? " (truncated)" : ""}`,
+        ];
+        if (parsed.hits) {
+          for (const h of parsed.hits.slice(0, 15)) {
+            const syms = h.symbols ? ` [${h.symbols.slice(0, 5).join(", ")}]` : "";
+            const mc = h.match_count ? ` (${h.match_count} matches)` : "";
+            summary.push(`    ${h.file}${mc}${syms}`);
+          }
         }
+        if (parsed.next_hint) {
+          const nh = parsed.next_hint;
+          const argStr = Object.entries(nh.args || {}).map(([k, v]) => `${k}: ${v}`).join(", ");
+          summary.push(`\n  next → ${nh.tool}(${argStr})`);
+        }
+        return {
+          content: [{ type: "text", text: summary.join("\n") }],
+          structuredContent: parsed,
+        };
+      } catch {
+        return { content: [{ type: "text", text: stdout }] };
       }
-      if (parsed.next_hint) {
-        const nh = parsed.next_hint;
-        const argStr = Object.entries(nh.args || {}).map(([k, v]) => `${k}: ${v}`).join(", ");
-        summary.push(`\n  next → ${nh.tool}(${argStr})`);
-      }
-      return {
-        content: [{ type: "text", text: summary.join("\n") }],
-        structuredContent: parsed,
-      };
-    } catch {
-      return { content: [{ type: "text", text: stdout }] };
+    } catch (err) {
+      return { content: [{ type: "text", text: `fs error: ${err.stderr || err.message || "unknown"}` }], isError: true };
     }
   }
 );

@@ -65,10 +65,10 @@ assert_eq() {
   TOTAL=$((TOTAL + 1))
   if [[ "$expected" == "$actual" ]]; then
     PASS=$((PASS + 1))
-    echo "  [0;32m✓[0m $label"
+    echo -e "  \033[0;32m✓\033[0m $label"
   else
     FAIL=$((FAIL + 1))
-    echo "  [0;31m✗[0m $label"
+    echo -e "  \033[0;31m✗\033[0m $label"
     echo "    expected: $expected"
     echo "    actual:   $actual"
   fi
@@ -79,10 +79,10 @@ assert_contains() {
   TOTAL=$((TOTAL + 1))
   if [[ "$haystack" == *"$needle"* ]]; then
     PASS=$((PASS + 1))
-    echo "  [0;32m✓[0m $label"
+    echo -e "  \033[0;32m✓\033[0m $label"
   else
     FAIL=$((FAIL + 1))
-    echo "  [0;31m✗[0m $label"
+    echo -e "  \033[0;31m✗\033[0m $label"
     echo "    expected to contain: $needle"
     echo "    actual: ${haystack:0:200}"
   fi

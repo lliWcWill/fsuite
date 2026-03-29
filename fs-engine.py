@@ -575,13 +575,13 @@ def main():
         request = json.loads(raw)
     except json.JSONDecodeError as e:
         json.dump({"error": f"invalid JSON input: {e}"}, sys.stdout)
-        sys.exit(1)
+        sys.exit(0)  # exit 0 so stdout JSON is consumed, error field signals failure
 
     try:
         result = orchestrate(request)
     except Exception as e:
         json.dump({"error": f"engine error: {e}", "query": request.get("query", "")}, sys.stdout)
-        sys.exit(1)
+        sys.exit(0)  # exit 0 so stdout JSON is consumed, error field signals failure
 
     json.dump(result, sys.stdout, indent=2)
 

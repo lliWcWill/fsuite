@@ -464,6 +464,10 @@ assert_contains "find JSON has query" "$out" '"query"'
 assert_contains "find JSON has results" "$out" '"results"'
 assert_contains "find JSON has slug" "$out" "find-resolved"
 
+# empty --status should be rejected
+result=$(run_fcase find "test" --status "" -o json 2>&1 || true)
+assert_contains "empty status filter rejected" "$result" "cannot be empty"
+
 teardown_test_db
 
 # ── Section 8: Read model lifecycle metadata ──────────────────────

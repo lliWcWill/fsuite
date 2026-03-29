@@ -331,6 +331,7 @@ SQL
 
 rebuild_fts_for_case() {
   local case_id="$1"
+  [[ "$case_id" =~ ^[0-9]+$ ]] || return 1
   # Delete existing FTS row for this case
   db_exec <<SQL
 DELETE FROM cases_fts WHERE rowid = $case_id;

@@ -252,5 +252,5 @@ if hint:
         args_parts.append(f'--{k} {v}')
     args_str = ' '.join(args_parts)
     print(f'\n  \033[1;35mnext →\033[0m {tool} {args_str}')
-" 2>/dev/null
+"
 fi

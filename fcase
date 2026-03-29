@@ -109,6 +109,7 @@ is_valid_hypothesis_status() {
 
 validate_status_filter() {
   local filter="$1"
+  [[ -n "$filter" ]] || die "status filter cannot be empty"
   if [[ "$filter" == "all" ]]; then return 0; fi
   local _old_ifs="${IFS:-}" _s _found
   IFS=','
@@ -1401,7 +1402,7 @@ cmd_find() {
   # 2. For FTS (deep mode): also strip double-quotes, FTS boolean keywords,
   #    and prefix operators (- and *) that FTS4 interprets specially.
   local like_safe fts_safe
-  like_safe=$(printf '%s' "$query" | sed "s/'/''/g")
+  like_safe=$(printf '%s' "$query" | sed "s/'/''/g" | sed 's/%/\\%/g' | sed 's/_/\\_/g')
   fts_safe=$(printf '%s' "$query" | sed 's/"//g' | sed 's/\*//g' | sed 's/\(^\| \)-/\1/g' \
     | sed 's/\bOR\b/or/g; s/\bAND\b/and/g; s/\bNOT\b/not/g; s/\bNEAR\b/near/g' \
     | sed "s/'/''/g")
