@@ -176,6 +176,20 @@ function resolveTool(name) {
 
 const EXEC_OPTS = { timeout: TOOL_TIMEOUT, maxBuffer: MAX_BUFFER, env: { ...process.env, FSUITE_TELEMETRY: "3" } };
 
+// ─── Per-tool color palette (256-color ANSI for Claude Code tool headers) ────
+// Binary patch v2 passes _.annotations?.title through as-is.
+// We embed the ANSI color in the title so Claude Code renders it.
+const TOOL_PALETTE = {
+  fread: 46, ftree: 46, freplay: 46,           // neon green — read/scout
+  fedit: 208, fwrite: 208,                      // orange — mutation
+  fcontent: 27, fsearch: 27, fs: 27,            // royal blue — search
+  fmap: 129, fcase: 129,                        // dark violet — structure/knowledge
+  fprobe: 196, fmetrics: 196,                   // pure red — diagnostic/recon
+};
+function coloredTitle(name) {
+  const c = TOOL_PALETTE[name];
+  return c ? `\x1b[1;38;5;${c}m${name}\x1b[m` : name;
+}
 // (theme defined above with ANSI helpers)
 
 // ─── Path shortener ──────────────────────────────────────────────
@@ -576,7 +590,7 @@ const server = new McpServer({ name: "fsuite", version: "2.3.0" });
 server.registerTool(
   "ftree",
   {
-    title: "ftree",
+    title: coloredTitle("ftree"),
     description:
       "Scout a directory — returns full tree structure, file sizes, and recon data in one call. " +
       "Replaces multiple Glob/LS calls. Use snapshot=true for combined recon+tree (recommended).",
@@ -600,7 +614,7 @@ server.registerTool(
 server.registerTool(
   "fmap",
   {
-    title: "fmap",
+    title: coloredTitle("fmap"),
     description:
       "Code cartography — extract all symbols (functions, classes, imports, constants) from files. " +
       "Returns symbol name, line number, type, and indent. No native equivalent exists. 15+ languages.",
@@ -615,7 +629,7 @@ server.registerTool(
 server.registerTool(
   "fread",
   {
-    title: "fread",
+    title: coloredTitle("fread"),
     description:
       "Budgeted file reading with symbol resolution. Use symbol to read exactly one function/class " +
       "by name — no guessing line ranges. Use around for context around a pattern match.",
@@ -652,7 +666,7 @@ server.registerTool(
 server.registerTool(
   "fcontent",
   {
-    title: "fcontent",
+    title: coloredTitle("fcontent"),
     description:
       "Search inside files for literal strings. Wraps ripgrep with agent-friendly output. " +
       "Use LITERAL strings only — no grep regex. For multiple terms, call multiple times.",
@@ -678,7 +692,7 @@ server.registerTool(
 server.registerTool(
   "fsearch",
   {
-    title: "fsearch",
+    title: coloredTitle("fsearch"),
     description: "Find files by name, glob pattern, or extension. Returns matching file paths.",
     inputSchema: z.object({
       query: z.string().describe("Glob pattern or filename (e.g. '*.rs', 'app.rs')"),
@@ -697,7 +711,7 @@ server.registerTool(
 server.registerTool(
   "fedit",
   {
-    title: "fedit",
+    title: coloredTitle("fedit"),
     description:
       "Surgical file editing — PREFERRED over native Edit. Auto-applies by default. " +
       "Supports symbol-scoped patches (--function), insert after/before anchors, line-range replace, and preconditions. " +
@@ -740,7 +754,7 @@ server.registerTool(
 server.registerTool(
   "fwrite",
   {
-    title: "fwrite",
+    title: coloredTitle("fwrite"),
     description:
       "Create a new file or replace an existing one. Routes through fedit (one mutation brain). " +
       "Set overwrite=true to replace existing files. Auto-applies by default.",
@@ -781,7 +795,7 @@ server.registerTool(
 server.registerTool(
   "fcase",
   {
-    title: "fcase",
+    title: coloredTitle("fcase"),
     description:
       "Investigation continuity ledger. Track findings, evidence, and handoff state across sessions. Supports full lifecycle: open, resolve, archive, delete. Search resolved cases with find.",
     inputSchema: z.object({
@@ -823,7 +837,7 @@ server.registerTool(
 server.registerTool(
   "fmetrics",
   {
-    title: "fmetrics",
+    title: coloredTitle("fmetrics"),
     description: "Telemetry analytics — import data, show stats, history, or predict runtimes.",
     inputSchema: z.object({
       action: z.enum(["import", "stats", "history", "predict"]).describe("Metrics action"),
@@ -842,7 +856,7 @@ server.registerTool(
 server.registerTool(
   "fprobe",
   {
-    title: "fprobe",
+    title: coloredTitle("fprobe"),
     description:
       "Binary/opaque file reconnaissance. Extracts printable strings, scans for literal " +
       "byte patterns with context, and reads raw byte windows at known offsets. Works on " +
@@ -879,7 +893,7 @@ server.registerTool(
 server.registerTool(
   "fs",
   {
-    title: "fs",
+    title: coloredTitle("fs"),
     description:
       "Unified search orchestrator. One call to find files, content, or symbols. " +
       "Auto-classifies query intent and chains the right fsuite tools (fsearch, fcontent, fmap). " +
