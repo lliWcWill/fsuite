@@ -302,6 +302,35 @@ else
 fi
 
 # ============================================================================
+# Section 6: CLI Entrypoint
+# ============================================================================
+
+echo ""
+echo "── Section 6: CLI Entrypoint ──"
+
+FS="$REPO_DIR/fs"
+
+# CLI produces JSON
+result=$("$FS" -o json "*.py" /tmp 2>/dev/null || true)
+assert_json_field "CLI *.py → file" "$result" "resolved_intent" "file"
+
+# CLI --scope flag
+result=$("$FS" -o json "renderTool" --scope "*.js" --path /tmp 2>/dev/null || true)
+assert_json_field "CLI --scope passes through" "$result" "resolved_intent" "symbol"
+
+# CLI --intent override
+result=$("$FS" -o json "authenticate" --intent symbol --path /tmp 2>/dev/null || true)
+assert_json_field "CLI --intent symbol" "$result" "resolved_intent" "symbol"
+
+# CLI --help exits 0
+"$FS" --help >/dev/null 2>&1
+assert_eq "CLI --help exits 0" "0" "$?"
+
+# CLI --version
+version_out=$("$FS" --version 2>/dev/null)
+assert_eq "CLI --version contains 2.3.0" "true" "$([[ "$version_out" == *"2.3.0"* ]] && echo true || echo false)"
+
+# ============================================================================
 # Results
 # ============================================================================
 
