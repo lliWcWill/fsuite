@@ -659,7 +659,8 @@ server.registerTool(
   async ({ query, path, output, max_matches, case_insensitive }) => {
     const args = [query];
     if (path) args.push(path);
-    args.push("-o", output);
+    // Always get JSON from CLI — MCP renderer handles pretty formatting with syntax highlighting
+    args.push("-o", "json");
     if (max_matches) args.push("-m", String(max_matches));
     if (case_insensitive) args.push("--rg-args", "-i");
     return cli("fcontent", args);
