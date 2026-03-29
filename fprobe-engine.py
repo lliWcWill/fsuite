@@ -173,22 +173,22 @@ def main():
 
     with open(file_path, "rb") as f:
         data = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+        try:
+            if args.command == "strings":
+                results = extract_strings(data, args.min_length)
+                if args.filter:
+                    results = filter_strings(results, args.filter, args.ignore_case)
+                json.dump(results, sys.stdout)
 
-        if args.command == "strings":
-            results = extract_strings(data, args.min_length)
-            if args.filter:
-                results = filter_strings(results, args.filter, args.ignore_case)
-            json.dump(results, sys.stdout)
+            elif args.command == "scan":
+                results = scan_pattern(data, args.pattern, args.context, args.ignore_case)
+                json.dump(results, sys.stdout)
 
-        elif args.command == "scan":
-            results = scan_pattern(data, args.pattern, args.context, args.ignore_case)
-            json.dump(results, sys.stdout)
-
-        elif args.command == "window":
-            result = read_window(data, args.offset, args.before, args.after, args.decode)
-            json.dump(result, sys.stdout)
-
-        data.close()
+            elif args.command == "window":
+                result = read_window(data, args.offset, args.before, args.after, args.decode)
+                json.dump(result, sys.stdout)
+        finally:
+            data.close()
 
 
 if __name__ == "__main__":

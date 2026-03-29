@@ -16,7 +16,12 @@ SCRIPT_DIR="$(cd "$(dirname "$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/
 FPROBE="${SCRIPT_DIR}/fprobe"
 
 # Defaults
-CLAUDE_BINARY="${HOME}/.local/share/claude/versions/$(ls -1t "${HOME}/.local/share/claude/versions/" 2>/dev/null | head -1)"
+_CLAUDE_VERSIONS_DIR="${HOME}/.local/share/claude/versions"
+if [[ -d "$_CLAUDE_VERSIONS_DIR" ]]; then
+  CLAUDE_BINARY="${_CLAUDE_VERSIONS_DIR}/$(ls -1t "$_CLAUDE_VERSIONS_DIR" 2>/dev/null | head -1)"
+else
+  CLAUDE_BINARY=""
+fi
 DRY_RUN=0
 COLOR="bold_cyan"
 RESTORE=0
@@ -51,8 +56,8 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)   DRY_RUN=1; shift ;;
     --restore)   RESTORE=1; shift ;;
-    --color)     COLOR="${2:-}"; shift 2 ;;
-    --binary)    CLAUDE_BINARY="${2:-}"; shift 2 ;;
+    --color)     [[ -n "${2:-}" ]] || die "--color requires an argument"; COLOR="$2"; shift 2 ;;
+    --binary)    [[ -n "${2:-}" ]] || die "--binary requires an argument"; CLAUDE_BINARY="$2"; shift 2 ;;
     -h|--help)   usage; exit 0 ;;
     *)           die "Unknown option: $1" ;;
   esac

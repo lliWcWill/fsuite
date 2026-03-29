@@ -151,6 +151,8 @@ REPLACE_TEXT=""
 AFTER_TEXT=""
 BEFORE_TEXT=""
 LINES_RANGE=""
+LINES_START=""
+LINES_END=""
 SYMBOL_NAME=""
 SYMBOL_TYPE=""
 SHORTCUT_SYMBOL=""
@@ -1884,7 +1886,6 @@ process_edit() {
         build_patch_candidate "$original_file" "$candidate_file" || op_rc=$?
         ;;
       lines)
-        load_payload
         splice_line_range "$original_file" "$LINES_START" "$LINES_END" "$PAYLOAD_FILE" "$candidate_file" || {
           op_rc=$?
           ERROR_CODE="lines_out_of_range"

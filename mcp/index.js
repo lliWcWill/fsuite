@@ -12,7 +12,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { writeFile as fsWriteFile, access, stat, mkdtemp, unlink } from "node:fs/promises";
+import { writeFile as fsWriteFile, stat, mkdtemp, unlink, rmdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import hljs from "highlight.js";
@@ -173,7 +173,7 @@ const EXEC_OPTS = { timeout: TOOL_TIMEOUT, maxBuffer: MAX_BUFFER, env: { ...proc
 // ─── Path shortener ──────────────────────────────────────────────
 function shortPath(fullPath) {
   if (!fullPath) return "";
-  const home = process.env.HOME || "/home/" + process.env.USER;
+  const home = process.env.HOME || (process.env.USER ? "/home/" + process.env.USER : null);
   const cwd = process.cwd();
 
   // If inside cwd, show relative
@@ -181,7 +181,7 @@ function shortPath(fullPath) {
     return fullPath.slice(cwd.length + 1);
   }
   // If under home, show ~/...
-  if (fullPath.startsWith(home + "/")) {
+  if (home && fullPath.startsWith(home + "/")) {
     return "~/" + fullPath.slice(home.length + 1);
   }
   return fullPath;
