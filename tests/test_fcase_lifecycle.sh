@@ -500,6 +500,57 @@ assert_contains "list JSON has resolved_at" "$out" '"resolved_at"'
 
 teardown_test_db
 
+# ── Section 9: Regression — hypothesis_set FTS rebuild ────────────
+echo ""
+echo "── Section 9: Regression — hypothesis_set FTS rebuild ──"
+
+setup_test_db
+
+run_fcase init hyp-fts-test --goal "Test hypothesis FTS" -o json >/dev/null 2>&1
+run_fcase hypothesis add hyp-fts-test --body "initial hypothesis" >/dev/null 2>&1
+run_fcase resolve hyp-fts-test --summary "Resolved with initial" -o json >/dev/null 2>&1
+
+# Update hypothesis with new reason AFTER resolve
+DB="$TEST_HOME/.fsuite/fcase.db"
+hyp_id=$(sqlite3 "$DB" "SELECT id FROM hypotheses WHERE case_id = (SELECT id FROM cases WHERE slug='hyp-fts-test') LIMIT 1;")
+run_fcase hypothesis set hyp-fts-test --id "$hyp_id" --status validated --reason "post-resolve timeout trail" >/dev/null 2>&1
+
+# Deep find should find the updated hypothesis reason
+result=$(run_fcase find "timeout trail" --deep --status all -o json 2>&1)
+assert_contains "hypothesis set reason searchable via deep find" "$result" "hyp-fts-test"
+
+teardown_test_db
+
+# ── Section 10: Regression — next_move_set event indexed in FTS ───
+echo ""
+echo "── Section 10: Regression — next_move_set event indexed in FTS ──"
+
+setup_test_db
+
+run_fcase init next-fts-test --goal "Test next FTS" -o json >/dev/null 2>&1
+run_fcase next next-fts-test --body "investigate timeout path" -o json >/dev/null 2>&1
+run_fcase resolve next-fts-test --summary "Resolved" -o json >/dev/null 2>&1
+
+# Deep find should find the next_move text
+result=$(run_fcase find "investigate timeout" --deep --status all -o json 2>&1)
+assert_contains "next_move_set event searchable via deep find" "$result" "next-fts-test"
+
+teardown_test_db
+
+# ── Section 11: Regression — punctuation queries in shallow find ──
+echo ""
+echo "── Section 11: Regression — punctuation queries in shallow find ──"
+
+setup_test_db
+
+run_fcase init cpp-test --goal "Fix parser" -o json >/dev/null 2>&1
+run_fcase resolve cpp-test --summary "handles c++ parser issue" -o json >/dev/null 2>&1
+
+result=$(run_fcase find "c++" --status all -o json 2>&1)
+assert_contains "punctuation query c++ found in shallow find" "$result" "cpp-test"
+
+teardown_test_db
+
 echo ""
 echo "═══════════════════════════════════════════"
 echo " Results: $PASS passed, $FAIL failed, $TOTAL total"

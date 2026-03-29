@@ -1396,32 +1396,27 @@ cmd_find() {
     where_clause="c.status IN ('${sql_in}')"
   fi
 
-  # Build FTS match expression — sanitize for FTS4 injection safety.
-  # 1. Strip double-quotes (prevents phrase operator abuse).
-  # 2. Replace FTS boolean keywords (OR AND NOT NEAR) with their lowercase
-  #    forms so the tokenizer treats them as plain words, not operators.
-  # 3. Strip prefix operators (- and *) that FTS4 interprets specially.
-  # 4. SQL-escape single quotes.
-  local fts_safe
+  # Sanitize query for SQL safety.
+  # 1. SQL-escape single quotes (doubles them).
+  # 2. For FTS (deep mode): also strip double-quotes, FTS boolean keywords,
+  #    and prefix operators (- and *) that FTS4 interprets specially.
+  local like_safe fts_safe
+  like_safe=$(printf '%s' "$query" | sed "s/'/''/g")
   fts_safe=$(printf '%s' "$query" | sed 's/"//g' | sed 's/\*//g' | sed 's/\(^\| \)-/\1/g' \
     | sed 's/\bOR\b/or/g; s/\bAND\b/and/g; s/\bNOT\b/not/g; s/\bNEAR\b/near/g' \
     | sed "s/'/''/g")
-  local fts_match
-  if [[ "$deep" == "true" ]]; then
-    # Deep search: wrap in double quotes for phrase matching across all columns.
-    fts_match="'\"${fts_safe}\"'"
-  else
-    # Shallow search: FTS4 column filters. Column prefix + double-quote phrase
-    # syntax is broken in FTS4, so use bare tokens with column prefix (implicit AND).
-    fts_match="'slug:${fts_safe} OR goal:${fts_safe} OR resolution_summary:${fts_safe}'"
-  fi
 
-  if [[ "$output" == "json" ]]; then
-    db_query <<SQL
+  if [[ "$deep" == "true" ]]; then
+    # Deep search: FTS phrase match across all indexed columns (slug, goal,
+    # resolution_summary, evidence, hypotheses, notes, next_move).
+    local fts_match="'\"${fts_safe}\"'"
+
+    if [[ "$output" == "json" ]]; then
+      db_query <<SQL
 SELECT json_object(
-  'query', '${fts_safe}',
+  'query', '${like_safe}',
   'statuses', '${status_filter}',
-  'deep', $([ "$deep" = "true" ] && echo "json('true')" || echo "json('false')"),
+  'deep', json('true'),
   'results', COALESCE((
     SELECT json_group_array(json_object(
       'slug', c.slug, 'status', c.status, 'priority', c.priority,
@@ -1433,27 +1428,72 @@ SELECT json_object(
     WHERE cases_fts MATCH ${fts_match}
       AND ${where_clause}
     ORDER BY
-      CASE WHEN c.slug LIKE '%${fts_safe}%' THEN 0 ELSE 1 END,
-      CASE WHEN c.resolution_summary LIKE '%${fts_safe}%' THEN 0 ELSE 1 END,
+      CASE WHEN c.slug LIKE '%${like_safe}%' THEN 0 ELSE 1 END,
+      CASE WHEN c.resolution_summary LIKE '%${like_safe}%' THEN 0 ELSE 1 END,
       c.updated_at DESC
   ), json('[]'))
 );
 SQL
-  else
-    # Pretty output
-    local results
-    results=$(db_query --separator '|' <<SQL
+    else
+      local results
+      results=$(db_query --separator '|' <<SQL
 SELECT c.slug, c.status, c.priority, c.goal, c.resolution_summary, c.resolved_at
 FROM cases_fts fts
 JOIN cases c ON c.id = fts.rowid
 WHERE cases_fts MATCH ${fts_match}
   AND ${where_clause}
 ORDER BY
-  CASE WHEN c.slug LIKE '%${fts_safe}%' THEN 0 ELSE 1 END,
-  CASE WHEN c.resolution_summary LIKE '%${fts_safe}%' THEN 0 ELSE 1 END,
+  CASE WHEN c.slug LIKE '%${like_safe}%' THEN 0 ELSE 1 END,
+  CASE WHEN c.resolution_summary LIKE '%${like_safe}%' THEN 0 ELSE 1 END,
   c.updated_at DESC;
 SQL
-    )
+      )
+    fi
+  else
+    # Shallow search: direct LIKE on cases table (no FTS).
+    # Handles all punctuation safely — FTS4 tokenizer strips punctuation
+    # like c++ → c, so we bypass FTS entirely for shallow searches.
+    if [[ "$output" == "json" ]]; then
+      db_query <<SQL
+SELECT json_object(
+  'query', '${like_safe}',
+  'statuses', '${status_filter}',
+  'deep', json('false'),
+  'results', COALESCE((
+    SELECT json_group_array(json_object(
+      'slug', c.slug, 'status', c.status, 'priority', c.priority,
+      'goal', c.goal, 'resolution_summary', c.resolution_summary,
+      'resolved_at', c.resolved_at, 'archived_at', c.archived_at
+    ))
+    FROM cases c
+    WHERE ${where_clause}
+      AND (c.slug LIKE '%${like_safe}%' OR c.goal LIKE '%${like_safe}%' OR c.resolution_summary LIKE '%${like_safe}%')
+    ORDER BY
+      CASE WHEN c.slug LIKE '%${like_safe}%' THEN 0 ELSE 1 END,
+      CASE WHEN c.resolution_summary LIKE '%${like_safe}%' THEN 0 ELSE 1 END,
+      c.updated_at DESC
+  ), json('[]'))
+);
+SQL
+    else
+      local results
+      results=$(db_query --separator '|' <<SQL
+SELECT c.slug, c.status, c.priority, c.goal, c.resolution_summary, c.resolved_at
+FROM cases c
+WHERE ${where_clause}
+  AND (c.slug LIKE '%${like_safe}%' OR c.goal LIKE '%${like_safe}%' OR c.resolution_summary LIKE '%${like_safe}%')
+ORDER BY
+  CASE WHEN c.slug LIKE '%${like_safe}%' THEN 0 ELSE 1 END,
+  CASE WHEN c.resolution_summary LIKE '%${like_safe}%' THEN 0 ELSE 1 END,
+  c.updated_at DESC;
+SQL
+      )
+    fi
+  fi
+
+  if [[ "$output" == "json" ]]; then
+    : # already emitted above
+  else
     if [[ -z "$results" ]]; then
       echo "No cases found matching '$query'"
     else
