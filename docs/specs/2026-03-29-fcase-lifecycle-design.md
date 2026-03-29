@@ -90,12 +90,18 @@ Explicit filter: `open`, `resolved`, `archived`, `deleted`.
 
 ### `fcase find <query>`
 
-Searches across resolved and archived cases for knowledge reuse:
+Searches across resolved and archived cases for knowledge reuse.
 
-- Searches case slugs, goals, resolve summaries, and evidence notes
+**Default search (shallow):** slug, goal, resolution summary only.
+This is the knowledge base surface — "what do we know about X?"
+
+**`--deep` flag:** also searches evidence notes, hypothesis text, and event payloads.
+Use when looking for exact matches in the investigation trail — "has anyone seen this error before?"
+
 - Returns matching cases ranked by relevance (summary matches > goal matches > note matches)
 - Default: searches resolved + archived only (the knowledge base)
 - `--all` flag: also searches open cases
+- Tombstoned/deleted cases hidden by default (never appear in find unless `--deleted` flag)
 - Output modes: `pretty` (default) and `json`
 
 ### Pretty output format
@@ -168,8 +174,9 @@ z.enum(["init", "note", "status", "list", "next", "handoff", "export", "resolve"
 ```
 
 Add `summary` field to inputSchema (for resolve).
-Add `query` field to inputSchema (for find, reusing from fs or adding new).
+Add `query` field to inputSchema (for find).
 Add `confirm` boolean field (for delete).
+Add `deep` boolean field (for find --deep).
 Add `filter` field for list filtering: `z.enum(["open", "resolved", "archived", "deleted", "all"]).optional()`.
 
 ## CLI Interface Updates
@@ -179,7 +186,7 @@ fcase resolve <slug> --summary "conclusion text"
 fcase archive <slug>
 fcase reopen <slug>
 fcase delete <slug> --confirm
-fcase find <query> [--all] [-o pretty|json]
+fcase find <query> [--deep] [--all] [--deleted] [-o pretty|json]
 fcase list [--all|--resolved|--archived|--deleted|--status <value>]
 ```
 
