@@ -355,5 +355,4 @@ EXAMPLES
 
 - Python 3.8+ (engine)
 - fsearch, fcontent, fmap (must be in PATH or resolved via FSUITE_SRC_DIR)
-- jq (optional, for CLI pretty output)
 - Existing fsuite telemetry integration

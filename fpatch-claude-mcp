@@ -116,7 +116,7 @@ fi
 # Backup
 if [[ ! -f "${CLAUDE_BINARY}.bak" ]]; then
   echo "Creating backup: ${CLAUDE_BINARY}.bak"
-  cp "$CLAUDE_BINARY" "${CLAUDE_BINARY}.bak"
+cp "$CLAUDE_BINARY" "${CLAUDE_BINARY}.bak" || die "failed to create backup"
 else
   echo "Backup already exists: ${CLAUDE_BINARY}.bak"
 fi
@@ -143,7 +143,9 @@ if len(patch) > target_len:
 
 # Pad with spaces to exact length
 patch = patch + b' ' * (target_len - len(patch))
-assert len(patch) == target_len, f"Patch length mismatch: {len(patch)} != {target_len}"
+if len(patch) != target_len:
+    print(f"ERROR: patch length mismatch: {len(patch)} != {target_len}", file=sys.stderr)
+    sys.exit(1)
 
 # Read binary
 with open(binary_path, 'rb') as f:

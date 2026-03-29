@@ -1,12 +1,12 @@
 # fsuite Baseline Report
 
 - Timestamp (UTC): 2026-03-07T20:19:30Z
-- Repo: /home/player3vsgpt/Desktop/Scripts/fsuite
+- Repo: ~/Scripts/fsuite
 - Commit: 83c042561995
 - Working tree untracked/changed entries: 1
 - Baseline scope: ftree/fsearch/fcontent/fmap/fmetrics
-- Target A (Claude bot project): /home/player3vsgpt/Desktop/Projects/clawdbot-ref
-- Target B (random project): /home/player3vsgpt/Desktop/Projects/phone-osint
+- Target A (Claude bot project): ~/Projects/clawdbot-ref
+- Target B (random project): ~/Projects/phone-osint
 
 ## Test Suite Baseline
 
@@ -35,32 +35,32 @@ Total Test Suites: 6
 ## Target A: ftree Recon (JSON Summary)
 
 ```json
-{"mode":"recon","path":"/home/player3vsgpt/Desktop/Projects/clawdbot-ref","recon_depth":1,"total_entries":74,"visible":71,"excluded":3,"budget_used_seconds":0,"partial":null,"duration_ms":497,"top_entries":[{"name":"src","type":"directory","size_human":"25.1M","items_total":4563,"excluded":false,"reason":null,"heavy":null},{"name":"extensions","type":"directory","size_human":"14.3M","items_total":1047,"excluded":false,"reason":null,"heavy":null},{"name":"docs","type":"directory","size_human":"13.5M","items_total":775,"excluded":false,"reason":null,"heavy":null},{"name":"apps","type":"directory","size_human":"9.2M","items_total":880,"excluded":false,"reason":null,"heavy":null},{"name":"ui","type":"directory","size_human":"1.5M","items_total":225,"excluded":false,"reason":null,"heavy":null},{"name":"assets","type":"directory","size_human":"1.2M","items_total":16,"excluded":false,"reason":null,"heavy":null}]}
+{"mode":"recon","path":"~/Projects/clawdbot-ref","recon_depth":1,"total_entries":74,"visible":71,"excluded":3,"budget_used_seconds":0,"partial":null,"duration_ms":497,"top_entries":[{"name":"src","type":"directory","size_human":"25.1M","items_total":4563,"excluded":false,"reason":null,"heavy":null},{"name":"extensions","type":"directory","size_human":"14.3M","items_total":1047,"excluded":false,"reason":null,"heavy":null},{"name":"docs","type":"directory","size_human":"13.5M","items_total":775,"excluded":false,"reason":null,"heavy":null},{"name":"apps","type":"directory","size_human":"9.2M","items_total":880,"excluded":false,"reason":null,"heavy":null},{"name":"ui","type":"directory","size_human":"1.5M","items_total":225,"excluded":false,"reason":null,"heavy":null},{"name":"assets","type":"directory","size_human":"1.2M","items_total":16,"excluded":false,"reason":null,"heavy":null}]}
 ```
 
 ## Target A: ftree Snapshot (JSON Summary)
 
 ```json
-{"mode":"snapshot","path":"/home/player3vsgpt/Desktop/Projects/clawdbot-ref","duration_ms":4910,"recon_entries":466,"recon_partial":null,"tree_total_lines":2105,"tree_shown_lines":200,"tree_truncated":true}
+{"mode":"snapshot","path":"~/Projects/clawdbot-ref","duration_ms":4910,"recon_entries":466,"recon_partial":null,"tree_total_lines":2105,"tree_shown_lines":200,"tree_truncated":true}
 ```
 
 ## Target B: ftree Recon (JSON Summary)
 
 ```json
-{"mode":"recon","path":"/home/player3vsgpt/Desktop/Projects/phone-osint","recon_depth":1,"total_entries":8,"visible":8,"excluded":0,"budget_used_seconds":1,"partial":null,"duration_ms":79,"top_entries":[{"name":"WhatsApp-OSINT","type":"directory","size_human":"2.9M","items_total":59,"excluded":false,"reason":null,"heavy":null},{"name":"Phunter","type":"directory","size_human":"244K","items_total":69,"excluded":false,"reason":null,"heavy":null},{"name":"phone-number-lookup","type":"directory","size_human":"169.7K","items_total":51,"excluded":false,"reason":null,"heavy":null},{"name":"Inspector","type":"directory","size_human":"138.1K","items_total":67,"excluded":false,"reason":null,"heavy":null},{"name":"ViberOSINT","type":"directory","size_human":"120.9K","items_total":54,"excluded":false,"reason":null,"heavy":null},{"name":"results","type":"directory","size_human":"31.7K","items_total":18,"excluded":false,"reason":null,"heavy":null}]}
+{"mode":"recon","path":"~/Projects/phone-osint","recon_depth":1,"total_entries":8,"visible":8,"excluded":0,"budget_used_seconds":1,"partial":null,"duration_ms":79,"top_entries":[{"name":"WhatsApp-OSINT","type":"directory","size_human":"2.9M","items_total":59,"excluded":false,"reason":null,"heavy":null},{"name":"Phunter","type":"directory","size_human":"244K","items_total":69,"excluded":false,"reason":null,"heavy":null},{"name":"phone-number-lookup","type":"directory","size_human":"169.7K","items_total":51,"excluded":false,"reason":null,"heavy":null},{"name":"Inspector","type":"directory","size_human":"138.1K","items_total":67,"excluded":false,"reason":null,"heavy":null},{"name":"ViberOSINT","type":"directory","size_human":"120.9K","items_total":54,"excluded":false,"reason":null,"heavy":null},{"name":"results","type":"directory","size_human":"31.7K","items_total":18,"excluded":false,"reason":null,"heavy":null}]}
 ```
 
 ## Target B: ftree Snapshot (JSON Summary)
 
 ```json
-{"mode":"snapshot","path":"/home/player3vsgpt/Desktop/Projects/phone-osint","duration_ms":455,"recon_entries":46,"recon_partial":null,"tree_total_lines":85,"tree_shown_lines":85,"tree_truncated":false}
+{"mode":"snapshot","path":"~/Projects/phone-osint","duration_ms":455,"recon_entries":46,"recon_partial":null,"tree_total_lines":85,"tree_shown_lines":85,"tree_truncated":false}
 ```
 
 ## Tool Chain Baseline (Target A)
 
 ### fsearch
 ```json
-{"tool":"fsearch","backend":"find","total_found":5514,"shown":40,"sample":["/home/player3vsgpt/Desktop/Projects/clawdbot-ref/vitest.config.ts","/home/player3vsgpt/Desktop/Projects/clawdbot-ref/vitest.live.config.ts","/home/player3vsgpt/Desktop/Projects/clawdbot-ref/tsdown.config.ts","/home/player3vsgpt/Desktop/Projects/clawdbot-ref/vitest.e2e.config.ts","/home/player3vsgpt/Desktop/Projects/clawdbot-ref/ui/vitest.config.ts","/home/player3vsgpt/Desktop/Projects/clawdbot-ref/ui/vite.config.ts","/home/player3vsgpt/Desktop/Projects/clawdbot-ref/ui/src/ui/theme-transition.ts","/home/player3vsgpt/Desktop/Projects/clawdbot-ref/ui/src/ui/focus-mode.browser.test.ts"]}
+{"tool":"fsearch","backend":"find","total_found":5514,"shown":40,"sample":["~/Projects/clawdbot-ref/vitest.config.ts","~/Projects/clawdbot-ref/vitest.live.config.ts","~/Projects/clawdbot-ref/tsdown.config.ts","~/Projects/clawdbot-ref/vitest.e2e.config.ts","~/Projects/clawdbot-ref/ui/vitest.config.ts","~/Projects/clawdbot-ref/ui/vite.config.ts","~/Projects/clawdbot-ref/ui/src/ui/theme-transition.ts","~/Projects/clawdbot-ref/ui/src/ui/focus-mode.browser.test.ts"]}
 ```
 
 ### fmap
@@ -70,7 +70,7 @@ Total Test Suites: 6
 
 ### fcontent
 ```json
-{"tool":"fcontent","mode":"stdin_files","total_matched_files":35,"shown_matches":80,"matched_sample":["/home/player3vsgpt/Desktop/Projects/clawdbot-ref/tsdown.config.ts","/home/player3vsgpt/Desktop/Projects/clawdbot-ref/ui/src/ui/app-chat.ts","/home/player3vsgpt/Desktop/Projects/clawdbot-ref/ui/src/ui/app-defaults.ts","/home/player3vsgpt/Desktop/Projects/clawdbot-ref/ui/src/ui/app-lifecycle.ts","/home/player3vsgpt/Desktop/Projects/clawdbot-ref/ui/src/ui/app-polling.ts","/home/player3vsgpt/Desktop/Projects/clawdbot-ref/ui/src/ui/app-render.helpers.node.test.ts","/home/player3vsgpt/Desktop/Projects/clawdbot-ref/ui/src/ui/app-render.helpers.ts","/home/player3vsgpt/Desktop/Projects/clawdbot-ref/ui/src/ui/app-render.ts"],"match_sample":["/home/player3vsgpt/Desktop/Projects/clawdbot-ref/ui/src/ui/views/channels.nostr-profile-form.ts:7:import { html, nothing, type TemplateResult } from \"lit\";","/home/player3vsgpt/Desktop/Projects/clawdbot-ref/ui/src/ui/views/channels.nostr-profile-form.ts:8:import type { NostrProfile as NostrProfileType } from \"../types.ts\";","/home/player3vsgpt/Desktop/Projects/clawdbot-ref/ui/src/ui/views/channels.nostr-profile-form.ts:21:  /** Whether import is in progress */","/home/player3vsgpt/Desktop/Projects/clawdbot-ref/ui/src/ui/views/channels.nostr-profile-form.ts:38:  /** Called when import is clicked */"]}
+{"tool":"fcontent","mode":"stdin_files","total_matched_files":35,"shown_matches":80,"matched_sample":["~/Projects/clawdbot-ref/tsdown.config.ts","~/Projects/clawdbot-ref/ui/src/ui/app-chat.ts","~/Projects/clawdbot-ref/ui/src/ui/app-defaults.ts","~/Projects/clawdbot-ref/ui/src/ui/app-lifecycle.ts","~/Projects/clawdbot-ref/ui/src/ui/app-polling.ts","~/Projects/clawdbot-ref/ui/src/ui/app-render.helpers.node.test.ts","~/Projects/clawdbot-ref/ui/src/ui/app-render.helpers.ts","~/Projects/clawdbot-ref/ui/src/ui/app-render.ts"],"match_sample":["~/Projects/clawdbot-ref/ui/src/ui/views/channels.nostr-profile-form.ts:7:import { html, nothing, type TemplateResult } from \"lit\";","~/Projects/clawdbot-ref/ui/src/ui/views/channels.nostr-profile-form.ts:8:import type { NostrProfile as NostrProfileType } from \"../types.ts\";","~/Projects/clawdbot-ref/ui/src/ui/views/channels.nostr-profile-form.ts:21:  /** Whether import is in progress */","~/Projects/clawdbot-ref/ui/src/ui/views/channels.nostr-profile-form.ts:38:  /** Called when import is clicked */"]}
 ```
 
 ## fmetrics Baseline

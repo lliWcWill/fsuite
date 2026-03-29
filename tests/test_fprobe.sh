@@ -87,9 +87,10 @@ fail() {
 }
 
 run_test() {
-  TESTS_RUN=$((TESTS_RUN + 1))
-  shift
-  "$@" || true
+TESTS_RUN=$((TESTS_RUN + 1))
+# test_num=$1 reserved for future use
+shift
+"$@" || true
 }
 
 # ============================================================================

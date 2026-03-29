@@ -1404,7 +1404,10 @@ cmd_find() {
   local like_safe fts_safe
   like_safe=$(printf '%s' "$query" | sed "s/'/''/g" | sed 's/%/\\%/g' | sed 's/_/\\_/g')
   fts_safe=$(printf '%s' "$query" | sed 's/"//g' | sed 's/\*//g' | sed 's/\(^\| \)-/\1/g' \
-    | sed 's/\bOR\b/or/g; s/\bAND\b/and/g; s/\bNOT\b/not/g; s/\bNEAR\b/near/g' \
+    | sed 's/ OR / or /g; s/^OR /or /; s/ OR$/or/' \
+    | sed 's/ AND / and /g; s/^AND /and /; s/ AND$/ and/' \
+    | sed 's/ NOT / not /g; s/^NOT /not /; s/ NOT$/ not/' \
+    | sed 's/ NEAR / near /g; s/^NEAR /near /; s/ NEAR$/ near/' \
     | sed "s/'/''/g")
 
   if [[ "$deep" == "true" ]]; then

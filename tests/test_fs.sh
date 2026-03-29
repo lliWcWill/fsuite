@@ -175,8 +175,8 @@ for key in query path intent resolved_intent route_reason route_confidence selec
   has_key=$(echo "$result" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
-print('yes' if '${key}' in data else 'no')
-" 2>/dev/null || echo "no")
+print('yes' if sys.argv[1] in data else 'no')
+" "$key" 2>/dev/null || echo "no")
   TESTS_RUN=$((TESTS_RUN + 1))
   if [[ "$has_key" == "yes" ]]; then
     TESTS_PASSED=$((TESTS_PASSED + 1))
@@ -192,8 +192,8 @@ for key in candidate_files enriched_files time_ms; do
   has_key=$(echo "$result" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
-print('yes' if '${key}' in data.get('budget', {}) else 'no')
-" 2>/dev/null || echo "no")
+print('yes' if sys.argv[1] in data.get('budget', {}) else 'no')
+" "$key" 2>/dev/null || echo "no")
   TESTS_RUN=$((TESTS_RUN + 1))
   if [[ "$has_key" == "yes" ]]; then
     TESTS_PASSED=$((TESTS_PASSED + 1))

@@ -25,5 +25,5 @@
   de6c730aadc896f7e93f1a717463a47ca902d50b76af9d4b02e9f8bbdc536d3b
 
 ## Local Repo
-- /home/player3vsgpt/Desktop/Scripts/fsuite on master @ cf5026b synced with origin/master
+- ~/Scripts/fsuite on master @ cf5026b synced with origin/master
 - Untracked (not modified): opencode.jsonc, reports/

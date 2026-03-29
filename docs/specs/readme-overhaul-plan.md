@@ -28,7 +28,7 @@
 
 1. fedit CLI defaults to dry-run, MCP defaults to apply=true — MUST document
 2. fwrite is MCP-only virtual tool — NOT a CLI command
-3. Changelog says v2.1.2 latest but source is v2.2.0
+3. Changelog says v2.1.2 latest but source is v2.3.0
 4. AGENTS.md companion update needed (separate task)
 
 ## Implementation Phases

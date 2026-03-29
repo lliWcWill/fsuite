@@ -179,42 +179,22 @@ case "$SUBCMD" in
   *) die "unknown subcommand: $SUBCMD (use strings, scan, or window)" ;;
 esac
 
-# ── Parse -o flag from remaining args, pass rest to engine ───────
+# ── Pre-parse -o flag; pass remaining args to engine ─────────────
+OUTPUT_MODE=""
 ENGINE_ARGS=()
-for arg in "$@"; do
-  case "$arg" in
+while [[ $# -gt 0 ]]; do
+  case "$1" in
     -o)
-      # Next arg is the output mode — handled below
-      ENGINE_ARGS+=("$arg")
-      ;;
-    pretty|json)
-      if [[ "${ENGINE_ARGS[*]:-}" == *"-o"* ]] && [[ -z "$OUTPUT_MODE" ]]; then
-        OUTPUT_MODE="$arg"
-        # Remove the -o from engine args
-        local_args=()
-        skip_next=0
-        for ea in "${ENGINE_ARGS[@]}"; do
-          if [[ "$ea" == "-o" ]]; then
-            skip_next=1
-            continue
-          fi
-          if [[ $skip_next -eq 1 ]]; then
-            skip_next=0
-            continue
-          fi
-          local_args+=("$ea")
-        done
-        ENGINE_ARGS=("${local_args[@]}")
-      else
-        ENGINE_ARGS+=("$arg")
-      fi
+      [[ $# -ge 2 ]] || die "-o requires argument"
+      OUTPUT_MODE="$2"
+      shift 2
       ;;
     *)
-      ENGINE_ARGS+=("$arg")
+      ENGINE_ARGS+=("$1")
+      shift
       ;;
   esac
 done
-
 detect_output_mode
 
 # ── Run engine ───────────────────────────────────────────────────

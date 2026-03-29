@@ -1,9 +1,9 @@
 # fsuite Autonomous Readiness Audit
 
 - Timestamp (UTC): 2026-03-07T20:21:32Z
-- Repo: /home/player3vsgpt/Desktop/Scripts/fsuite
+- Repo: ~/Scripts/fsuite
 - Commit: 83c042561995
-- Targets: /home/player3vsgpt/Desktop/Projects/clawdbot-ref ; /home/player3vsgpt/Desktop/Projects/phone-osint
+- Targets: ~/Projects/clawdbot-ref ; ~/Projects/phone-osint
 - Linked baseline report: reports/fsuite-baseline-20260307T201930Z.md
 
 ## Scorecard

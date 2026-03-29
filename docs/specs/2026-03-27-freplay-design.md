@@ -138,6 +138,7 @@ CREATE TABLE IF NOT EXISTS replay_step_links (
 | `fedit` (no `--apply`) | `read_only` |
 | `fedit --apply` | `mutating` |
 | `freplay` | **excluded** — rejected by `record` |
+| `fs` | `read_only` |
 | `fmetrics` | **excluded** — rejected by `record` |
 
 ### Tool-aware result_summary

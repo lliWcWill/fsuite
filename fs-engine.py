@@ -192,13 +192,10 @@ def run_tool(name, args, stdin_data=None, timeout=TIMEOUT_SECONDS):
 
 # ── Tool Runners ─────────────────────────────────────────────────────────────
 
-def run_fsearch(query, path, scope=None, timeout=TIMEOUT_SECONDS):
+def run_fsearch(query, path, timeout=TIMEOUT_SECONDS):
     """Run fsearch -o paths, return list of file paths."""
     args = ["-o", "paths"]
-    if scope:
-        args.append(scope)
-    else:
-        args.append(query)
+    args.append(query)
     args.append(path)
 
     stdout, stderr, rc, timed_out = run_tool("fsearch", args, timeout=timeout)
@@ -504,7 +501,7 @@ def orchestrate(request):
 
         if tool_name == "fsearch":
             search_query = scope if scope else query
-            file_list, timed_out = run_fsearch(search_query, path, scope=None, timeout=timeout)
+            file_list, timed_out = run_fsearch(search_query, path, timeout=timeout)
             file_list = file_list[:max_candidates]
             candidate_count = len(file_list)
             if timed_out:
@@ -575,13 +572,13 @@ def main():
         request = json.loads(raw)
     except json.JSONDecodeError as e:
         json.dump({"error": f"invalid JSON input: {e}"}, sys.stdout)
-        sys.exit(0)  # exit 0 so stdout JSON is consumed, error field signals failure
+        sys.exit(1)
 
     try:
         result = orchestrate(request)
     except Exception as e:
         json.dump({"error": f"engine error: {e}", "query": request.get("query", "")}, sys.stdout)
-        sys.exit(0)  # exit 0 so stdout JSON is consumed, error field signals failure
+        sys.exit(1)
 
     json.dump(result, sys.stdout, indent=2)
 

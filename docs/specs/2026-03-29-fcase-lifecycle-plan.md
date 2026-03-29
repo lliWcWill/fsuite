@@ -93,11 +93,10 @@ assert_not_contains() {
   TOTAL=$((TOTAL + 1))
   if [[ "$haystack" != *"$needle"* ]]; then
     PASS=$((PASS + 1))
-    echo "  [0;32m✓[0m $label"
+echo -e "  \033[0;32m✓\033[0m $label"
   else
     FAIL=$((FAIL + 1))
-    echo "  [0;31m✗[0m $label"
-    echo "    expected NOT to contain: $needle"
+    echo -e "  \033[0;31m✗\033[0m $label"
   fi
 }
 
@@ -543,6 +542,7 @@ local filter="open"
 
 Then in the SQL, change `FROM cases` to:
 ```sql
+-- NOTE: production code uses sql_quote() for safe parameterization
 FROM cases WHERE status = '${filter}'
 ```
 For `--all`, use `WHERE status != 'deleted'` (exclude only tombstoned).
