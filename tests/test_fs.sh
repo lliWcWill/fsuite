@@ -331,6 +331,130 @@ version_out=$("$FS" --version 2>/dev/null)
 assert_eq "CLI --version contains 2.3.0" "true" "$([[ "$version_out" == *"2.3.0"* ]] && echo true || echo false)"
 
 # ============================================================================
+# Section 7: Chain Execution Integration Tests
+# ============================================================================
+
+echo ""
+echo "── Section 7: Chain Execution Integration Tests ──"
+
+TEST_DIR=$(mktemp -d)
+trap 'rm -rf "$TEST_DIR"' EXIT
+
+mkdir -p "$TEST_DIR/src"
+
+cat > "$TEST_DIR/src/auth.py" << 'PYEOF'
+def authenticate(token, secret):
+    if not token:
+        raise AuthError("missing token")
+    return verify_token(token, secret)
+
+class AuthError(Exception):
+    pass
+
+def verify_token(token, secret):
+    return token == secret
+PYEOF
+
+cat > "$TEST_DIR/src/main.py" << 'PYEOF'
+from auth import authenticate
+
+def main():
+    result = authenticate("abc", "abc")
+    print(result)
+PYEOF
+
+cat > "$TEST_DIR/src/config.json" << 'JSONEOF'
+{"api_key": "test123", "debug": true}
+JSONEOF
+
+# 7.1 — file intent: *.py finds 2 python files
+result=$("$FS" -o json "*.py" "$TEST_DIR" 2>/dev/null || true)
+hit_count=$(echo "$result" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(len(data.get('hits', [])))
+" 2>/dev/null || echo "0")
+assert_json_field "7.1 file intent" "$result" "resolved_intent" "file"
+assert_eq "7.1 *.py finds 2 python files" "2" "$hit_count"
+
+# 7.2 — content intent: "authenticate" finds at least 1 file
+result=$("$FS" -o json "authenticate" "$TEST_DIR" --intent content 2>/dev/null || true)
+hit_count=$(echo "$result" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(len(data.get('hits', [])))
+" 2>/dev/null || echo "0")
+assert_json_field "7.2 content intent override" "$result" "resolved_intent" "content"
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "$hit_count" -ge 1 ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} 7.2 content hits >= 1 (got ${hit_count})"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} 7.2 content hits >= 1 (got ${hit_count})"
+fi
+
+# 7.3 — symbol intent: "AuthError" (PascalCase), chain includes fmap
+result=$("$FS" -o json "AuthError" "$TEST_DIR" 2>/dev/null || true)
+assert_json_field "7.3 AuthError → symbol intent" "$result" "resolved_intent" "symbol"
+chain=$(echo "$result" | python3 -c "import sys,json; print(','.join(json.load(sys.stdin)['selected_chain']))" 2>/dev/null || echo "")
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "$chain" == *"fmap"* ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} 7.3 symbol chain includes fmap (${chain})"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} 7.3 symbol chain should include fmap (got ${chain})"
+fi
+
+# 7.4 — scoped search: chain includes fsearch
+result=$("$FS" -o json "authenticate" "$TEST_DIR" --scope "*.py" 2>/dev/null || true)
+chain=$(echo "$result" | python3 -c "import sys,json; print(','.join(json.load(sys.stdin)['selected_chain']))" 2>/dev/null || echo "")
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "$chain" == *"fsearch"* ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} 7.4 scoped chain includes fsearch (${chain})"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} 7.4 scoped chain should include fsearch (got ${chain})"
+fi
+
+# 7.5 — next_hint is present (not null) for results with hits
+result=$("$FS" -o json "authenticate" "$TEST_DIR" --intent content 2>/dev/null || true)
+next_hint_present=$(echo "$result" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+hits = data.get('hits', [])
+nh = data.get('next_hint')
+print('yes' if len(hits) > 0 and nh is not None else 'no')
+" 2>/dev/null || echo "no")
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "$next_hint_present" == "yes" ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} 7.5 next_hint is present when hits exist"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} 7.5 next_hint should be present when hits exist"
+fi
+
+# 7.6 — budget.time_ms >= 0
+result=$("$FS" -o json "*.py" "$TEST_DIR" 2>/dev/null || true)
+time_ok=$(echo "$result" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+t = data.get('budget', {}).get('time_ms', -1)
+print('yes' if t >= 0 else 'no')
+" 2>/dev/null || echo "no")
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "$time_ok" == "yes" ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} 7.6 budget.time_ms >= 0"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} 7.6 budget.time_ms should be >= 0"
+fi
+
+# ============================================================================
 # Results
 # ============================================================================
 
