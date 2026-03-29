@@ -549,8 +549,8 @@ verify_install() {
 
   # -- fprobe engine resolution --
   if command -v fprobe >/dev/null 2>&1; then
-    if fprobe strings /dev/null >/dev/null 2>&1; then
-      ok "  fprobe engine resolution (strings /dev/null)"
+    if fprobe strings /etc/hosts >/dev/null 2>&1; then
+      ok "  fprobe engine resolution"
     else
       warn "  fprobe engine resolution failed"
     fi

@@ -163,7 +163,7 @@ def main():
         sys.exit(1)
 
     file_path = args.file
-    if not os.path.isfile(file_path):
+    if not os.path.exists(file_path):
         json.dump({"error": f"file not found: {file_path}"}, sys.stdout)
         sys.exit(1)
 
@@ -198,4 +198,9 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        json.dump({"error": str(e), "traceback": traceback.format_exc()}, sys.stdout)
+        sys.exit(1)
