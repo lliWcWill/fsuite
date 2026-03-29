@@ -43,8 +43,9 @@ USAGE
   fcase --help
   fcase --version
   fcase init <slug> --goal ... [--priority ...] [-o pretty|json]
-  fcase list [-o pretty|json]
+  fcase list [--status <csv|all>] [-o pretty|json]
   fcase status <slug> [-o pretty|json]
+  fcase find <query> [--deep] [--status <csv|all>] [-o pretty|json]
   fcase note <slug> --body ...
   fcase next <slug> --body ... [-o pretty|json]
   fcase handoff <slug> [-o pretty|json]
@@ -56,16 +57,23 @@ USAGE
   fcase hypothesis add <slug> --body ... [--confidence ...]
   fcase hypothesis set <slug> --id ... --status ... [--reason ... --confidence ...]
   fcase reject <slug> (--target-id <id> | --hypothesis-id <id>) [--reason ...]
+  fcase resolve <slug> --summary ... [-o pretty|json]
+  fcase archive <slug> [-o pretty|json]
+  fcase delete <slug> --reason ... --confirm DELETE [-o pretty|json]
 
 DESCRIPTION
   fcase preserves investigation state once the seam is known:
     init         Create a case and open a session
-    list         Show known cases
+    list         Show cases (default: open only; --status all for everything)
+    find         Search resolved/archived cases via FTS (--deep for full text)
     status       Show current case state
     note         Append a note to a case
     next         Update the next best move
     handoff      Generate a concise handoff packet
     export       Export the full case envelope
+    resolve      Mark case as resolved (requires --summary)
+    archive      Archive a resolved case
+    delete       Tombstone a case (requires --reason and --confirm DELETE)
     target import    Import structured targets from fmap JSON
     evidence import  Import structured evidence from fread JSON
 EOF
@@ -140,7 +148,9 @@ status_json() {
   local slug="$1"
   db_query <<SQL
 WITH target_case AS (
-  SELECT id, slug, goal, status, priority, next_move, created_at, updated_at
+  SELECT id, slug, goal, status, priority, next_move,
+         resolution_summary, resolved_at, archived_at, deleted_at, delete_reason,
+         created_at, updated_at
   FROM cases
   WHERE slug = $(sql_quote "$slug")
 )
@@ -153,6 +163,11 @@ SELECT json_object(
       'status', status,
       'priority', priority,
       'next_move', next_move,
+      'resolution_summary', resolution_summary,
+      'resolved_at', resolved_at,
+      'archived_at', archived_at,
+      'deleted_at', deleted_at,
+      'delete_reason', delete_reason,
       'created_at', created_at,
       'updated_at', updated_at
     ) FROM target_case
@@ -240,7 +255,9 @@ handoff_json() {
   local slug="$1"
   db_query <<SQL
 WITH target_case AS (
-  SELECT id, slug, goal, status, priority, next_move, created_at, updated_at
+  SELECT id, slug, goal, status, priority, next_move,
+         resolution_summary, resolved_at, archived_at, deleted_at, delete_reason,
+         created_at, updated_at
   FROM cases
   WHERE slug = $(sql_quote "$slug")
 )
@@ -253,6 +270,11 @@ SELECT json_object(
       'status', status,
       'priority', priority,
       'next_move', next_move,
+      'resolution_summary', resolution_summary,
+      'resolved_at', resolved_at,
+      'archived_at', archived_at,
+      'deleted_at', deleted_at,
+      'delete_reason', delete_reason,
       'created_at', created_at,
       'updated_at', updated_at
     ) FROM target_case
@@ -317,7 +339,9 @@ export_json() {
   local slug="$1"
   db_query <<SQL
 WITH target_case AS (
-  SELECT id, slug, goal, status, priority, next_move, created_at, updated_at
+  SELECT id, slug, goal, status, priority, next_move,
+         resolution_summary, resolved_at, archived_at, deleted_at, delete_reason,
+         created_at, updated_at
   FROM cases
   WHERE slug = $(sql_quote "$slug")
 )
@@ -330,6 +354,11 @@ SELECT json_object(
       'status', status,
       'priority', priority,
       'next_move', next_move,
+      'resolution_summary', resolution_summary,
+      'resolved_at', resolved_at,
+      'archived_at', archived_at,
+      'deleted_at', deleted_at,
+      'delete_reason', delete_reason,
       'created_at', created_at,
       'updated_at', updated_at
     ) FROM target_case
@@ -546,10 +575,15 @@ SQL
 
 cmd_list() {
   local output="$DEFAULT_OUTPUT"
+  local filter="open"  # default: show only open cases
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -o|--output)
         output="${2:-}"
+        shift 2
+        ;;
+      --status)
+        filter="${2:-}"
         shift 2
         ;;
       *)
@@ -560,8 +594,19 @@ cmd_list() {
   [[ "$output" == "pretty" || "$output" == "json" ]] || die "Invalid --output: $output"
 
   ensure_db
+
+  # Build SQL WHERE clause from status filter
+  local where_clause
+  if [[ "$filter" == "all" ]]; then
+    where_clause="1=1"
+  else
+    local sql_in
+    sql_in=$(echo "$filter" | sed "s/,/','/g")
+    where_clause="status IN ('${sql_in}')"
+  fi
+
   if [[ "$output" == "json" ]]; then
-    db_query <<'SQL'
+    db_query <<SQL
 SELECT json_object(
   'cases',
   COALESCE((
@@ -572,12 +617,20 @@ SELECT json_object(
       'status', status,
       'priority', priority,
       'next_move', next_move,
+      'resolution_summary', resolution_summary,
+      'resolved_at', resolved_at,
+      'archived_at', archived_at,
+      'deleted_at', deleted_at,
+      'delete_reason', delete_reason,
       'created_at', created_at,
       'updated_at', updated_at
     ))
     FROM (
-      SELECT id, slug, goal, status, priority, next_move, created_at, updated_at
+      SELECT id, slug, goal, status, priority, next_move,
+             resolution_summary, resolved_at, archived_at, deleted_at, delete_reason,
+             created_at, updated_at
       FROM cases
+      WHERE ${where_clause}
       ORDER BY updated_at DESC, id DESC
     )
   ), json('[]'))
@@ -585,9 +638,15 @@ SELECT json_object(
 SQL
   else
     local count
-    count="$(db_query <<<'SELECT COUNT(*) FROM cases;')"
-    echo "Cases: ${count}"
-    db_query --separator ' | ' <<<"SELECT slug, status, priority, goal FROM cases ORDER BY updated_at DESC, id DESC;"
+    count="$(db_query <<<"SELECT COUNT(*) FROM cases WHERE ${where_clause};")"
+    local label
+    if [[ "$filter" == "all" ]]; then
+      label="All cases"
+    else
+      label="$(echo "$filter" | sed 's/,/ + /g') cases"
+    fi
+    echo "${label}: ${count}"
+    db_query --separator ' | ' <<<"SELECT slug, status, priority, goal FROM cases WHERE ${where_clause} ORDER BY updated_at DESC, id DESC;"
   fi
 }
 
@@ -681,6 +740,7 @@ SQL
     "$(printf '%s' "$reason" | json_escape)" \
     "$(printf '%s' "$state" | json_escape)")"
   append_event "$case_id" "$session_id" "target_add" "$payload" "$now"
+  rebuild_fts_for_case "$case_id"
   echo "Added target to ${slug}"
 }
 
@@ -902,6 +962,7 @@ SQL
     "$(printf '%s' "$symbol" | json_escape)" \
     "$(printf '%s' "$summary" | json_escape)")"
   append_event "$case_id" "$session_id" "evidence_add" "$payload" "$now"
+  rebuild_fts_for_case "$case_id"
   echo "Added evidence to ${slug}"
 }
 
@@ -1065,6 +1126,7 @@ UPDATE cases SET updated_at = $(sql_quote "$now") WHERE id = $case_id;
 SQL
   payload="$(printf '{"body":"%s","confidence":"%s"}' "$(printf '%s' "$body" | json_escape)" "$(printf '%s' "$confidence" | json_escape)")"
   append_event "$case_id" "$session_id" "hypothesis_add" "$payload" "$now"
+  rebuild_fts_for_case "$case_id"
   echo "Added hypothesis to ${slug}"
 }
 
@@ -1183,6 +1245,7 @@ cmd_note() {
   payload="$(printf '{"body":"%s"}' "$(printf '%s' "$body" | json_escape)")"
   append_event "$case_id" "$session_id" "note" "$payload" "$now"
   db_exec <<<"UPDATE cases SET updated_at = $(sql_quote "$now") WHERE id = $case_id;"
+  rebuild_fts_for_case "$case_id"
   echo "Added note to ${slug}"
 }
 
@@ -1219,6 +1282,7 @@ cmd_next() {
   db_exec <<<"UPDATE cases SET next_move = $(sql_quote "$body"), updated_at = $(sql_quote "$now") WHERE id = $case_id;"
   payload="$(printf '{"next_move":"%s"}' "$(printf '%s' "$body" | json_escape)")"
   append_event "$case_id" "$session_id" "next_move_set" "$payload" "$now"
+  rebuild_fts_for_case "$case_id"
   if [[ "$output" == "json" ]]; then
     status_json "$slug"
   else
@@ -1280,6 +1344,101 @@ cmd_export() {
   case_id="$(case_id_for_slug "$slug")"
   [[ -n "$case_id" ]] || die "case not found: $slug"
   export_json "$slug"
+}
+
+cmd_find() {
+  local query="${1:-}"
+  shift || true
+  [[ -n "$query" ]] || die "find requires <query>"
+
+  local deep=false status_filter="resolved,archived" output="$DEFAULT_OUTPUT"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --deep) deep=true; shift ;;
+      --status) status_filter="${2:-}"; shift 2 ;;
+      -o|--output) output="${2:-}"; shift 2 ;;
+      *) die "Unknown option for find: $1" ;;
+    esac
+  done
+  [[ "$output" == "pretty" || "$output" == "json" ]] || die "Invalid --output: $output"
+
+  ensure_db
+
+  # Build status WHERE clause (exclude deleted unless explicitly requested)
+  local where_clause
+  if [[ "$status_filter" == "all" ]]; then
+    where_clause="1=1"
+  else
+    local sql_in
+    sql_in=$(echo "$status_filter" | sed "s/,/','/g")
+    where_clause="c.status IN ('${sql_in}')"
+  fi
+
+  # Build FTS match expression
+  local escaped_query
+  escaped_query=$(printf '%s' "$query" | sed "s/'/''/g")
+  local fts_match
+  if [[ "$deep" == "true" ]]; then
+    fts_match="'${escaped_query}'"
+  else
+    # FTS4 column filter: col:term OR col:term for each shallow column
+    fts_match="'slug:${escaped_query} OR goal:${escaped_query} OR resolution_summary:${escaped_query}'"
+  fi
+
+  if [[ "$output" == "json" ]]; then
+    db_query <<SQL
+SELECT json_object(
+  'query', '${escaped_query}',
+  'statuses', '${status_filter}',
+  'deep', $([ "$deep" = "true" ] && echo "json('true')" || echo "json('false')"),
+  'results', COALESCE((
+    SELECT json_group_array(json_object(
+      'slug', c.slug, 'status', c.status, 'priority', c.priority,
+      'goal', c.goal, 'resolution_summary', c.resolution_summary,
+      'resolved_at', c.resolved_at, 'archived_at', c.archived_at
+    ))
+    FROM cases_fts fts
+    JOIN cases c ON c.id = fts.rowid
+    WHERE cases_fts MATCH ${fts_match}
+      AND ${where_clause}
+    ORDER BY
+      CASE WHEN c.slug LIKE '%${escaped_query}%' THEN 0 ELSE 1 END,
+      CASE WHEN c.resolution_summary LIKE '%${escaped_query}%' THEN 0 ELSE 1 END,
+      c.updated_at DESC
+  ), json('[]'))
+);
+SQL
+  else
+    # Pretty output
+    local results
+    results=$(db_query --separator '|' <<SQL
+SELECT c.slug, c.status, c.priority, c.goal, c.resolution_summary, c.resolved_at
+FROM cases_fts fts
+JOIN cases c ON c.id = fts.rowid
+WHERE cases_fts MATCH ${fts_match}
+  AND ${where_clause}
+ORDER BY
+  CASE WHEN c.slug LIKE '%${escaped_query}%' THEN 0 ELSE 1 END,
+  CASE WHEN c.resolution_summary LIKE '%${escaped_query}%' THEN 0 ELSE 1 END,
+  c.updated_at DESC;
+SQL
+    )
+    if [[ -z "$results" ]]; then
+      echo "No cases found matching '$query'"
+    else
+      local count
+      count=$(echo "$results" | wc -l)
+      echo "Found $count case(s) matching '$query'"
+      echo ""
+      while IFS='|' read -r rslug rstatus rpriority rgoal rsummary rresolved; do
+        echo "  [$rstatus] $rslug ($rpriority)"
+        echo "    Goal: $rgoal"
+        [[ -n "$rsummary" ]] && echo "    Summary: $rsummary"
+        [[ -n "$rresolved" ]] && echo "    Resolved: $rresolved"
+        echo ""
+      done <<< "$results"
+    fi
+  fi
 }
 
 cmd_resolve() {
@@ -1510,6 +1669,10 @@ main() {
     reject)
       shift
       cmd_reject "$@"
+      ;;
+    find)
+      shift
+      cmd_find "$@"
       ;;
     resolve)
       shift

@@ -80,6 +80,15 @@ main() {
     failed_suites+=("fcase")
   fi
 
+  # Run fcase lifecycle tests
+  echo ""
+  if run_test_suite "${SCRIPT_DIR}/test_fcase_lifecycle.sh" "fcase lifecycle"; then
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+  else
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+    failed_suites+=("fcase-lifecycle")
+  fi
+
   # Run fmap tests
   echo ""
   if run_test_suite "${SCRIPT_DIR}/test_fmap.sh" "fmap Test Suite"; then

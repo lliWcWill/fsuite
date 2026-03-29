@@ -783,21 +783,37 @@ server.registerTool(
   {
     title: "fcase",
     description:
-      "Investigation continuity ledger. Track findings, evidence, and handoff state across sessions.",
+      "Investigation continuity ledger. Track findings, evidence, and handoff state across sessions. Supports full lifecycle: open, resolve, archive, delete. Search resolved cases with find.",
     inputSchema: z.object({
-      action: z.enum(["init", "note", "status", "list", "next", "handoff", "export"]).describe("Case action"),
+      action: z.enum(["init", "note", "status", "list", "next", "handoff", "export",
+        "resolve", "archive", "delete", "find"]).describe("Case action"),
       slug: z.string().optional().describe("Case identifier (e.g. 'auth-refactor')"),
       goal: z.string().optional().describe("Case goal (for init)"),
       body: z.string().optional().describe("Note body (for note/next)"),
       priority: z.enum(["low", "medium", "high", "critical"]).optional(),
+      summary: z.string().optional().describe("Resolution summary (required for resolve action)"),
+      reason: z.string().optional().describe("Deletion reason (required for delete action)"),
+      confirm_delete: z.string().optional().describe("Must be literal 'DELETE' to confirm deletion"),
+      query: z.string().optional().describe("Search query (for find action)"),
+      deep: z.boolean().optional().describe("Deep search including evidence/hypotheses (for find)"),
+      statuses: z.string().optional().describe("Comma-separated status filter: open,resolved,archived,deleted,all (for list/find)"),
     }),
   },
-  async ({ action, slug, goal, body, priority }) => {
+  async ({ action, slug, goal, body, priority, summary, reason, confirm_delete, query, deep, statuses }) => {
     const args = [action];
-    if (slug) args.push(slug);
+    if (action === "find" && query) {
+      args.push(query);
+    } else if (slug) {
+      args.push(slug);
+    }
     if (goal) args.push("--goal", goal);
     if (body) args.push("--body", body);
     if (priority) args.push("--priority", priority);
+    if (summary) args.push("--summary", summary);
+    if (reason) args.push("--reason", reason);
+    if (confirm_delete) args.push("--confirm", confirm_delete);
+    if (deep) args.push("--deep");
+    if (statuses) args.push("--status", statuses);
     args.push("-o", "pretty");
     return cli("fcase", args);
   }

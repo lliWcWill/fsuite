@@ -314,6 +314,180 @@ assert_contains "delete event has reason" "$result" '"reason":"Duplicate case"'
 
 teardown_test_db
 
+# ── Section 6: cmd_list --status filter ───────────────────────────
+echo ""
+echo "── Section 6: cmd_list --status filter ──"
+
+setup_test_db
+
+# Create cases in various states
+run_fcase init list-open --goal "Open case" -o json >/dev/null 2>&1
+run_fcase init list-resolved --goal "Resolved case" -o json >/dev/null 2>&1
+run_fcase resolve list-resolved --summary "Done" >/dev/null 2>&1
+run_fcase init list-archived --goal "Archived case" -o json >/dev/null 2>&1
+run_fcase resolve list-archived --summary "Done" >/dev/null 2>&1
+run_fcase archive list-archived >/dev/null 2>&1
+run_fcase init list-deleted --goal "Deleted case" -o json >/dev/null 2>&1
+run_fcase delete list-deleted --reason "Dup" --confirm DELETE >/dev/null 2>&1
+
+# Default list shows only open cases
+out="$(run_fcase list 2>&1)"
+assert_contains "default list shows open cases" "$out" "list-open"
+TOTAL=$((TOTAL + 1))
+if [[ "$out" != *"list-resolved"* && "$out" != *"list-archived"* && "$out" != *"list-deleted"* ]]; then
+  PASS=$((PASS + 1)); echo -e "  \033[0;32m✓\033[0m default list excludes non-open cases"
+else
+  FAIL=$((FAIL + 1)); echo -e "  \033[0;31m✗\033[0m default list excludes non-open cases"
+  echo "    output: $out"
+fi
+
+# Default list header says "open cases: 1"
+assert_contains "default list header says open" "$out" "open cases: 1"
+
+# --status all shows everything
+out="$(run_fcase list --status all 2>&1)"
+assert_contains "list --status all has open" "$out" "list-open"
+assert_contains "list --status all has resolved" "$out" "list-resolved"
+assert_contains "list --status all has archived" "$out" "list-archived"
+assert_contains "list --status all has deleted" "$out" "list-deleted"
+assert_contains "list --status all header says All cases" "$out" "All cases: 4"
+
+# --status resolved,archived shows only those
+out="$(run_fcase list --status resolved,archived 2>&1)"
+assert_contains "list resolved,archived has resolved" "$out" "list-resolved"
+assert_contains "list resolved,archived has archived" "$out" "list-archived"
+TOTAL=$((TOTAL + 1))
+if [[ "$out" != *"list-open"* && "$out" != *"list-deleted"* ]]; then
+  PASS=$((PASS + 1)); echo -e "  \033[0;32m✓\033[0m list resolved,archived excludes open+deleted"
+else
+  FAIL=$((FAIL + 1)); echo -e "  \033[0;31m✗\033[0m list resolved,archived excludes open+deleted"
+  echo "    output: $out"
+fi
+
+# Deleted cases don't appear in default list
+out="$(run_fcase list 2>&1)"
+TOTAL=$((TOTAL + 1))
+if [[ "$out" != *"list-deleted"* ]]; then
+  PASS=$((PASS + 1)); echo -e "  \033[0;32m✓\033[0m deleted cases not in default list"
+else
+  FAIL=$((FAIL + 1)); echo -e "  \033[0;31m✗\033[0m deleted cases not in default list"
+  echo "    output: $out"
+fi
+
+# JSON output respects filter
+out="$(run_fcase list -o json 2>&1)"
+assert_contains "list JSON has open case" "$out" "list-open"
+TOTAL=$((TOTAL + 1))
+if [[ "$out" != *"list-resolved"* ]]; then
+  PASS=$((PASS + 1)); echo -e "  \033[0;32m✓\033[0m list JSON excludes non-open"
+else
+  FAIL=$((FAIL + 1)); echo -e "  \033[0;31m✗\033[0m list JSON excludes non-open"
+  echo "    output: $out"
+fi
+
+out="$(run_fcase list --status all -o json 2>&1)"
+assert_contains "list --status all JSON has all 4" "$out" "list-deleted"
+
+teardown_test_db
+
+# ── Section 7: cmd_find ───────────────────────────────────────────
+echo ""
+echo "── Section 7: cmd_find ──"
+
+setup_test_db
+
+# Create cases for find tests
+run_fcase init find-open --goal "Open case for searching" -o json >/dev/null 2>&1
+run_fcase init find-resolved --goal "Resolved case about widgets" -o json >/dev/null 2>&1
+run_fcase resolve find-resolved --summary "Widget fix applied successfully" >/dev/null 2>&1
+run_fcase init find-archived --goal "Archived case about gadgets" -o json >/dev/null 2>&1
+run_fcase resolve find-archived --summary "Gadget optimization complete" >/dev/null 2>&1
+run_fcase archive find-archived >/dev/null 2>&1
+run_fcase init find-deleted --goal "Deleted case about sprockets" -o json >/dev/null 2>&1
+run_fcase delete find-deleted --reason "Duplicate" --confirm DELETE >/dev/null 2>&1
+
+# Also add evidence to find-resolved for deep search testing
+run_fcase evidence find-resolved --tool fread --body "The flamingo module had a memory leak in the allocator"  >/dev/null 2>&1
+
+# Rebuild FTS (evidence add should trigger it via updated_at, but let's make sure)
+DB="$TEST_HOME/.fsuite/fcase.db"
+
+# find matches slug
+out="$(run_fcase find find-resolved 2>&1)"
+assert_contains "find matches slug" "$out" "find-resolved"
+
+# find matches goal text
+out="$(run_fcase find widgets 2>&1)"
+assert_contains "find matches goal" "$out" "find-resolved"
+
+# find matches resolution_summary
+out="$(run_fcase find optimization 2>&1)"
+assert_contains "find matches resolution_summary" "$out" "find-archived"
+
+# find default scope is resolved,archived (excludes open)
+out="$(run_fcase find searching 2>&1)"
+assert_contains "find default excludes open" "$out" "No cases found"
+
+# find --status all includes open
+out="$(run_fcase find searching --status all 2>&1)"
+assert_contains "find --status all includes open" "$out" "find-open"
+
+# find --deep matches evidence text
+out="$(run_fcase find flamingo --deep --status all 2>&1)"
+assert_contains "find --deep matches evidence" "$out" "find-resolved"
+
+# Shallow find does NOT match evidence text
+out="$(run_fcase find flamingo 2>&1)"
+assert_contains "shallow find does not match evidence" "$out" "No cases found"
+
+# Deleted cases excluded from find by default
+out="$(run_fcase find sprockets --status all 2>&1)"
+assert_contains "find --status all shows deleted" "$out" "find-deleted"
+out="$(run_fcase find sprockets 2>&1)"
+assert_contains "find default excludes deleted" "$out" "No cases found"
+
+# find JSON output
+out="$(run_fcase find widgets -o json 2>&1)"
+assert_contains "find JSON has query" "$out" '"query"'
+assert_contains "find JSON has results" "$out" '"results"'
+assert_contains "find JSON has slug" "$out" "find-resolved"
+
+teardown_test_db
+
+# ── Section 8: Read model lifecycle metadata ──────────────────────
+echo ""
+echo "── Section 8: Read model lifecycle metadata ──"
+
+setup_test_db
+
+# Create + resolve + archive a case
+run_fcase init readmodel-test --goal "Read model test" -o json >/dev/null 2>&1
+run_fcase resolve readmodel-test --summary "All done" >/dev/null 2>&1
+run_fcase archive readmodel-test >/dev/null 2>&1
+
+# status JSON includes lifecycle fields
+out="$(run_fcase status readmodel-test -o json 2>&1)"
+assert_contains "status JSON has resolution_summary" "$out" '"resolution_summary"'
+assert_contains "status JSON has resolved_at" "$out" '"resolved_at"'
+assert_contains "status JSON has archived_at" "$out" '"archived_at"'
+assert_contains "status JSON has deleted_at" "$out" '"deleted_at"'
+assert_contains "status JSON has delete_reason" "$out" '"delete_reason"'
+
+# export JSON includes lifecycle fields
+out="$(run_fcase export readmodel-test -o json 2>&1)"
+assert_contains "export JSON has resolution_summary" "$out" '"resolution_summary"'
+assert_contains "export JSON has resolved_at" "$out" '"resolved_at"'
+assert_contains "export JSON has archived_at" "$out" '"archived_at"'
+assert_contains "export JSON has deleted_at" "$out" '"deleted_at"'
+assert_contains "export JSON has delete_reason" "$out" '"delete_reason"'
+
+# list JSON includes lifecycle fields
+out="$(run_fcase list --status all -o json 2>&1)"
+assert_contains "list JSON has resolution_summary" "$out" '"resolution_summary"'
+assert_contains "list JSON has resolved_at" "$out" '"resolved_at"'
+
+teardown_test_db
+
 echo ""
 echo "═══════════════════════════════════════════"
 echo " Results: $PASS passed, $FAIL failed, $TOTAL total"
