@@ -938,32 +938,50 @@ server.registerTool(
     try {
       const { stdout } = await run(resolveTool("fs"), args, EXEC_OPTS);
       try {
-        const parsed = JSON.parse(stdout);
-        const chain = parsed.selected_chain?.join(" → ") || "?";
-        const hitCount = parsed.hits?.length || 0;
-        const summary = [
-          `${parsed.resolved_intent} (${parsed.route_confidence}) via ${chain}`,
-          `  ${parsed.route_reason}`,
-          `  ${parsed.budget?.candidate_files || 0} candidates, ${parsed.budget?.enriched_files || 0} enriched, ${parsed.budget?.time_ms || 0}ms`,
-          `  ${hitCount} hits${parsed.truncated ? " (truncated)" : ""}`,
-        ];
-        if (parsed.hits) {
-          for (const h of parsed.hits.slice(0, 15)) {
-            const syms = h.symbols ? ` [${h.symbols.slice(0, 5).join(", ")}]` : "";
-            const mc = h.match_count ? ` (${h.match_count} matches)` : "";
-            summary.push(`    ${h.file}${mc}${syms}`);
-          }
+const parsed = JSON.parse(stdout);
+
+      // ─── Pretty render fs result ───
+      const intentColor = { file: fg(166, 226, 46), content: fg(102, 217, 239), symbol: fg(190, 132, 255) };
+      const confBadge = { high: fg(80, 200, 80) + "high" + RESET, medium: fg(230, 219, 116) + "medium" + RESET, low: fg(220, 90, 90) + "low" + RESET };
+      const ic = intentColor[parsed.resolved_intent] || fg(248, 248, 242);
+      const cb = confBadge[parsed.route_confidence] || parsed.route_confidence;
+      const chainStr = (parsed.selected_chain || []).map(t => fg(248, 248, 242) + t).join(fg(117, 113, 94) + " → ");
+
+      const lines = [];
+      lines.push(`${BOLD}${ic}${parsed.resolved_intent}${RESET} ${DIM}(${UNDIM}${cb}${DIM})${UNDIM} ${DIM}via${UNDIM} ${chainStr}${RESET}`);
+      lines.push(`${DIM}  ${parsed.route_reason}${RESET}`);
+      const b = parsed.budget || {};
+      lines.push(`${DIM}  ${b.candidate_files || 0} candidates, ${b.enriched_files || 0} enriched, ${b.time_ms || 0}ms${parsed.truncated ? fg(230, 219, 116) + " ⚠ truncated" : ""}${RESET}`);
+      lines.push("");
+
+      for (const h of (parsed.hits || []).slice(0, 20)) {
+        const sp = shortPath(h.file);
+        lines.push(`  ${fg(102, 217, 239)}${sp}${RESET}${h.match_count ? DIM + ` (${h.match_count} matches)` + RESET : ""}`);
+        for (const m of (h.matches || []).slice(0, 5)) {
+          const lineNum = m.line ? `${DIM}${m.line}${UNDIM}` : "";
+          const lang = h.file ? detectLang(h.file) : "";
+          const hl = lang ? highlightLine(m.text || "", lang) : fg(248, 248, 242) + (m.text || "");
+          lines.push(`    ${fg(117, 113, 94)}${lineNum} ${RESET}${hl}${RESET}`);
         }
-        if (parsed.next_hint) {
-          const nh = parsed.next_hint;
-          const argStr = Object.entries(nh.args || {}).map(([k, v]) => `${k}: ${v}`).join(", ");
-          summary.push(`\n  next → ${nh.tool}(${argStr})`);
+        if (h.symbols && h.symbols.length > 0) {
+          const symList = h.symbols.slice(0, 8).map(s =>
+            typeof s === "string" ? s : (s.text || s.name || "")
+          ).filter(Boolean).map(s => fg(190, 132, 255) + s + RESET).join(fg(117, 113, 94) + ", ");
+          lines.push(`    ${DIM}symbols:${UNDIM} ${symList}${RESET}`);
         }
-        return {
-          content: [{ type: "text", text: summary.join("\n") }],
-          structuredContent: parsed,
-        };
-      } catch {
+        lines.push("");
+      }
+
+      if (parsed.next_hint) {
+        const nh = parsed.next_hint;
+        const nhArgs = Object.entries(nh.args || {}).map(([k, v]) => `${fg(166, 226, 46)}${k}${RESET}${DIM}: ${UNDIM}${fg(230, 219, 116)}${v}${RESET}`).join(DIM + ", " + RESET);
+        lines.push(`${fg(190, 132, 255)}${BOLD}next →${RESET} ${fg(102, 217, 239)}${nh.tool}${RESET}(${nhArgs})`);
+      }
+
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+        structuredContent: parsed,
+      };      } catch {
         return { content: [{ type: "text", text: stdout }] };
       }
     } catch (err) {
