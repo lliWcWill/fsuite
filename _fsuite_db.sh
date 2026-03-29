@@ -271,6 +271,100 @@ PRAGMA user_version=2;
 SQL
     current_version=2
   fi
+
+  # --- Migration to version 3: lifecycle columns, indexes, FTS ---
+  if (( current_version < 3 )); then
+    # New columns on cases (idempotent — SQLite errors if column exists)
+    db_exec <<'SQL' 2>/dev/null || true
+ALTER TABLE cases ADD COLUMN resolution_summary TEXT NOT NULL DEFAULT '';
+SQL
+    db_exec <<'SQL' 2>/dev/null || true
+ALTER TABLE cases ADD COLUMN resolved_at TEXT;
+SQL
+    db_exec <<'SQL' 2>/dev/null || true
+ALTER TABLE cases ADD COLUMN archived_at TEXT;
+SQL
+    db_exec <<'SQL' 2>/dev/null || true
+ALTER TABLE cases ADD COLUMN deleted_at TEXT;
+SQL
+    db_exec <<'SQL' 2>/dev/null || true
+ALTER TABLE cases ADD COLUMN delete_reason TEXT NOT NULL DEFAULT '';
+SQL
+
+    # Performance indexes
+    db_exec <<'SQL'
+CREATE INDEX IF NOT EXISTS idx_cases_status_updated ON cases(status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_case_id ON events(case_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_evidence_case_id ON evidence(case_id);
+CREATE INDEX IF NOT EXISTS idx_hypotheses_case_id ON hypotheses(case_id);
+CREATE INDEX IF NOT EXISTS idx_targets_case_id ON targets(case_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_case_id ON case_sessions(case_id, id DESC);
+SQL
+
+    # FTS virtual table (standalone — not bound to cases content table)
+    # Uses FTS4 for broad SQLite compatibility (FTS5 not always compiled in).
+    db_exec <<'SQL'
+CREATE VIRTUAL TABLE IF NOT EXISTS cases_fts USING fts4(
+  slug,
+  goal,
+  resolution_summary,
+  targets_text,
+  evidence_text,
+  hypotheses_text,
+  notes_text
+);
+SQL
+
+    db_exec <<'SQL'
+PRAGMA user_version=3;
+SQL
+    current_version=3
+
+    # Rebuild FTS index for all existing cases
+    rebuild_all_fts
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# FTS rebuild helpers
+# ---------------------------------------------------------------------------
+
+rebuild_fts_for_case() {
+  local case_id="$1"
+  # Delete existing FTS row for this case
+  db_exec <<SQL
+DELETE FROM cases_fts WHERE rowid = $case_id;
+SQL
+  # Rebuild from current data
+  db_exec <<SQL
+INSERT INTO cases_fts(rowid, slug, goal, resolution_summary, targets_text, evidence_text, hypotheses_text, notes_text)
+SELECT
+  c.id,
+  c.slug,
+  c.goal,
+  c.resolution_summary,
+  COALESCE((SELECT group_concat(COALESCE(t.path,'') || ' ' || COALESCE(t.symbol,''), ' ') FROM targets t WHERE t.case_id = c.id), ''),
+  COALESCE((SELECT group_concat(COALESCE(e.summary,'') || ' ' || COALESCE(e.body,''), ' ') FROM evidence e WHERE e.case_id = c.id), ''),
+  COALESCE((SELECT group_concat(COALESCE(h.body,'') || ' ' || COALESCE(h.reason,''), ' ') FROM hypotheses h WHERE h.case_id = c.id), ''),
+  COALESCE((SELECT group_concat(COALESCE(ev.payload_json,''), ' ') FROM events ev WHERE ev.case_id = c.id AND ev.event_type IN ('note','next_move','case_resolved','case_deleted')), '')
+FROM cases c WHERE c.id = $case_id;
+SQL
+}
+
+rebuild_all_fts() {
+  db_exec <<'SQL'
+DELETE FROM cases_fts;
+SQL
+  local ids
+  ids=$(db_query <<'SQL'
+SELECT id FROM cases;
+SQL
+  ) || true
+  [[ -z "$ids" ]] && return 0
+  local id
+  while IFS= read -r id || [[ -n "$id" ]]; do
+    [[ -n "$id" ]] && rebuild_fts_for_case "$id"
+  done <<< "$ids"
 }
 
 # ---------------------------------------------------------------------------

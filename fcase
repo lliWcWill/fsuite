@@ -4,8 +4,8 @@
 set -euo pipefail
 
 VERSION="2.2.0"
-FCASE_DIR="$HOME/.fsuite"
-DB_FILE="$FCASE_DIR/fcase.db"
+FCASE_DIR="${FCASE_DIR:-$HOME/.fsuite}"
+DB_FILE="${DB_FILE:-$FCASE_DIR/fcase.db}"
 DEFAULT_OUTPUT="pretty"
 
 # ---------------------------------------------------------------------------
@@ -487,6 +487,11 @@ SQL
   then
     die "failed to create case (slug may already exist)"
   fi
+
+  # Rebuild FTS index for the newly created case
+  local _new_case_id
+  _new_case_id="$(case_id_for_slug "$slug")"
+  [[ -n "$_new_case_id" ]] && rebuild_fts_for_case "$_new_case_id"
 
   if [[ "$output" == "json" ]]; then
     db_query <<SQL
