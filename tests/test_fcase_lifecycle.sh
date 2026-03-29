@@ -166,6 +166,7 @@ assert_eq "resolve from resolved fails" "1" "$rc"
 assert_contains "resolve error mentions current status" "$out" "status=open"
 
 # resolve JSON output works
+teardown_test_db
 setup_test_db
 run_fcase init resolve-json --goal "JSON test" -o json >/dev/null 2>&1
 rc=0

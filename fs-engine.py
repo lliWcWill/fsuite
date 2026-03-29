@@ -294,20 +294,15 @@ def shape_content_hits(fcontent_result):
     for item in raw_matches:
         if isinstance(item, str):
             # Format: "filepath:linenum:text"
-            parts = item.split(":", 2)
-            if len(parts) >= 3:
-                f = parts[0]
-                try:
-                    line = int(parts[1])
-                except ValueError:
-                    line = 0
-                text = parts[2]
-            elif len(parts) == 2:
-                f = parts[0]
-                line = 0
-                text = parts[1]
+            # Use regex to handle colons in file paths (e.g. C:\... or paths with colons)
+            m = re.match(r'^(.+?):(\d+):(.*)$', item)
+            if m:
+                f, line, text = m.group(1), int(m.group(2)), m.group(3)
             else:
-                continue
+                # fallback: treat entire string as filename
+                f = item
+                line = 0
+                text = ""
             if f not in by_file:
                 by_file[f] = []
             by_file[f].append({"line": line, "text": text})
@@ -472,9 +467,15 @@ def orchestrate(request):
     explicit_intent = request.get("intent", None)
 
     # ── Budget overrides ────────────────────────────────────────────────
-    max_candidates = int(request.get("max_candidates", MAX_CANDIDATE_FILES))
-    max_enrich = int(request.get("max_enrich", MAX_ENRICH_FILES))
-    timeout = int(request.get("timeout", TIMEOUT_SECONDS))
+    def safe_int(val, default):
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return default
+
+    max_candidates = safe_int(request.get("max_candidates"), MAX_CANDIDATE_FILES)
+    max_enrich = safe_int(request.get("max_enrich"), MAX_ENRICH_FILES)
+    timeout = safe_int(request.get("timeout"), TIMEOUT_SECONDS)
 
     # ── Validation ───────────────────────────────────────────────────────
     if not query:
@@ -570,13 +571,19 @@ def orchestrate(request):
 
 def main():
     try:
-        request = json.load(sys.stdin)
+        raw = sys.stdin.read()
+        request = json.loads(raw)
     except json.JSONDecodeError as e:
         json.dump({"error": f"invalid JSON input: {e}"}, sys.stdout)
         sys.exit(1)
 
-    result = orchestrate(request)
-    json.dump(result, sys.stdout)
+    try:
+        result = orchestrate(request)
+    except Exception as e:
+        json.dump({"error": f"engine error: {e}", "query": request.get("query", "")}, sys.stdout)
+        sys.exit(1)
+
+    json.dump(result, sys.stdout, indent=2)
 
 
 if __name__ == "__main__":

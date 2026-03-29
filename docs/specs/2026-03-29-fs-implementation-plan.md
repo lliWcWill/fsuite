@@ -1058,26 +1058,26 @@ version to 2.3.0."
 
 - [ ] **Step 1: Run the full test suite**
 
-Run: `cd /home/player3vsgpt/Desktop/Projects/fsuite && bash tests/run_all_tests.sh`
+Run: `cd <project-root> && bash tests/run_all_tests.sh`
 Expected: All suites green
 
 - [ ] **Step 2: Test fs CLI manually**
 
 ```bash
 # File search
-fs "*.py" /home/player3vsgpt/Desktop/Projects/fsuite
+fs "*.py" <project-root>
 
 # Content search
-fs "highlightLine" /home/player3vsgpt/Desktop/Projects/fsuite
+fs "highlightLine" <project-root>
 
 # Symbol search
-fs "McpServer" /home/player3vsgpt/Desktop/Projects/fsuite
+fs "McpServer" <project-root>
 
 # Scoped search
-fs "registerTool" --scope "*.js" /home/player3vsgpt/Desktop/Projects/fsuite
+fs "registerTool" --scope "*.js" <project-root>
 
 # JSON output
-fs -o json "DIFF_COLORS" /home/player3vsgpt/Desktop/Projects/fsuite
+fs -o json "DIFF_COLORS" <project-root>
 ```
 
 Expected: Each returns structured results with correct intent classification, hits, and next_hint.

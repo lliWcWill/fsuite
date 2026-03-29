@@ -145,7 +145,7 @@ Found 3 cases matching "tool-call validation"
 ### Alter `cases` table
 
 Add columns:
-- `summary TEXT DEFAULT ''` — resolve conclusion (the knowledge artifact)
+- `resolution_summary TEXT DEFAULT ''` — resolve conclusion (the knowledge artifact)
 - `resolved_at TEXT` — when resolved
 - `archived_at TEXT` — when archived
 - `deleted_at TEXT` — when soft-deleted (tombstone)

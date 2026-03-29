@@ -798,8 +798,11 @@ filter: z.enum(["open", "resolved", "archived", "deleted", "all"]).optional()
 ```javascript
 async ({ action, slug, goal, body, priority, summary, query, confirm, deep, filter }) => {
   const args = [action];
-  if (slug) args.push(slug);
-  if (action === "find" && query) { args[1] = query; } // find takes query as positional
+  if (action === "find" && query) {
+    args.push(query);
+  } else if (slug) {
+    args.push(slug);
+  }
   if (goal) args.push("--goal", goal);
   if (body) args.push("--body", body);
   if (priority) args.push("--priority", priority);

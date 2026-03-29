@@ -36,15 +36,19 @@ assert_eq() {
 assert_json_field() {
   local label="$1" json="$2" field="$3" expected="$4"
   local actual
-  actual=$(echo "$json" | python3 -c "
+  actual=$(echo "$json" | python3 -c '
 import sys, json
 data = json.load(sys.stdin)
-keys = '${field}'.split('.')
+keys = sys.argv[1].split(".")
 val = data
 for k in keys:
-    val = val[k]
+    if isinstance(val, dict):
+        val = val.get(k, "")
+    else:
+        val = ""
+        break
 print(val)
-" 2>/dev/null || echo "__JSON_PARSE_ERROR__")
+' "$field" 2>/dev/null || echo "__PARSE_ERROR__")
   assert_eq "$label" "$expected" "$actual"
 }
 
@@ -323,8 +327,8 @@ result=$("$FS" -o json "authenticate" --intent symbol --path /tmp 2>/dev/null ||
 assert_json_field "CLI --intent symbol" "$result" "resolved_intent" "symbol"
 
 # CLI --help exits 0
-"$FS" --help >/dev/null 2>&1
-assert_eq "CLI --help exits 0" "0" "$?"
+"$FS" --help >/dev/null 2>&1; help_rc=$?
+assert_eq "CLI --help exits 0" "0" "$help_rc"
 
 # CLI --version
 version_out=$("$FS" --version 2>/dev/null)

@@ -354,17 +354,18 @@ SQL
 rebuild_all_fts() {
   db_exec <<'SQL'
 DELETE FROM cases_fts;
+INSERT INTO cases_fts(rowid, slug, goal, resolution_summary, targets_text, evidence_text, hypotheses_text, notes_text)
+SELECT
+  c.id,
+  c.slug,
+  c.goal,
+  c.resolution_summary,
+  COALESCE((SELECT group_concat(COALESCE(t.path,'') || ' ' || COALESCE(t.symbol,''), ' ') FROM targets t WHERE t.case_id = c.id), ''),
+  COALESCE((SELECT group_concat(COALESCE(e.summary,'') || ' ' || COALESCE(e.body,''), ' ') FROM evidence e WHERE e.case_id = c.id), ''),
+  COALESCE((SELECT group_concat(COALESCE(h.body,'') || ' ' || COALESCE(h.reason,''), ' ') FROM hypotheses h WHERE h.case_id = c.id), ''),
+  COALESCE((SELECT group_concat(COALESCE(ev.payload_json,''), ' ') FROM events ev WHERE ev.case_id = c.id AND ev.event_type IN ('note','next_move_set','case_resolved','case_deleted')), '')
+FROM cases c;
 SQL
-  local ids
-  ids=$(db_query <<'SQL'
-SELECT id FROM cases;
-SQL
-  ) || true
-  [[ -z "$ids" ]] && return 0
-  local id
-  while IFS= read -r id || [[ -n "$id" ]]; do
-    [[ -n "$id" ]] && rebuild_fts_for_case "$id"
-  done <<< "$ids"
 }
 
 # ---------------------------------------------------------------------------

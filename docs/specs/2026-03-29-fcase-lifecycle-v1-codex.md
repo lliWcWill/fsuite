@@ -132,7 +132,7 @@ No hard delete command in v1.
 
 Add an FTS-backed search layer for fcase find.
 
-Create one FTS5 table keyed by case_id with explicit searchable columns:
+Create one FTS4 table keyed by case_id with explicit searchable columns (FTS4 chosen for broader SQLite compatibility — system SQLite 3.46.1 does not compile FTS5):
 
 - slug
 - goal
