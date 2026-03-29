@@ -102,6 +102,14 @@ const HLJS_CLASS_TO_ANSI = {
   "hljs-selector-class": fg(166, 226, 46),
   "hljs-name":       fg(249, 38, 114),
   "hljs-function":   fg(166, 226, 46),
+  // Markdown scopes
+  "hljs-section":    fg(102, 217, 239) + "\x1b[1m",  // bold cyan — headings
+  "hljs-strong":     fg(253, 151, 31) + "\x1b[1m",   // bold orange — **bold**
+  "hljs-emphasis":   fg(230, 219, 116) + "\x1b[3m",  // italic yellow — *italic*
+  "hljs-bullet":     fg(249, 38, 114),                // pink — list markers
+  "hljs-quote":      fg(117, 113, 94) + "\x1b[3m",   // italic dim — blockquotes
+  "hljs-code":       fg(166, 226, 46),                // green — inline code / fenced
+  "hljs-link":       fg(102, 217, 239) + "\x1b[4m",  // underlined cyan — URLs
 };
 
 // Convert hljs HTML output to ANSI-colored string
@@ -494,7 +502,7 @@ const EXT_COLORS = {
   toml: fg(230, 219, 116), // yellow
   yaml: fg(230, 219, 116), // yellow
   yml: fg(230, 219, 116),  // yellow
-  md: fg(255, 255, 255),   // white
+  md: fg(102, 217, 239),   // cyan (matches heading color)
   css: fg(102, 217, 239),  // cyan
   html: fg(249, 38, 114),  // pink
   c: fg(102, 217, 239),    // cyan
