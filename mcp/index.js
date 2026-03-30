@@ -915,25 +915,38 @@ server.registerTool(
       statuses: z.string().optional().describe("Comma-separated status filter: open,resolved,archived,deleted,all (for list/find)"),
     }),
   },
-  async ({ action, slug, goal, body, priority, summary, reason, confirm_delete, query, deep, statuses }) => {
-    const args = [action];
-    if (action === "find" && query) {
-      args.push(query);
-    } else if (slug) {
-      args.push(slug);
+    async ({ action, slug, goal, body, priority, summary, reason, confirm_delete, query, deep, statuses }) => {
+      const args = [action];
+      const outputModeByAction = {
+        init: "pretty",
+        status: "pretty",
+        list: "pretty",
+        next: "pretty",
+        handoff: "pretty",
+        export: "json",
+        resolve: "pretty",
+        archive: "pretty",
+        delete: "pretty",
+        find: "pretty",
+      };
+      if (action === "find" && query) {
+        args.push(query);
+      } else if (slug) {
+        args.push(slug);
+      }
+      if (goal) args.push("--goal", goal);
+      if (body) args.push("--body", body);
+      if (priority) args.push("--priority", priority);
+      if (summary) args.push("--summary", summary);
+      if (reason) args.push("--reason", reason);
+      if (confirm_delete) args.push("--confirm", confirm_delete);
+      if (deep) args.push("--deep");
+      if (statuses) args.push("--status", statuses);
+      const outputMode = outputModeByAction[action];
+      if (outputMode) args.push("-o", outputMode);
+      return cli("fcase", args);
     }
-    if (goal) args.push("--goal", goal);
-    if (body) args.push("--body", body);
-    if (priority) args.push("--priority", priority);
-    if (summary) args.push("--summary", summary);
-    if (reason) args.push("--reason", reason);
-    if (confirm_delete) args.push("--confirm", confirm_delete);
-    if (deep) args.push("--deep");
-    if (statuses) args.push("--status", statuses);
-    args.push("-o", "pretty");
-    return cli("fcase", args);
-  }
-);
+  );
 
 // ─── fmetrics ────────────────────────────────────────────────────
   server.registerTool(
