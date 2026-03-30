@@ -417,6 +417,20 @@ normalize_pattern() {
     return
   fi
 
+  if [[ "$query_mode" == "glob" ]]; then
+    printf "%s" "$p"
+    return
+  fi
+
+  if [[ "$query_mode" == "ext" ]]; then
+    if [[ "$p" == .* ]]; then
+      printf "*%s" "$p"
+    else
+      printf "*.%s" "$p"
+    fi
+    return
+  fi
+
   if [[ "$p" == *'*'* || "$p" == *'?'* ]]; then
     # Has wildcards: use as-is
     printf "%s" "$p"

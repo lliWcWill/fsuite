@@ -184,6 +184,26 @@ test_dir_mode_disables_extension_heuristic() {
   fi
 }
 
+test_ext_mode_forces_extension_normalization() {
+  local output
+  output=$("${FSEARCH}" --mode ext --output json "log" "${TEST_DIR}" 2>&1)
+  if [[ "$output" == *'"name_glob":"*.log"'* ]]; then
+    pass "Ext mode forces bare tokens to extension globs"
+  else
+    fail "Ext mode should normalize bare tokens as extensions" "Output: $output"
+  fi
+}
+
+test_ext_mode_keeps_dotted_extensions_valid() {
+  local output
+  output=$("${FSEARCH}" --mode ext --output json ".log" "${TEST_DIR}" 2>&1)
+  if [[ "$output" == *'"name_glob":"*.log"'* ]]; then
+    pass "Ext mode normalizes dotted extensions to extension globs"
+  else
+    fail "Ext mode should normalize dotted extensions as extension globs" "Output: $output"
+  fi
+}
+
 test_dotted_extension() {
   local output
   output=$("${FSEARCH}" --output paths ".log" "${TEST_DIR}" 2>&1)
@@ -697,6 +717,8 @@ main() {
   run_test "Bare extension" test_bare_extension
   run_test "Default mode keeps extension heuristic" test_default_mode_keeps_extension_heuristic
   run_test "Dir mode disables extension heuristic" test_dir_mode_disables_extension_heuristic
+  run_test "Ext mode forces extension normalization" test_ext_mode_forces_extension_normalization
+  run_test "Ext mode normalizes dotted extensions" test_ext_mode_keeps_dotted_extensions_valid
   run_test "Dotted extension" test_dotted_extension
   run_test "Starts-with pattern" test_starts_with_pattern
   run_test "Contains pattern" test_contains_pattern
