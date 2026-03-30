@@ -1010,7 +1010,7 @@ server.registerTool(
   {
     title: coloredTitle("fs"),
     description:
-      "Unified search orchestrator. One call to find files, content, or symbols. " +
+      "Unified search orchestrator. One call to find files, paths, content, or symbols. " +
       "Auto-classifies query intent and chains the right fsuite tools (fsearch, fcontent, fmap). " +
       "Returns ranked hits with enrichment and a recommended next step (next_hint). " +
       "Use scope to narrow by file glob. Use intent to override auto-classification.",
@@ -1018,17 +1018,17 @@ server.registerTool(
       query: z.string().describe("Search intent: glob pattern, literal string, or code identifier"),
       path: z.string().optional().describe("Search root directory (default: cwd)"),
       scope: z.string().optional().describe("Glob filter to narrow file set first, e.g. '*.py'"),
-      intent: z.enum(["auto", "file", "content", "symbol"]).optional()
-        .describe("Override auto-classification. Default: auto"),
-    }),
-    outputSchema: z.object({
-      query: z.string(),
-      path: z.string(),
-      scope: z.string().optional(),
-      intent: z.enum(["auto", "file", "content", "symbol"]),
-      resolved_intent: z.enum(["file", "content", "symbol"]),
-      route_reason: z.string(),
-      route_confidence: z.enum(["high", "medium", "low"]),
+        intent: z.enum(["auto", "file", "content", "symbol", "nav"]).optional()
+          .describe("Override auto-classification. Default: auto"),
+      }),
+      outputSchema: z.object({
+        query: z.string(),
+        path: z.string(),
+        scope: z.string().optional(),
+        intent: z.enum(["auto", "file", "content", "symbol", "nav"]),
+        resolved_intent: z.enum(["file", "content", "symbol", "nav"]),
+        route_reason: z.string(),
+        route_confidence: z.enum(["high", "medium", "low"]),
       selected_chain: z.array(z.string()),
       hits: z.array(z.object({}).passthrough()),
       truncated: z.boolean(),
@@ -1056,28 +1056,39 @@ server.registerTool(
 const parsed = JSON.parse(stdout);
 
       // ─── Pretty render fs result ───
-      const intentColor = { file: fg(166, 226, 46), content: fg(102, 217, 239), symbol: fg(190, 132, 255) };
+        const intentColor = { file: fg(166, 226, 46), content: fg(102, 217, 239), symbol: fg(190, 132, 255), nav: fg(253, 151, 31) };
       const confBadge = { high: fg(80, 200, 80) + "high" + RESET, medium: fg(230, 219, 116) + "medium" + RESET, low: fg(220, 90, 90) + "low" + RESET };
       const ic = intentColor[parsed.resolved_intent] || fg(248, 248, 242);
       const cb = confBadge[parsed.route_confidence] || parsed.route_confidence;
       const chainStr = (parsed.selected_chain || []).map(t => fg(248, 248, 242) + t).join(fg(117, 113, 94) + " → ");
 
-      const lines = [];
-      lines.push(`${BOLD}${ic}${parsed.resolved_intent}${RESET} ${DIM}(${UNDIM}${cb}${DIM})${UNDIM} ${DIM}via${UNDIM} ${chainStr}${RESET}`);
-      lines.push(`${DIM}  ${parsed.route_reason}${RESET}`);
-      const b = parsed.budget || {};
-      lines.push(`${DIM}  ${b.candidate_files || 0} candidates, ${b.enriched_files || 0} enriched, ${b.time_ms || 0}ms${parsed.truncated ? fg(230, 219, 116) + " ⚠ truncated" : ""}${RESET}`);
-      lines.push("");
+        const lines = [];
+        lines.push(`${BOLD}${ic}${parsed.resolved_intent}${RESET} ${DIM}(${UNDIM}${cb}${DIM})${UNDIM} ${DIM}via${UNDIM} ${chainStr}${RESET}`);
+        lines.push(`${DIM}  ${parsed.route_reason}${RESET}`);
+        const b = parsed.budget || {};
+        lines.push(`${DIM}  ${b.candidate_files || 0} candidates, ${b.enriched_files || 0} enriched, ${b.time_ms || 0}ms${parsed.truncated ? fg(230, 219, 116) + " ⚠ truncated" : ""}${RESET}`);
+        lines.push("");
 
-      for (const h of (parsed.hits || []).slice(0, 20)) {
-        const sp = shortPath(h.file);
-        lines.push(`  ${fg(102, 217, 239)}${sp}${RESET}${h.match_count ? DIM + ` (${h.match_count} matches)` + RESET : ""}`);
-        for (const m of (h.matches || []).slice(0, 5)) {
-          const lineNum = m.line ? `${DIM}${m.line}${UNDIM}` : "";
-          const lang = h.file ? detectLang(h.file) : "";
-          const hl = lang ? highlightLine(m.text || "", lang) : fg(248, 248, 242) + (m.text || "");
-          lines.push(`    ${fg(117, 113, 94)}${lineNum} ${RESET}${hl}${RESET}`);
-        }
+        for (const h of (parsed.hits || []).slice(0, 20)) {
+          const itemPath = h.file || h.path || "";
+          const sp = shortPath(itemPath);
+          const suffix = h.kind === "dir" ? "/" : "";
+          lines.push(`  ${fg(102, 217, 239)}${sp}${suffix}${RESET}${h.match_count ? DIM + ` (${h.match_count} matches)` + RESET : ""}`);
+          if (h.preview?.length) {
+            for (const child of h.preview.slice(0, 5)) {
+              const childSuffix = child.kind === "dir" ? "/" : "";
+              lines.push(`    ${DIM}${child.name}${childSuffix}${RESET}`);
+            }
+            if (h.preview_truncated) {
+              lines.push(`    ${DIM}...${RESET}`);
+            }
+          }
+          for (const m of (h.matches || []).slice(0, 5)) {
+            const lineNum = m.line ? `${DIM}${m.line}${UNDIM}` : "";
+            const lang = itemPath ? detectLang(itemPath) : "";
+            const hl = lang ? highlightLine(m.text || "", lang) : fg(248, 248, 242) + (m.text || "");
+            lines.push(`    ${fg(117, 113, 94)}${lineNum} ${RESET}${hl}${RESET}`);
+          }
         if (h.symbols && h.symbols.length > 0) {
           const symList = h.symbols.slice(0, 8).map(s =>
             typeof s === "string" ? s : (s.text || s.name || "")

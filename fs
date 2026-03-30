@@ -46,7 +46,7 @@ USAGE
 
 OPTIONS
   -s, --scope GLOB     Glob filter for file narrowing (e.g. "*.py")
-  -i, --intent MODE    Override: auto|file|content|symbol (default: auto)
+  -i, --intent MODE    Override: auto|file|content|symbol|nav (default: auto)
   -o, --output MODE    pretty|json (default: pretty for tty, json for pipe)
   -p, --path PATH      Search root (default: .). Overrides positional [path].
   --max-candidates N   Override candidate file cap (default: 50)
@@ -66,6 +66,7 @@ EXAMPLES
   fs "error loading config" src/    # content search — multi-word
   fs -s "*.ts" McpServer            # symbol search, scoped to .ts files
   fs -i symbol authenticate         # force symbol intent
+  fs -i nav docs                    # explicit path navigation
   fs -o json "*.rs" | jq '.hits'    # JSON output for piping
 EOF
 }
@@ -138,6 +139,11 @@ fi
 case "$OUTPUT" in
   pretty|json) ;;
   *) die "invalid --output value: '$OUTPUT' (accepted: pretty, json)" ;;
+esac
+
+case "$INTENT" in
+  ""|auto|file|content|symbol|nav) ;;
+  *) die "invalid --intent value: '$INTENT' (accepted: auto, file, content, symbol, nav)" ;;
 esac
 
 # ── Build JSON request via python3 ───────────────────────────────
@@ -223,8 +229,16 @@ if not hits:
     print(f'{DIM}no hits{NC}')
 else:
     for i, h in enumerate(hits):
-        f = h.get('file', '')
-        print(f'{GREEN}{f}{NC}')
+        item_path = h.get('file') or h.get('path', '')
+        suffix = '/' if h.get('kind') == 'dir' else ''
+        print(f'{GREEN}{item_path}{suffix}{NC}')
+        if 'preview' in h:
+            for child in h['preview'][:5]:
+                child_name = child.get('name', '')
+                child_suffix = '/' if child.get('kind') == 'dir' else ''
+                print(f'  {DIM}{child_name}{child_suffix}{NC}')
+            if h.get('preview_truncated'):
+                print(f'  {DIM}...{NC}')
         # Show match lines if present
         if 'line' in h:
             print(f'  {DIM}line {h[\"line\"]}{NC}', end='')

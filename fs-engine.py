@@ -60,7 +60,7 @@ KNOWN_EXTENSIONS = frozenset({
 # ── Intent Classification ────────────────────────────────────────────────────
 
 def classify_intent(query, explicit_intent=None):
-    """Classify query into intent (file/symbol/content) with confidence.
+    """Classify query into intent (file/nav/symbol/content) with confidence.
 
     Returns (intent, confidence, reason) tuple.
 
@@ -78,8 +78,8 @@ def classify_intent(query, explicit_intent=None):
     11. Single lowercase word → content (low confidence)
     """
 
-    # 1. Explicit override bypasses all heuristics
-    if explicit_intent:
+    # 1. Explicit override bypasses all heuristics, except "auto"
+    if explicit_intent and explicit_intent != "auto":
         return (explicit_intent, "high", f"explicit intent={explicit_intent}")
 
     q = query.strip()
@@ -135,6 +135,8 @@ def build_chain(intent, scope=None):
     if intent == "file":
         # File search doesn't benefit from prepending fsearch for scope—
         # the query IS the glob
+        return ["fsearch"]
+    elif intent == "nav":
         return ["fsearch"]
     elif intent == "content":
         if scope:
@@ -203,6 +205,29 @@ def run_fsearch(query, path, timeout=TIMEOUT_SECONDS):
         return [], True
     paths = [p.strip() for p in stdout.strip().splitlines() if p.strip()]
     return paths, False
+
+
+def run_fsearch_json(query, path, timeout=TIMEOUT_SECONDS):
+    """Run fsearch -o json with nav-oriented defaults."""
+    args = [
+        "-o", "json",
+        "--type", "both",
+        "--match", "both",
+        "--mode", "auto",
+        "--preview", "5",
+        query,
+        path,
+    ]
+
+    stdout, stderr, rc, timed_out = run_tool("fsearch", args, timeout=timeout)
+    if timed_out:
+        return None, True
+
+    try:
+        result = json.loads(stdout) if stdout.strip() else {}
+    except json.JSONDecodeError:
+        result = {}
+    return result, False
 
 
 def run_fcontent(query, path, file_list=None, timeout=TIMEOUT_SECONDS):
@@ -415,6 +440,16 @@ def shape_symbol_hits(content_hits, fmap_result, query=""):
     return merged
 
 
+def shape_nav_hits(fsearch_result):
+    """Shape upgraded fsearch JSON into nav hit list."""
+    if not isinstance(fsearch_result, dict):
+        return []
+    hits = fsearch_result.get("hits", [])
+    if isinstance(hits, list):
+        return hits
+    return []
+
+
 # ── next_hint Generation ─────────────────────────────────────────────────────
 
 def generate_next_hint(intent, hits, query, scope=None):
@@ -423,13 +458,18 @@ def generate_next_hint(intent, hits, query, scope=None):
         return None
 
     top_hit = hits[0]
-    top_file = top_hit.get("file", "")
+    top_file = top_hit.get("file") or top_hit.get("path", "")
 
     if intent == "file":
         if scope:
             return {"tool": "fread", "args": {"path": top_file}}
         else:
             return {"tool": "fcontent", "args": {"query": query, "path": top_file}}
+
+    elif intent == "nav":
+        if top_hit.get("kind") == "dir":
+            return {"tool": "ftree", "args": {"path": top_file, "depth": 2}}
+        return {"tool": "fread", "args": {"path": top_file}}
 
     elif intent == "content":
         return {"tool": "fread", "args": {"path": top_file, "around": query}}
@@ -500,20 +540,31 @@ def orchestrate(request):
             break
 
         if tool_name == "fsearch":
-            search_query = scope if scope else query
-            file_list, timed_out = run_fsearch(search_query, path, timeout=timeout)
-            file_list = file_list[:max_candidates]
-            candidate_count = len(file_list)
-            if timed_out:
-                truncated = True
-                break
-            if resolved_intent == "file":
+            if resolved_intent == "nav":
+                result, timed_out = run_fsearch_json(query, path, timeout=timeout)
+                if timed_out:
+                    truncated = True
+                    break
+                nav_hits = shape_nav_hits(result)
+                candidate_count = len(nav_hits)
+                if candidate_count > max_candidates:
+                    truncated = True
+                hits = nav_hits[:max_candidates]
+            else:
+                search_query = scope if scope else query
+                file_list, timed_out = run_fsearch(search_query, path, timeout=timeout)
+                file_list = file_list[:max_candidates]
+                candidate_count = len(file_list)
+                if timed_out:
+                    truncated = True
+                    break
                 # When scope is present, filter candidates by query match
-                if scope and query:
-                    q_lower = query.lower()
-                    file_list = [f for f in file_list if q_lower in f.lower()]
-                    candidate_count = len(file_list)
-                hits = shape_file_hits(file_list)
+                if resolved_intent == "file":
+                    if scope and query:
+                        q_lower = query.lower()
+                        file_list = [f for f in file_list if q_lower in f.lower()]
+                        candidate_count = len(file_list)
+                    hits = shape_file_hits(file_list)
 
         elif tool_name == "fcontent":
             result, timed_out = run_fcontent(query, path, file_list, timeout=timeout)

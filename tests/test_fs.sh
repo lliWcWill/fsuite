@@ -161,6 +161,18 @@ result=$(run_engine '{"query": "McpServer", "path": "/tmp", "scope": "*.ts"}')
 chain=$(echo "$result" | python3 -c "import sys,json; print(','.join(json.load(sys.stdin)['selected_chain']))")
 assert_eq "symbol (with scope) → [fsearch,fcontent,fmap]" "fsearch,fcontent,fmap" "$chain"
 
+# explicit nav intent override → ["fsearch"]
+result=$(run_engine '{"query": "docs", "path": "/tmp", "intent": "nav"}')
+assert_json_field "explicit nav override → nav" "$result" "resolved_intent" "nav"
+assert_json_field "explicit nav override → high confidence" "$result" "route_confidence" "high"
+chain=$(echo "$result" | python3 -c "import sys,json; print(','.join(json.load(sys.stdin)['selected_chain']))")
+assert_eq "nav override → [fsearch]" "fsearch" "$chain"
+
+# ambiguous bare word still does NOT auto-nav
+result=$(run_engine '{"query": "docs", "path": "/tmp"}')
+assert_json_field "bare docs remains content" "$result" "resolved_intent" "content"
+assert_json_field "bare docs remains low confidence" "$result" "route_confidence" "low"
+
 # ============================================================================
 # Section 3: Output Structure
 # ============================================================================
@@ -345,6 +357,7 @@ TEST_DIR=$(mktemp -d)
 trap 'rm -rf "$TEST_DIR"' EXIT
 
 mkdir -p "$TEST_DIR/src"
+mkdir -p "$TEST_DIR/docs/handoffs"
 
 cat > "$TEST_DIR/src/auth.py" << 'PYEOF'
 def authenticate(token, secret):
@@ -370,6 +383,10 @@ PYEOF
 cat > "$TEST_DIR/src/config.json" << 'JSONEOF'
 {"api_key": "test123", "debug": true}
 JSONEOF
+
+cat > "$TEST_DIR/docs/handoffs/note.md" << 'MDEOF'
+# note
+MDEOF
 
 # 7.1 — file intent: *.py finds 2 python files
 result=$("$FS" -o json "*.py" "$TEST_DIR" 2>/dev/null || true)
@@ -457,6 +474,22 @@ else
   TESTS_FAILED=$((TESTS_FAILED + 1))
   echo -e "${RED}✗${NC} 7.6 budget.time_ms should be >= 0"
 fi
+
+# 7.7 — explicit nav override returns nav hits
+result=$("$FS" -o json "docs" "$TEST_DIR" --intent nav 2>/dev/null || true)
+assert_json_field "7.7 docs with nav override" "$result" "resolved_intent" "nav"
+chain=$(echo "$result" | python3 -c "import sys,json; print(','.join(json.load(sys.stdin)['selected_chain']))" 2>/dev/null || echo "")
+assert_eq "7.7 nav chain → [fsearch]" "fsearch" "$chain"
+
+# 7.8 — bare docs still does not auto-nav
+result=$("$FS" -o json "docs" "$TEST_DIR" 2>/dev/null || true)
+assert_json_field "7.8 bare docs remains content" "$result" "resolved_intent" "content"
+assert_json_field "7.8 bare docs remains low confidence" "$result" "route_confidence" "low"
+
+# 7.9 — nav dir hits recommend ftree
+result=$("$FS" -o json "docs" "$TEST_DIR" --intent nav 2>/dev/null || true)
+next_tool=$(echo "$result" | python3 -c "import sys,json; print((json.load(sys.stdin).get('next_hint') or {}).get('tool', ''))" 2>/dev/null || echo "")
+assert_eq "7.9 nav dir hit suggests ftree" "ftree" "$next_tool"
 
 # ============================================================================
 # Results
