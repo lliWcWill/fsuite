@@ -545,9 +545,20 @@ SQL
   started_at="$(now_utc)"
   start_ns="$(date +%s%N)"
 
-  # Execute command, capturing stdout/stderr
-  local child_rc=0
+# Execute command, capturing stdout/stderr
+local child_rc=0
+local telemetry_level telemetry_run_id
+telemetry_level="${FSUITE_TELEMETRY:-1}"
+telemetry_run_id="${FSUITE_TELEMETRY_RUN_ID:-}"
+if [[ -z "$telemetry_run_id" && "$telemetry_level" =~ ^[0-9]+$ ]] && (( telemetry_level >= 1 )); then
+  telemetry_run_id="$(date +%s%3N 2>/dev/null || echo 0)_$$"
+  [[ "$telemetry_run_id" == "0_$$" ]] && telemetry_run_id=""
+fi
+if [[ -n "$telemetry_run_id" ]]; then
+  FSUITE_TELEMETRY_RUN_ID="$telemetry_run_id" "${cmd_args[@]}" >"$stdout_file" 2>"$stderr_file" || child_rc=$?
+else
   "${cmd_args[@]}" >"$stdout_file" 2>"$stderr_file" || child_rc=$?
+fi
 
   end_ns="$(date +%s%N)"
   duration_ms="$(( (end_ns - start_ns) / 1000000 ))"
@@ -602,12 +613,12 @@ print(json.dumps(args))
   else
     sq_error_excerpt="NULL"
   fi
-  # telemetry_run_id from env var, or NULL
-  if [[ -n "${FSUITE_TELEMETRY_RUN_ID:-}" ]]; then
-    sq_telemetry_run_id="$(sql_quote "$FSUITE_TELEMETRY_RUN_ID")"
-  else
-    sq_telemetry_run_id="NULL"
-  fi
+# telemetry_run_id from shared child env, or NULL
+if [[ -n "$telemetry_run_id" ]]; then
+  sq_telemetry_run_id="$(sql_quote "$telemetry_run_id")"
+else
+  sq_telemetry_run_id="NULL"
+fi
 
   # Build the atomic SQL block: step INSERT + last_insert_rowid + links + updated_at
   local update_now

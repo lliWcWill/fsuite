@@ -58,6 +58,12 @@ run_freplay() {
   HOME="${TEST_HOME}" FSUITE_TELEMETRY=0 "${FREPLAY}" "$@"
 }
 
+run_freplay_with_telemetry() {
+  local telemetry_tier="${1:-1}"
+  shift || true
+  HOME="${TEST_HOME}" FSUITE_TELEMETRY="${telemetry_tier}" "${FREPLAY}" "$@"
+}
+
 run_fcase() {
   HOME="${TEST_HOME}" FSUITE_TELEMETRY=0 "${FCASE}" "$@"
 }
@@ -316,6 +322,23 @@ test_record_result_summary() {
     pass "Record stores result_summary for read_only commands"
   else
     fail "Record should store result_summary for read_only commands" "result_summary=$result_summary"
+  fi
+}
+
+test_record_persists_telemetry_run_id() {
+  init_case "rec-telem-link" "telemetry linkage test"
+  mkdir -p "${TEST_HOME}/workspace/combo-impact"
+  : > "${TEST_HOME}/workspace/combo-impact/Makefile"
+
+  run_freplay_with_telemetry 1 record rec-telem-link -- "${FTREE}" "${TEST_HOME}/workspace/combo-impact" >/dev/null 2>&1 || true
+
+  local run_id
+  run_id=$(query_db "PRAGMA foreign_keys=ON; SELECT COALESCE(telemetry_run_id, '') FROM replay_steps LIMIT 1;")
+
+  if [[ -n "$run_id" ]] && grep -q "\"run_id\":\"$run_id\"" "${TEST_HOME}/.fsuite/telemetry.jsonl"; then
+    pass "Record persists telemetry_run_id and matches emitted telemetry"
+  else
+    fail "Record should persist telemetry_run_id and match emitted telemetry" "run_id=${run_id:-<empty>}"
   fi
 }
 
@@ -1009,11 +1032,12 @@ main() {
   run_test test_record_mode_read_only
   run_test test_record_mode_mutating
   run_test test_record_mode_fcase_subcommand
-  run_test test_record_exit_code
-  run_test test_record_error_excerpt
-  run_test test_record_result_summary
+run_test test_record_exit_code
+run_test test_record_error_excerpt
+run_test test_record_result_summary
+run_test test_record_persists_telemetry_run_id
 
-  # Lifecycle (tests 21-24)
+# Lifecycle (tests 21-24)
   run_test test_promote
   run_test test_promote_demotes_existing
   run_test test_canonical_unique_index

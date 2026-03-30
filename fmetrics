@@ -13,6 +13,21 @@ FSUITE_DIR="$HOME/.fsuite"
 JSONL_FILE="$FSUITE_DIR/telemetry.jsonl"
 DB_FILE="$FSUITE_DIR/telemetry.db"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+_FSUITE_LIB_CANDIDATES=(
+  "$SCRIPT_DIR/_fsuite_common.sh"
+  "${FSUITE_SHARE_DIR:-}/_fsuite_common.sh"
+  "$SCRIPT_DIR/../share/fsuite/_fsuite_common.sh"
+  "/usr/local/share/fsuite/_fsuite_common.sh"
+  "/usr/share/fsuite/_fsuite_common.sh"
+)
+for _fsuite_candidate in "${_FSUITE_LIB_CANDIDATES[@]}"; do
+  if [[ -f "$_fsuite_candidate" ]]; then
+    # shellcheck disable=SC1090
+    source "$_fsuite_candidate"
+    break
+  fi
+done
+unset _fsuite_candidate
 
 # -------------------------
 # Defaults
@@ -216,8 +231,14 @@ combo_confidence() {
   fi
 }
 
+case_impact_score() {
+  local resolved_cases="${1:-0}" archived_cases="${2:-0}" progress_cases="${3:-0}" verification_cases="${4:-0}"
+  printf '%s' $(( resolved_cases * 20 + verification_cases * 8 + progress_cases * 6 + archived_cases * 4 ))
+}
+
 combo_because_json() {
   local occurrences="${1:-0}" clean_runs="${2:-0}" faulted_runs="${3:-0}" avg_duration_ms="${4:-0}"
+  local resolved_cases="${5:-0}" archived_cases="${6:-0}" progress_cases="${7:-0}" verification_cases="${8:-0}" case_slugs_csv="${9:-}"
   local reasons=()
   if (( occurrences >= 2 )); then
     reasons+=("repeated across multiple runs")
@@ -233,6 +254,21 @@ combo_because_json() {
   fi
   if (( avg_duration_ms > 0 && avg_duration_ms <= 1000 )); then
     reasons+=("fast average end-to-end duration")
+  fi
+  if (( resolved_cases > 0 )); then
+    reasons+=("backed by ${resolved_cases} resolved case(s)")
+  fi
+  if (( progress_cases > 0 )); then
+    reasons+=("shows forward progress in ${progress_cases} case(s)")
+  fi
+  if (( verification_cases > 0 )); then
+    reasons+=("verification evidence is present")
+  fi
+  if (( archived_cases > 0 )); then
+    reasons+=("archived outcomes reinforce the sequence")
+  fi
+  if [[ -n "$case_slugs_csv" ]]; then
+    reasons+=("cases: ${case_slugs_csv}")
   fi
 
   local out="["
@@ -252,6 +288,7 @@ combo_because_json() {
 
 recommend_because_json() {
   local support="${1:-0}" faulted_runs="${2:-0}" next_tool="$3"
+  local resolved_cases="${4:-0}" archived_cases="${5:-0}" progress_cases="${6:-0}" verification_cases="${7:-0}" case_slugs_csv="${8:-}"
   local reasons=()
   reasons+=("most common successful next step after this prefix")
   if (( faulted_runs == 0 )); then
@@ -261,6 +298,21 @@ recommend_because_json() {
     reasons+=("stronger support than one-off continuations")
   fi
   reasons+=("historical continuation favors ${next_tool}")
+  if (( resolved_cases > 0 )); then
+    reasons+=("resolved cases point to this next step")
+  fi
+  if (( progress_cases > 0 )); then
+    reasons+=("active cases are moving through this continuation")
+  fi
+  if (( verification_cases > 0 )); then
+    reasons+=("verification evidence supports this continuation")
+  fi
+  if (( archived_cases > 0 )); then
+    reasons+=("archived cases reinforce this continuation")
+  fi
+  if [[ -n "$case_slugs_csv" ]]; then
+    reasons+=("cases: ${case_slugs_csv}")
+  fi
 
   local out="["
   local first=1
@@ -290,8 +342,66 @@ emit_json_error() {
 EOF
 }
 
+fcase_replay_ready() {
+local case_db="$1"
+[[ -f "$case_db" ]] || return 1
+local has_cases has_replays has_steps
+has_cases=$(sqlite3 "$case_db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='cases';" 2>/dev/null) || has_cases=0
+has_replays=$(sqlite3 "$case_db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='replays';" 2>/dev/null) || has_replays=0
+has_steps=$(sqlite3 "$case_db" "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='replay_steps';" 2>/dev/null) || has_steps=0
+[[ "$has_cases" == "1" && "$has_replays" == "1" && "$has_steps" == "1" ]]
+}
+
+infer_case_project_name() {
+local start_path="${1:-}"
+local project_name=""
+[[ -n "$start_path" ]] || return 0
+if type _fsuite_infer_project_name >/dev/null 2>&1; then
+  project_name="$(_fsuite_infer_project_name "$start_path")"
+else
+  project_name=$(basename "$start_path" | tr -cd '[:alnum:]. _-')
+fi
+printf '%s' "$project_name"
+}
+
+case_project_map_cte_sql() {
+local case_db="${1:-$FSUITE_DIR/fcase.db}"
+local sql="SELECT CAST(NULL AS INTEGER) AS replay_id, CAST('' AS TEXT) AS project_name WHERE 0"
+[[ -f "$case_db" ]] || {
+  printf '%s' "$sql"
+  return 0
+}
+local replay_id cwd project_name replay_sql project_sql
+while IFS='|' read -r replay_id cwd; do
+  [[ -n "$replay_id" ]] || continue
+  [[ -n "$cwd" ]] || continue
+  project_name="$(infer_case_project_name "$cwd")"
+  [[ -n "$project_name" ]] || continue
+  replay_sql="$(sql_escape "$replay_id")"
+  project_sql="$(sql_escape "$project_name")"
+  sql+=$'\nUNION ALL\nSELECT '
+  sql+="$replay_sql"
+  sql+=", '"
+  sql+="$project_sql"
+  sql+="'"
+done < <(
+  sqlite3 -separator '|' "$case_db" "
+    SELECT r.id, COALESCE((
+      SELECT rs.cwd
+      FROM replay_steps rs
+      WHERE rs.replay_id = r.id
+        AND COALESCE(rs.cwd, '') != ''
+      ORDER BY rs.order_num
+      LIMIT 1
+    ), '')
+    FROM replays r;
+  " 2>/dev/null || true
+)
+printf '%s' "$sql"
+}
+
 ensure_analytics_populated() {
-  ensure_db
+ensure_db
   local telemetry_count analytics_version run_facts_count combo_count next_count
   telemetry_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM telemetry;" 2>/dev/null) || telemetry_count=0
   [[ "$telemetry_count" =~ ^[0-9]+$ ]] || telemetry_count=0
@@ -886,10 +996,10 @@ cmd_combos() {
   prefix_key="${safe_starts//,/>}"
 
   local where_clauses=()
-  [[ -n "$safe_project" ]] && where_clauses+=("project_name='$safe_project'")
-  [[ -n "$prefix_key" ]] && where_clauses+=("(combo_key='$prefix_key' OR combo_key LIKE '$prefix_key>%')")
-  [[ -n "$safe_contains" ]] && where_clauses+=("('>' || combo_key || '>') LIKE '%>$safe_contains>%'")
-  where_clauses+=("occurrence_count >= ${MIN_OCCURRENCES}")
+  [[ -n "$safe_project" ]] && where_clauses+=("base.project_name='$safe_project'")
+  [[ -n "$prefix_key" ]] && where_clauses+=("(base.combo_key='$prefix_key' OR base.combo_key LIKE '$prefix_key>%')")
+  [[ -n "$safe_contains" ]] && where_clauses+=("('>' || base.combo_key || '>') LIKE '%>$safe_contains>%'")
+  where_clauses+=("base.occurrence_count >= ${MIN_OCCURRENCES}")
 
   local where=""
   if (( ${#where_clauses[@]} > 0 )); then
@@ -901,15 +1011,129 @@ cmd_combos() {
     where="WHERE $joined"
   fi
 
-  local combo_rows total_rows
-  combo_rows=$(sqlite3 -separator '|' "$DB_FILE" "SELECT combo_key, step_count, occurrence_count, clean_run_count, faulted_run_count, avg_duration_ms FROM combo_stats_v1 $where ORDER BY occurrence_count DESC, clean_run_count DESC, faulted_run_count ASC, avg_duration_ms ASC, combo_key ASC LIMIT $LIMIT;" 2>/dev/null) || combo_rows=""
-  total_rows=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM combo_stats_v1 $where;" 2>/dev/null) || total_rows=0
+  local combo_rows total_rows case_db
+  case_db="$FSUITE_DIR/fcase.db"
+  total_rows=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM combo_stats_v1 base $where;" 2>/dev/null) || total_rows=0
   [[ "$total_rows" =~ ^[0-9]+$ ]] || total_rows=0
+
+if fcase_replay_ready "$case_db"; then
+local case_db_sql
+local legacy_project_map_sql
+case_db_sql="${case_db//\'/\'\'}"
+legacy_project_map_sql="$(case_project_map_cte_sql "$case_db")"
+combo_rows="$(
+sqlite3 -separator '|' "$DB_FILE" 2>/dev/null <<SQL
+ATTACH DATABASE '$case_db_sql' AS case_db;
+WITH verification_cases AS (
+SELECT case_id, 1 AS has_verification
+FROM case_db.events
+WHERE event_type = 'verification'
+GROUP BY case_id
+),
+legacy_project_map AS (
+$legacy_project_map_sql
+),
+replay_case_meta AS (
+SELECT
+r.id AS replay_id,
+r.case_id,
+COALESCE(MAX(t.project_name), MAX(legacy_project_map.project_name), '') AS project_name,
+c.slug,
+CASE WHEN COALESCE(c.resolved_at, '') != '' OR c.status = 'resolved' THEN 1 ELSE 0 END AS resolved_case,
+CASE WHEN COALESCE(c.archived_at, '') != '' OR c.status = 'archived' THEN 1 ELSE 0 END AS archived_case,
+    CASE WHEN COALESCE(c.next_move, '') != '' THEN 1 ELSE 0 END AS progress_case,
+    COALESCE(vc.has_verification, 0) AS verification_case
+FROM case_db.replays r
+JOIN case_db.cases c ON c.id = r.case_id
+LEFT JOIN case_db.replay_steps rs ON rs.replay_id = r.id
+LEFT JOIN telemetry t ON t.run_id = rs.telemetry_run_id
+LEFT JOIN legacy_project_map ON legacy_project_map.replay_id = r.id
+LEFT JOIN verification_cases vc ON vc.case_id = r.case_id
+GROUP BY r.id, r.case_id, c.slug, c.status, c.resolved_at, c.archived_at, c.next_move, vc.has_verification
+),
+replay_combo_keys AS (
+  SELECT
+    rs.replay_id,
+    (
+      SELECT group_concat(tool, '>')
+      FROM (
+        SELECT rs2.tool AS tool
+        FROM case_db.replay_steps rs2
+        WHERE rs2.replay_id = rs.replay_id
+        ORDER BY rs2.order_num
+      )
+    ) AS combo_key,
+    COUNT(*) AS step_count
+  FROM case_db.replay_steps rs
+  GROUP BY rs.replay_id
+),
+case_combo_stats AS (
+  SELECT
+    meta.project_name,
+    combos.combo_key,
+    combos.step_count,
+    COUNT(DISTINCT CASE WHEN meta.resolved_case = 1 THEN meta.case_id END) AS resolved_cases,
+    COUNT(DISTINCT CASE WHEN meta.archived_case = 1 THEN meta.case_id END) AS archived_cases,
+    COUNT(DISTINCT CASE WHEN meta.progress_case = 1 THEN meta.case_id END) AS progress_cases,
+    COUNT(DISTINCT CASE WHEN meta.verification_case = 1 THEN meta.case_id END) AS verification_cases,
+    COALESCE(group_concat(DISTINCT meta.slug), '') AS case_slugs
+  FROM replay_combo_keys combos
+  JOIN replay_case_meta meta ON meta.replay_id = combos.replay_id
+  WHERE combos.combo_key != ''
+  GROUP BY meta.project_name, combos.combo_key, combos.step_count
+)
+SELECT
+  base.combo_key,
+  base.step_count,
+  base.occurrence_count,
+  base.clean_run_count,
+  base.faulted_run_count,
+  base.avg_duration_ms,
+  COALESCE(case_stats.resolved_cases, 0),
+  COALESCE(case_stats.archived_cases, 0),
+  COALESCE(case_stats.progress_cases, 0),
+  COALESCE(case_stats.verification_cases, 0),
+  COALESCE(case_stats.case_slugs, '')
+FROM combo_stats_v1 base
+LEFT JOIN case_combo_stats case_stats
+  ON case_stats.project_name = base.project_name
+ AND case_stats.combo_key = base.combo_key
+$where
+ORDER BY (
+  CASE
+    WHEN (base.clean_run_count + base.faulted_run_count) <= 0 THEN 0
+    ELSE CAST(
+      ((1.0 * base.clean_run_count / (base.clean_run_count + base.faulted_run_count)) * 60)
+      + (CASE WHEN base.occurrence_count > 5 THEN 25 ELSE base.occurrence_count * 5 END)
+      + (CASE WHEN base.avg_duration_ms <= 1000 THEN 10 WHEN base.avg_duration_ms <= 5000 THEN 5 ELSE 0 END)
+      - ((1.0 * base.faulted_run_count / (base.clean_run_count + base.faulted_run_count)) * 25)
+      AS INTEGER
+    )
+  END
+  + (COALESCE(case_stats.resolved_cases, 0) * 20)
+  + (COALESCE(case_stats.verification_cases, 0) * 8)
+  + (COALESCE(case_stats.progress_cases, 0) * 6)
+  + (COALESCE(case_stats.archived_cases, 0) * 4)
+) DESC,
+COALESCE(case_stats.resolved_cases, 0) DESC,
+COALESCE(case_stats.progress_cases, 0) DESC,
+base.occurrence_count DESC,
+base.clean_run_count DESC,
+base.faulted_run_count ASC,
+base.avg_duration_ms ASC,
+base.combo_key ASC
+LIMIT $LIMIT;
+DETACH DATABASE case_db;
+SQL
+)" || combo_rows=""
+else
+combo_rows=$(sqlite3 -separator '|' "$DB_FILE" "SELECT base.combo_key, base.step_count, base.occurrence_count, base.clean_run_count, base.faulted_run_count, base.avg_duration_ms, 0, 0, 0, 0, '' FROM combo_stats_v1 base $where ORDER BY base.occurrence_count DESC, base.clean_run_count DESC, base.faulted_run_count ASC, base.avg_duration_ms ASC, base.combo_key ASC LIMIT $LIMIT;" 2>/dev/null) || combo_rows=""
+fi
 
   if [[ -z "$combo_rows" ]]; then
     local details_json
-      details_json=$(printf '"project":"%s","starts_with":%s,"contains":"%s","min_occurrences":%s,"limit":%s' \
-        "$(printf '%s' "$safe_project" | json_escape)" \
+    details_json=$(printf '"project":"%s","starts_with":%s,"contains":"%s","min_occurrences":%s,"limit":%s' \
+      "$(printf '%s' "$safe_project" | json_escape)" \
         "$(delimited_to_json_array "$safe_starts" ',')" \
         "$(printf '%s' "$safe_contains" | json_escape)" \
         "$MIN_OCCURRENCES" \
@@ -931,17 +1155,21 @@ cmd_combos() {
       "$LIMIT" \
       "$MIN_OCCURRENCES"
     local first=1 combo_key step_count occurrences clean_runs faulted_runs avg_duration_ms
-    while IFS='|' read -r combo_key step_count occurrences clean_runs faulted_runs avg_duration_ms; do
+    local resolved_cases archived_cases progress_cases verification_cases case_slugs_csv
+    while IFS='|' read -r combo_key step_count occurrences clean_runs faulted_runs avg_duration_ms resolved_cases archived_cases progress_cases verification_cases case_slugs_csv; do
       [[ -n "$combo_key" ]] || continue
-      local steps_json fault_rate clean_rate score because_json
+      local steps_json fault_rate clean_rate telemetry_score case_score combined_score because_json case_slugs_json
       steps_json=$(delimited_to_json_array "$combo_key" '>')
       fault_rate=$(decimal_ratio "$faulted_runs" "$occurrences")
       clean_rate=$(decimal_ratio "$clean_runs" "$occurrences")
-      score=$(combo_score "$occurrences" "$clean_runs" "$faulted_runs" "$avg_duration_ms")
-      because_json=$(combo_because_json "$occurrences" "$clean_runs" "$faulted_runs" "$avg_duration_ms")
+      telemetry_score=$(combo_score "$occurrences" "$clean_runs" "$faulted_runs" "$avg_duration_ms")
+      case_score=$(case_impact_score "$resolved_cases" "$archived_cases" "$progress_cases" "$verification_cases")
+      combined_score=$(( telemetry_score + case_score ))
+      case_slugs_json=$(delimited_to_json_array "$case_slugs_csv" ',')
+      because_json=$(combo_because_json "$occurrences" "$clean_runs" "$faulted_runs" "$avg_duration_ms" "$resolved_cases" "$archived_cases" "$progress_cases" "$verification_cases" "$case_slugs_csv")
       (( first )) || printf ','
       first=0
-      printf '{"combo_key":"%s","steps":%s,"step_count":%s,"occurrences":%s,"clean_run_rate":%s,"fault_rate":%s,"avg_duration_ms":%s,"score":%s,"evidence":{"clean_runs":%s,"faulted_runs":%s,"total_runs":%s},"because":%s}' \
+      printf '{"combo_key":"%s","steps":%s,"step_count":%s,"occurrences":%s,"clean_run_rate":%s,"fault_rate":%s,"avg_duration_ms":%s,"telemetry_score":%s,"case_impact_score":%s,"score":%s,"evidence":{"clean_runs":%s,"faulted_runs":%s,"total_runs":%s,"resolved_cases":%s,"archived_cases":%s,"progress_cases":%s,"verification_cases":%s,"case_slugs":%s},"because":%s}' \
         "$(printf '%s' "$combo_key" | json_escape)" \
         "$steps_json" \
         "$step_count" \
@@ -949,22 +1177,36 @@ cmd_combos() {
         "$clean_rate" \
         "$fault_rate" \
         "$avg_duration_ms" \
-        "$score" \
+        "$telemetry_score" \
+        "$case_score" \
+        "$combined_score" \
         "$clean_runs" \
         "$faulted_runs" \
         "$occurrences" \
+        "$resolved_cases" \
+        "$archived_cases" \
+        "$progress_cases" \
+        "$verification_cases" \
+        "$case_slugs_json" \
         "$because_json"
     done <<<"$combo_rows"
     printf '],"total_combos":%s}\n' "$total_rows"
-    else
-      echo "$(metric_title 'fmetrics combos')"
-      echo "$(metric_rule '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')"
-      printf "  %-30s %6s %6s %8s %10s\n" "Combo" "Runs" "Clean" "Fault" "Avg Time"
-      echo "$(metric_rule '  ─────────────────────────────────────────────────────────────────────────────────────────────')"
+  else
+    echo "$(metric_title 'fmetrics combos')"
+    echo "$(metric_rule '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')"
+    printf "  %-30s %6s %6s %8s %10s %8s\n" "Combo" "Runs" "Clean" "Fault" "Avg Time" "Impact"
+    echo "$(metric_rule '  ─────────────────────────────────────────────────────────────────────────────────────────────')"
     local combo_key step_count occurrences clean_runs faulted_runs avg_duration_ms
-    while IFS='|' read -r combo_key step_count occurrences clean_runs faulted_runs avg_duration_ms; do
-      printf "  %-30s %6s %6s %8s %10s\n" \
-        "${combo_key:0:30}" "$occurrences" "$clean_runs" "$faulted_runs" "$(human_ms "$avg_duration_ms")"
+    local resolved_cases archived_cases progress_cases verification_cases case_slugs_csv
+    while IFS='|' read -r combo_key step_count occurrences clean_runs faulted_runs avg_duration_ms resolved_cases archived_cases progress_cases verification_cases case_slugs_csv; do
+      local case_score
+      case_score=$(case_impact_score "$resolved_cases" "$archived_cases" "$progress_cases" "$verification_cases")
+      printf "  %-30s %6s %6s %8s %10s %8s\n" \
+        "${combo_key:0:30}" "$occurrences" "$clean_runs" "$faulted_runs" "$(human_ms "$avg_duration_ms")" "$case_score"
+      if (( resolved_cases + progress_cases + verification_cases + archived_cases > 0 )); then
+        printf "    case: resolved %s, progress %s, verified %s, archived %s\n" \
+          "$resolved_cases" "$progress_cases" "$verification_cases" "$archived_cases"
+      fi
     done <<<"$combo_rows"
   fi
 }
@@ -981,8 +1223,8 @@ cmd_recommend() {
   [[ -n "$safe_after" ]] || die "--after requires at least one tool"
   prefix_key="${safe_after//,/>}"
 
-  local where_clauses=("prefix_key='$prefix_key'")
-  [[ -n "$safe_project" ]] && where_clauses+=("project_name='$safe_project'")
+local where_clauses=("base.prefix_key='$prefix_key'")
+[[ -n "$safe_project" ]] && where_clauses+=("base.project_name='$safe_project'")
 
   local where=""
   if (( ${#where_clauses[@]} > 0 )); then
@@ -994,15 +1236,139 @@ cmd_recommend() {
     where="WHERE $joined"
   fi
 
-  local recommendation_rows total_samples
-  recommendation_rows=$(sqlite3 -separator '|' "$DB_FILE" "SELECT next_tool, support_count, clean_run_count, faulted_run_count, avg_duration_ms FROM combo_next_stats_v1 $where ORDER BY support_count DESC, clean_run_count DESC, faulted_run_count ASC, avg_duration_ms ASC, next_tool ASC LIMIT $LIMIT;" 2>/dev/null) || recommendation_rows=""
-  total_samples=$(sqlite3 "$DB_FILE" "SELECT COALESCE(SUM(support_count), 0) FROM combo_next_stats_v1 $where;" 2>/dev/null) || total_samples=0
+  local recommendation_rows total_samples case_db
+  case_db="$FSUITE_DIR/fcase.db"
+  total_samples=$(sqlite3 "$DB_FILE" "SELECT COALESCE(SUM(base.support_count), 0) FROM combo_next_stats_v1 base $where;" 2>/dev/null) || total_samples=0
   [[ "$total_samples" =~ ^[0-9]+$ ]] || total_samples=0
+
+if fcase_replay_ready "$case_db"; then
+local case_db_sql
+local legacy_project_map_sql
+case_db_sql="${case_db//\'/\'\'}"
+legacy_project_map_sql="$(case_project_map_cte_sql "$case_db")"
+recommendation_rows="$(
+sqlite3 -separator '|' "$DB_FILE" 2>/dev/null <<SQL
+ATTACH DATABASE '$case_db_sql' AS case_db;
+WITH verification_cases AS (
+SELECT case_id, 1 AS has_verification
+FROM case_db.events
+WHERE event_type = 'verification'
+GROUP BY case_id
+),
+legacy_project_map AS (
+$legacy_project_map_sql
+),
+replay_case_meta AS (
+SELECT
+r.id AS replay_id,
+r.case_id,
+COALESCE(MAX(t.project_name), MAX(legacy_project_map.project_name), '') AS project_name,
+c.slug,
+CASE WHEN COALESCE(c.resolved_at, '') != '' OR c.status = 'resolved' THEN 1 ELSE 0 END AS resolved_case,
+CASE WHEN COALESCE(c.archived_at, '') != '' OR c.status = 'archived' THEN 1 ELSE 0 END AS archived_case,
+    CASE WHEN COALESCE(c.next_move, '') != '' THEN 1 ELSE 0 END AS progress_case,
+    COALESCE(vc.has_verification, 0) AS verification_case
+FROM case_db.replays r
+JOIN case_db.cases c ON c.id = r.case_id
+LEFT JOIN case_db.replay_steps rs ON rs.replay_id = r.id
+LEFT JOIN telemetry t ON t.run_id = rs.telemetry_run_id
+LEFT JOIN legacy_project_map ON legacy_project_map.replay_id = r.id
+LEFT JOIN verification_cases vc ON vc.case_id = r.case_id
+GROUP BY r.id, r.case_id, c.slug, c.status, c.resolved_at, c.archived_at, c.next_move, vc.has_verification
+),
+replay_prefix_edges AS (
+  SELECT
+    rs.replay_id,
+    meta.project_name,
+    (
+      SELECT group_concat(tool, '>')
+      FROM (
+        SELECT prefix.tool AS tool
+        FROM case_db.replay_steps prefix
+        WHERE prefix.replay_id = rs.replay_id
+          AND prefix.order_num <= rs.order_num
+        ORDER BY prefix.order_num
+      )
+    ) AS prefix_key,
+    next_rs.tool AS next_tool,
+    meta.case_id,
+    meta.slug,
+    meta.resolved_case,
+    meta.archived_case,
+    meta.progress_case,
+    meta.verification_case
+  FROM case_db.replay_steps rs
+  JOIN case_db.replay_steps next_rs
+    ON next_rs.replay_id = rs.replay_id
+   AND next_rs.order_num = rs.order_num + 1
+  JOIN replay_case_meta meta ON meta.replay_id = rs.replay_id
+),
+case_next_stats AS (
+  SELECT
+    project_name,
+    prefix_key,
+    next_tool,
+    COUNT(DISTINCT CASE WHEN resolved_case = 1 THEN case_id END) AS resolved_cases,
+    COUNT(DISTINCT CASE WHEN archived_case = 1 THEN case_id END) AS archived_cases,
+    COUNT(DISTINCT CASE WHEN progress_case = 1 THEN case_id END) AS progress_cases,
+    COUNT(DISTINCT CASE WHEN verification_case = 1 THEN case_id END) AS verification_cases,
+    COALESCE(group_concat(DISTINCT slug), '') AS case_slugs
+  FROM replay_prefix_edges
+  WHERE COALESCE(prefix_key, '') != ''
+  GROUP BY project_name, prefix_key, next_tool
+)
+SELECT
+  base.next_tool,
+  base.support_count,
+  base.clean_run_count,
+  base.faulted_run_count,
+  base.avg_duration_ms,
+  COALESCE(case_stats.resolved_cases, 0),
+  COALESCE(case_stats.archived_cases, 0),
+  COALESCE(case_stats.progress_cases, 0),
+  COALESCE(case_stats.verification_cases, 0),
+  COALESCE(case_stats.case_slugs, '')
+FROM combo_next_stats_v1 base
+LEFT JOIN case_next_stats case_stats
+  ON case_stats.project_name = base.project_name
+ AND case_stats.prefix_key = base.prefix_key
+ AND case_stats.next_tool = base.next_tool
+$where
+ORDER BY (
+  CASE
+    WHEN (base.clean_run_count + base.faulted_run_count) <= 0 THEN 0
+    ELSE CAST(
+      ((1.0 * base.clean_run_count / (base.clean_run_count + base.faulted_run_count)) * 60)
+      + (CASE WHEN base.support_count > 5 THEN 25 ELSE base.support_count * 5 END)
+      + (CASE WHEN base.avg_duration_ms <= 1000 THEN 10 WHEN base.avg_duration_ms <= 5000 THEN 5 ELSE 0 END)
+      - ((1.0 * base.faulted_run_count / (base.clean_run_count + base.faulted_run_count)) * 25)
+      AS INTEGER
+    )
+  END
+  + (COALESCE(case_stats.resolved_cases, 0) * 20)
+  + (COALESCE(case_stats.verification_cases, 0) * 8)
+  + (COALESCE(case_stats.progress_cases, 0) * 6)
+  + (COALESCE(case_stats.archived_cases, 0) * 4)
+) DESC,
+COALESCE(case_stats.resolved_cases, 0) DESC,
+COALESCE(case_stats.progress_cases, 0) DESC,
+base.support_count DESC,
+base.clean_run_count DESC,
+base.faulted_run_count ASC,
+base.avg_duration_ms ASC,
+base.next_tool ASC
+LIMIT $LIMIT;
+DETACH DATABASE case_db;
+SQL
+)" || recommendation_rows=""
+else
+recommendation_rows=$(sqlite3 -separator '|' "$DB_FILE" "SELECT base.next_tool, base.support_count, base.clean_run_count, base.faulted_run_count, base.avg_duration_ms, 0, 0, 0, 0, '' FROM combo_next_stats_v1 base $where ORDER BY base.support_count DESC, base.clean_run_count DESC, base.faulted_run_count ASC, base.avg_duration_ms ASC, base.next_tool ASC LIMIT $LIMIT;" 2>/dev/null) || recommendation_rows=""
+fi
 
   if [[ -z "$recommendation_rows" ]]; then
     local details_json
-      details_json=$(printf '"project":"%s","after":%s,"limit":%s' \
-        "$(printf '%s' "$safe_project" | json_escape)" \
+    details_json=$(printf '"project":"%s","after":%s,"limit":%s' \
+      "$(printf '%s' "$safe_project" | json_escape)" \
         "$(delimited_to_json_array "$safe_after" ',')" \
         "$LIMIT")
     if [[ "$OUTPUT" == "json" ]]; then
@@ -1020,18 +1386,24 @@ cmd_recommend() {
       "$(printf '%s' "$safe_project" | json_escape)" \
       "$LIMIT"
     local first=1 next_tool support_count clean_runs faulted_runs avg_duration_ms
-    while IFS='|' read -r next_tool support_count clean_runs faulted_runs avg_duration_ms; do
+    local resolved_cases archived_cases progress_cases verification_cases case_slugs_csv
+    while IFS='|' read -r next_tool support_count clean_runs faulted_runs avg_duration_ms resolved_cases archived_cases progress_cases verification_cases case_slugs_csv; do
       [[ -n "$next_tool" ]] || continue
       local fault_rate clean_rate confidence because_json resulting_combo rejected_samples
+      local telemetry_score case_score combined_score case_slugs_json
       fault_rate=$(decimal_ratio "$faulted_runs" "$support_count")
       clean_rate=$(decimal_ratio "$clean_runs" "$support_count")
       confidence=$(combo_confidence "$support_count" "$faulted_runs")
-      because_json=$(recommend_because_json "$support_count" "$faulted_runs" "$next_tool")
+      telemetry_score=$(combo_score "$support_count" "$clean_runs" "$faulted_runs" "$avg_duration_ms")
+      case_score=$(case_impact_score "$resolved_cases" "$archived_cases" "$progress_cases" "$verification_cases")
+      combined_score=$(( telemetry_score + case_score ))
+      case_slugs_json=$(delimited_to_json_array "$case_slugs_csv" ',')
+      because_json=$(recommend_because_json "$support_count" "$faulted_runs" "$next_tool" "$resolved_cases" "$archived_cases" "$progress_cases" "$verification_cases" "$case_slugs_csv")
       resulting_combo="$prefix_key>$next_tool"
       rejected_samples=$(( total_samples - support_count ))
       (( first )) || printf ','
       first=0
-      printf '{"next_step":"%s","resulting_combo":"%s","support":%s,"clean_run_rate":%s,"fault_rate":%s,"avg_duration_ms":%s,"confidence":"%s","evidence":{"clean_runs":%s,"faulted_runs":%s,"total_runs":%s,"rejected_samples":%s},"because":%s}' \
+      printf '{"next_step":"%s","resulting_combo":"%s","support":%s,"clean_run_rate":%s,"fault_rate":%s,"avg_duration_ms":%s,"confidence":"%s","telemetry_score":%s,"case_impact_score":%s,"score":%s,"evidence":{"clean_runs":%s,"faulted_runs":%s,"total_runs":%s,"rejected_samples":%s,"resolved_cases":%s,"archived_cases":%s,"progress_cases":%s,"verification_cases":%s,"case_slugs":%s},"because":%s}' \
         "$(printf '%s' "$next_tool" | json_escape)" \
         "$(printf '%s' "$resulting_combo" | json_escape)" \
         "$support_count" \
@@ -1039,23 +1411,38 @@ cmd_recommend() {
         "$fault_rate" \
         "$avg_duration_ms" \
         "$confidence" \
+        "$telemetry_score" \
+        "$case_score" \
+        "$combined_score" \
         "$clean_runs" \
         "$faulted_runs" \
         "$support_count" \
         "$rejected_samples" \
+        "$resolved_cases" \
+        "$archived_cases" \
+        "$progress_cases" \
+        "$verification_cases" \
+        "$case_slugs_json" \
         "$because_json"
     done <<<"$recommendation_rows"
     printf '],"total_historical_samples":%s}\n' "$total_samples"
-    else
-      echo "$(metric_title 'fmetrics recommend')"
-      echo "$(metric_rule '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')"
-      printf "  %s %s\n" "$(metric_label 'Prefix:')" "$prefix_key"
-      printf "  %-18s %8s %8s %10s %12s\n" "Next Tool" "Support" "Faults" "Avg Time" "Confidence"
-      echo "$(metric_rule '  ─────────────────────────────────────────────────────────────────────────────────────────────')"
+  else
+    echo "$(metric_title 'fmetrics recommend')"
+    echo "$(metric_rule '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')"
+    printf "  %s %s\n" "$(metric_label 'Prefix:')" "$prefix_key"
+    printf "  %-18s %8s %8s %10s %12s %8s\n" "Next Tool" "Support" "Faults" "Avg Time" "Confidence" "Impact"
+    echo "$(metric_rule '  ─────────────────────────────────────────────────────────────────────────────────────────────')"
     local next_tool support_count clean_runs faulted_runs avg_duration_ms
-    while IFS='|' read -r next_tool support_count clean_runs faulted_runs avg_duration_ms; do
-      printf "  %-18s %8s %8s %10s %12s\n" \
-        "$next_tool" "$support_count" "$faulted_runs" "$(human_ms "$avg_duration_ms")" "$(combo_confidence "$support_count" "$faulted_runs")"
+    local resolved_cases archived_cases progress_cases verification_cases case_slugs_csv
+    while IFS='|' read -r next_tool support_count clean_runs faulted_runs avg_duration_ms resolved_cases archived_cases progress_cases verification_cases case_slugs_csv; do
+      local case_score
+      case_score=$(case_impact_score "$resolved_cases" "$archived_cases" "$progress_cases" "$verification_cases")
+      printf "  %-18s %8s %8s %10s %12s %8s\n" \
+        "$next_tool" "$support_count" "$faulted_runs" "$(human_ms "$avg_duration_ms")" "$(combo_confidence "$support_count" "$faulted_runs")" "$case_score"
+      if (( resolved_cases + progress_cases + verification_cases + archived_cases > 0 )); then
+        printf "    case: resolved %s, progress %s, verified %s, archived %s\n" \
+          "$resolved_cases" "$progress_cases" "$verification_cases" "$archived_cases"
+      fi
     done <<<"$recommendation_rows"
   fi
 }

@@ -104,6 +104,65 @@ INSERT INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,durati
 SQL
 }
 
+seed_combo_case_fixture_db() {
+  mkdir -p "$HOME/.fsuite"
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db" "$HOME/.fsuite/fcase.db"
+  : > "$HOME/.fsuite/telemetry.jsonl"
+  run_fmetrics import >/dev/null 2>&1 || true
+
+  FSUITE_TELEMETRY=0 "${SCRIPT_DIR}/../fcase" init combo-case-resolved --goal "Resolved combo case" >/dev/null 2>&1 || true
+  FSUITE_TELEMETRY=0 "${SCRIPT_DIR}/../fcase" init combo-case-progress --goal "Progress combo case" >/dev/null 2>&1 || true
+  FSUITE_TELEMETRY=0 "${SCRIPT_DIR}/../fcase" init combo-case-telemetry --goal "Telemetry-only combo case" >/dev/null 2>&1 || true
+  FSUITE_TELEMETRY=0 "${SCRIPT_DIR}/../fcase" next combo-case-progress --body "Try fsearch after ftree" >/dev/null 2>&1 || true
+  FSUITE_TELEMETRY=0 "${SCRIPT_DIR}/../fcase" resolve combo-case-resolved --summary "Resolved after ftree -> fcontent" >/dev/null 2>&1 || true
+
+  local resolved_case_id progress_case_id telemetry_case_id
+  resolved_case_id=$(sqlite3 "$HOME/.fsuite/fcase.db" "SELECT id FROM cases WHERE slug='combo-case-resolved';")
+  progress_case_id=$(sqlite3 "$HOME/.fsuite/fcase.db" "SELECT id FROM cases WHERE slug='combo-case-progress';")
+  telemetry_case_id=$(sqlite3 "$HOME/.fsuite/fcase.db" "SELECT id FROM cases WHERE slug='combo-case-telemetry';")
+
+  [[ -n "$resolved_case_id" ]] || return 1
+  [[ -n "$progress_case_id" ]] || return 1
+  [[ -n "$telemetry_case_id" ]] || return 1
+
+  mkdir -p "$HOME/work/combo-impact/src"
+  : > "$HOME/work/combo-impact/Makefile"
+  local combo_project_cwd combo_project_cwd_sql
+  combo_project_cwd="$HOME/work/combo-impact/src"
+  combo_project_cwd_sql="${combo_project_cwd//\'/\'\'}"
+
+  sqlite3 "$HOME/.fsuite/telemetry.db" <<'SQL'
+DELETE FROM telemetry;
+INSERT INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend,run_id) VALUES
+  ('2026-03-10T00:10:00Z','ftree','2.1.0','tree','resolved-tree','combo-impact',11,0,3,42,4200,'-o json','tree','resolved-run'),
+  ('2026-03-10T00:10:01Z','fcontent','2.1.0','read','resolved-content','combo-impact',14,0,3,42,4200,'-o json','content','resolved-run'),
+  ('2026-03-10T00:10:02Z','ftree','2.1.0','tree','telemetry-tree-1','combo-impact',12,0,3,42,4200,'-o json','tree','telemetry-run-1'),
+  ('2026-03-10T00:10:03Z','fsearch','2.1.0','read','telemetry-search-1','combo-impact',17,0,3,42,4200,'-o json','search','telemetry-run-1'),
+  ('2026-03-10T00:10:04Z','ftree','2.1.0','tree','telemetry-tree-2','combo-impact',13,0,3,42,4200,'-o json','tree','telemetry-run-2'),
+  ('2026-03-10T00:10:05Z','fsearch','2.1.0','read','telemetry-search-2','combo-impact',18,0,3,42,4200,'-o json','search','telemetry-run-2');
+SQL
+
+sqlite3 "$HOME/.fsuite/fcase.db" <<SQL
+DELETE FROM replay_step_links;
+DELETE FROM replay_steps;
+DELETE FROM replays;
+INSERT INTO replays (id, case_id, label, status, origin, fsuite_version, created_at, updated_at, actor, parent_replay_id, notes) VALUES
+(1, $resolved_case_id, 'resolved replay', 'canonical', 'recorded', '2.3.0', '2026-03-10T00:10:00Z', '2026-03-10T00:10:00Z', 'test', NULL, ''),
+(2, $progress_case_id, 'progress replay', 'canonical', 'recorded', '2.3.0', '2026-03-10T00:10:00Z', '2026-03-10T00:10:00Z', 'test', NULL, ''),
+(3, $telemetry_case_id, 'telemetry replay', 'canonical', 'recorded', '2.3.0', '2026-03-10T00:10:00Z', '2026-03-10T00:10:00Z', 'test', NULL, '');
+
+INSERT INTO replay_steps (id, replay_id, order_num, tool, argv_json, cwd, mode, purpose, provenance, exit_code, duration_ms, started_at, telemetry_run_id, result_summary, error_excerpt) VALUES
+(1, 1, 1, 'ftree', '["ftree","/tmp/resolved"]', '$combo_project_cwd_sql', 'read_only', '', 'recorded', 0, 11, '2026-03-10T00:10:00Z', NULL, '', ''),
+(2, 1, 2, 'fcontent', '["fcontent","/tmp/resolved"]', '$combo_project_cwd_sql', 'read_only', '', 'recorded', 0, 14, '2026-03-10T00:10:01Z', NULL, '', ''),
+(3, 2, 1, 'ftree', '["ftree","/tmp/progress"]', '$combo_project_cwd_sql', 'read_only', '', 'recorded', 0, 11, '2026-03-10T00:10:00Z', NULL, '', ''),
+(4, 2, 2, 'fcontent', '["fcontent","/tmp/progress"]', '$combo_project_cwd_sql', 'read_only', '', 'recorded', 0, 14, '2026-03-10T00:10:01Z', NULL, '', ''),
+(5, 3, 1, 'ftree', '["ftree","/tmp/telemetry"]', '$combo_project_cwd_sql', 'read_only', '', 'recorded', 0, 12, '2026-03-10T00:10:02Z', 'telemetry-run-1', '', ''),
+(6, 3, 2, 'fsearch', '["fsearch","/tmp/telemetry"]', '$combo_project_cwd_sql', 'read_only', '', 'recorded', 0, 17, '2026-03-10T00:10:03Z', 'telemetry-run-1', '', '');
+SQL
+
+  run_fmetrics clean --days 9999 >/dev/null 2>&1
+}
+
 seed_combo_fixture_db() {
   mkdir -p "$HOME/.fsuite"
   rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
@@ -1077,6 +1136,44 @@ test_v15_project_name_fallback() {
   fi
 }
 
+test_v15_combo_case_impact_ranking() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "fmetrics combo case-impact test skipped (sqlite3 not available)"
+    return 0
+  fi
+
+  seed_combo_case_fixture_db
+
+  local combos_output recommend_output
+  combos_output=$(run_fmetrics combos --project combo-impact -o json 2>&1) || true
+  recommend_output=$(run_fmetrics recommend --after ftree --project combo-impact -o json 2>&1) || true
+
+  if python3 -c '
+import json, sys
+
+combos = json.loads(sys.argv[1])
+recommend = json.loads(sys.argv[2])
+
+top_combo = combos["combos"][0]
+top_recommend = recommend["recommendations"][0]
+
+assert top_combo["combo_key"] == "ftree>fcontent"
+assert top_combo["evidence"]["resolved_cases"] == 1
+assert top_combo["evidence"]["progress_cases"] == 1
+assert top_combo["case_impact_score"] > 0
+
+assert recommend["prefix"] == ["ftree"]
+assert top_recommend["next_step"] == "fcontent"
+assert top_recommend["evidence"]["resolved_cases"] == 1
+assert top_recommend["evidence"]["progress_cases"] == 1
+assert top_recommend["case_impact_score"] > 0
+' "$combos_output" "$recommend_output" 2>/dev/null; then
+    pass "fmetrics combos and recommend elevate case-backed outcomes without changing the JSON contract"
+  else
+    fail "fmetrics combos and recommend should favor case-backed outcomes over telemetry-only support" "Combos: $combos_output ; Recommend: $recommend_output"
+  fi
+}
+
 test_harness_uses_sandbox_home() {
   if [[ -n "${ORIGINAL_HOME}" ]] && [[ "$HOME" != "$ORIGINAL_HOME" ]] && [[ -d "$HOME/.fsuite" ]]; then
     pass "Telemetry tests run inside a sandboxed HOME"
@@ -1188,12 +1285,16 @@ main() {
   run_test "fmetrics predict rejects --mode without --tool ftree" test_v16_predict_rejects_mode_without_ftree_tool
   run_test "fmetrics predict rejects --mode with non-ftree tool" test_v16_predict_rejects_mode_with_non_ftree_tool
 
-  echo ""
-  echo "== v1.5.0+: Project Name Inference =="
-  run_test "Walk-up heuristic across all tools" test_v15_project_name_walkup
-  run_test "Basename fallback without markers" test_v15_project_name_fallback
+    echo ""
+    echo "== v1.5.0+: Project Name Inference =="
+    run_test "Walk-up heuristic across all tools" test_v15_project_name_walkup
+    run_test "Basename fallback without markers" test_v15_project_name_fallback
 
-  teardown
+    echo ""
+    echo "== v1.5.1: Case-Impact Combo Analytics =="
+    run_test "fmetrics combos and recommend use case outcomes" test_v15_combo_case_impact_ranking
+
+    teardown
 
   echo ""
   echo "======================================"

@@ -98,7 +98,8 @@ _fsuite_record_telemetry() {
   fi
   local _safe_flags
   _safe_flags=$(printf '%s' "${_TELEM_FLAGS# }" | tr -cd '[:alnum:] _./-' | head -c 200)
-  local _telem_line="{\"timestamp\":\"$ts\",\"run_id\":\"${_TELEM_START_MS}_$$\",\"tool\":\"ftree\",\"version\":\"$VERSION\",\"mode\":\"$mode\",\"path_hash\":\"$ph\",\"project_name\":\"$pn\",\"duration_ms\":$dur_ms,\"exit_code\":$_TELEM_EXIT_CODE,\"depth\":${DEPTH:-3},\"items_scanned\":$items,\"bytes_scanned\":${_TELEM_BYTES},\"flags\":\"$_safe_flags\",\"backend\":\"${mode}\"${_hw_fields}}"
+  local _telem_run_id="${FSUITE_TELEMETRY_RUN_ID:-${_TELEM_START_MS}_$$}"
+  local _telem_line="{\"timestamp\":\"$ts\",\"run_id\":\"${_telem_run_id}\",\"tool\":\"ftree\",\"version\":\"$VERSION\",\"mode\":\"$mode\",\"path_hash\":\"$ph\",\"project_name\":\"$pn\",\"duration_ms\":$dur_ms,\"exit_code\":$_TELEM_EXIT_CODE,\"depth\":${DEPTH:-3},\"items_scanned\":$items,\"bytes_scanned\":${_TELEM_BYTES},\"flags\":\"$_safe_flags\",\"backend\":\"${mode}\"${_hw_fields}}"
   # Atomic append with flock to prevent interleaved writes
   {
     flock -x 200 2>/dev/null

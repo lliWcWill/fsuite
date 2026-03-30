@@ -1197,7 +1197,8 @@ _fsuite_record_telemetry() {
   local _safe_flags
   _safe_flags=$(printf '%s' "${_TELEM_FLAGS# }" | tr -cd '[:alnum:] _./:=-' | head -c 200)
   local _telem_line
-  _telem_line="{\"timestamp\":\"$ts\",\"run_id\":\"${_TELEM_START_MS}_$$\",\"tool\":\"fread\",\"version\":\"$VERSION\",\"mode\":\"$mode_hint\",\"path_hash\":\"$ph\",\"project_name\":\"$pn\",\"duration_ms\":$dur_ms,\"exit_code\":$_TELEM_EXIT_CODE,\"depth\":-1,\"items_scanned\":${TOTAL_FILES_READ:-0},\"bytes_scanned\":${TOTAL_BYTES_READ:-0},\"flags\":\"$_safe_flags\",\"backend\":\"read\"${_hw_fields}}"
+  local _telem_run_id="${FSUITE_TELEMETRY_RUN_ID:-${_TELEM_START_MS}_$$}"
+  _telem_line="{\"timestamp\":\"$ts\",\"run_id\":\"${_telem_run_id}\",\"tool\":\"fread\",\"version\":\"$VERSION\",\"mode\":\"$mode_hint\",\"path_hash\":\"$ph\",\"project_name\":\"$pn\",\"duration_ms\":$dur_ms,\"exit_code\":$_TELEM_EXIT_CODE,\"depth\":-1,\"items_scanned\":${TOTAL_FILES_READ:-0},\"bytes_scanned\":${TOTAL_BYTES_READ:-0},\"flags\":\"$_safe_flags\",\"backend\":\"read\"${_hw_fields}}"
 
   {
     flock -x 200 2>/dev/null

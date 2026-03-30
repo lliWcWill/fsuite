@@ -126,7 +126,8 @@ _fsuite_record_telemetry() {
 
   local safe_flags
   safe_flags=$(printf '%s' "${_TELEM_FLAGS# }" | tr -cd '[:alnum:] _./:=-' | head -c 200)
-  local line="{\"timestamp\":\"$ts\",\"run_id\":\"${_TELEM_START_MS}_$$\",\"tool\":\"fedit\",\"version\":\"$VERSION\",\"mode\":\"$MODE\",\"path_hash\":\"$ph\",\"project_name\":\"$pn\",\"duration_ms\":$dur_ms,\"exit_code\":$_TELEM_EXIT_CODE,\"depth\":-1,\"items_scanned\":${TOTAL_FILES_READ:-0},\"bytes_scanned\":${TOTAL_BYTES_READ:-0},\"flags\":\"$safe_flags\",\"backend\":\"perl\"${hw_fields}}"
+  local telem_run_id="${FSUITE_TELEMETRY_RUN_ID:-${_TELEM_START_MS}_$$}"
+  local line="{\"timestamp\":\"$ts\",\"run_id\":\"${telem_run_id}\",\"tool\":\"fedit\",\"version\":\"$VERSION\",\"mode\":\"$MODE\",\"path_hash\":\"$ph\",\"project_name\":\"$pn\",\"duration_ms\":$dur_ms,\"exit_code\":$_TELEM_EXIT_CODE,\"depth\":-1,\"items_scanned\":${TOTAL_FILES_READ:-0},\"bytes_scanned\":${TOTAL_BYTES_READ:-0},\"flags\":\"$safe_flags\",\"backend\":\"perl\"${hw_fields}}"
 
   {
     flock -x 200 2>/dev/null
