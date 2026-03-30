@@ -857,34 +857,6 @@ cmd_rebuild() {
     echo "  Rebuilt at: ${rebuilt_at:-unknown}"
   fi
 }
-cmd_rebuild() {
-ensure_db
-rebuild_analytics
-
-local telemetry_count run_facts_count combo_count next_count dirty rebuilt_at
-telemetry_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM telemetry;" 2>/dev/null) || telemetry_count=0
-run_facts_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM run_facts_v1;" 2>/dev/null) || run_facts_count=0
-combo_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM combo_stats_v1;" 2>/dev/null) || combo_count=0
-next_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM combo_next_stats_v1;" 2>/dev/null) || next_count=0
-dirty=$(sqlite3 "$DB_FILE" "SELECT value FROM analytics_meta WHERE key='analytics_dirty';" 2>/dev/null) || dirty=0
-rebuilt_at=$(sqlite3 "$DB_FILE" "SELECT value FROM analytics_meta WHERE key='last_rebuilt_at';" 2>/dev/null) || rebuilt_at=""
-[[ "$telemetry_count" =~ ^[0-9]+$ ]] || telemetry_count=0
-[[ "$run_facts_count" =~ ^[0-9]+$ ]] || run_facts_count=0
-[[ "$combo_count" =~ ^[0-9]+$ ]] || combo_count=0
-[[ "$next_count" =~ ^[0-9]+$ ]] || next_count=0
-[[ "$dirty" =~ ^[01]$ ]] || dirty=0
-
-if [[ "$OUTPUT" == "json" ]]; then
-echo "{\"tool\":\"fmetrics\",\"version\":\"$VERSION\",\"subcommand\":\"rebuild\",\"telemetry_rows\":$telemetry_count,\"run_facts\":$run_facts_count,\"combos\":$combo_count,\"next_edges\":$next_count,\"analytics_dirty\":$dirty,\"rebuilt_at\":\"$rebuilt_at\",\"db_path\":\"$DB_FILE\"}"
-else
-echo "$(metric_title 'Rebuilt analytics tables')"
-echo "  Telemetry rows: $telemetry_count"
-echo "  Run facts: $run_facts_count"
-echo "  Combos: $combo_count"
-echo "  Next-step edges: $next_count"
-echo "  Rebuilt at: ${rebuilt_at:-unknown}"
-fi
-}
 
 # -------------------------
 # Subcommand: stats
