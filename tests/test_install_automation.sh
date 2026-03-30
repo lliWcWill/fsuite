@@ -3,7 +3,7 @@
 #
 # Covers:
 #   1. Dependency detection (check_deps output during install, --skip-deps)
-#   2. Source install flow (all 12 tools, all 5 share files, permissions)
+#   2. Source install flow (all 12 tools, share helper files, permissions)
 #   3. MCP setup (npm install, node -c syntax check, --mcp-only flag)
 #   4. Agent configuration (Claude Code mcp.json, Codex config.toml, idempotency)
 #   5. Uninstall (tools removed, share files removed, MCP configs removed)
@@ -266,7 +266,7 @@ test_source_install_all_6_share_files_present() {
   done
 
   if (( ${#missing[@]} == 0 )); then
-    pass "All 5 share files are present in share/fsuite/ after source install"
+    pass "All ${#EXPECTED_SHARE_FILES[@]} share files are present in share/fsuite/ after source install"
   else
     fail "Source install is missing share files" "missing: ${missing[*]}"
   fi
