@@ -416,30 +416,32 @@ printf '%s' "$sql"
 }
 
 ensure_analytics_populated() {
-ensure_db
-local telemetry_count analytics_version analytics_dirty run_facts_count combo_count next_count
-telemetry_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM telemetry;" 2>/dev/null) || telemetry_count=0
-[[ "$telemetry_count" =~ ^[0-9]+$ ]] || telemetry_count=0
-analytics_version=$(sqlite3 "$DB_FILE" "SELECT value FROM analytics_meta WHERE key='analytics_version';" 2>/dev/null) || analytics_version=""
-analytics_dirty=$(sqlite3 "$DB_FILE" "SELECT value FROM analytics_meta WHERE key='analytics_dirty';" 2>/dev/null) || analytics_dirty=""
-run_facts_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM run_facts_v1;" 2>/dev/null) || run_facts_count=0
-combo_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM combo_stats_v1;" 2>/dev/null) || combo_count=0
-next_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM combo_next_stats_v1;" 2>/dev/null) || next_count=0
-[[ "$analytics_dirty" =~ ^[01]$ ]] || analytics_dirty=0
-[[ "$run_facts_count" =~ ^[0-9]+$ ]] || run_facts_count=0
-[[ "$combo_count" =~ ^[0-9]+$ ]] || combo_count=0
-[[ "$next_count" =~ ^[0-9]+$ ]] || next_count=0
-if (( telemetry_count == 0 )); then
-if [[ "$analytics_version" != "2" ]] || [[ "$analytics_dirty" == "1" ]] || (( run_facts_count > 0 )) || (( combo_count > 0 )) || (( next_count > 0 )); then
-rebuild_analytics
-fi
-return 0
-fi
-if [[ "$analytics_version" != "2" ]] || [[ "$analytics_dirty" == "1" ]] || (( run_facts_count == 0 )) || (( combo_count == 0 )) || (( next_count == 0 )); then
-rebuild_analytics
-fi
-}
+  ensure_db
+  local telemetry_count analytics_version analytics_dirty run_facts_count combo_count next_count
+  telemetry_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM telemetry;" 2>/dev/null) || telemetry_count=0
+  [[ "$telemetry_count" =~ ^[0-9]+$ ]] || telemetry_count=0
+  analytics_version=$(sqlite3 "$DB_FILE" "SELECT value FROM analytics_meta WHERE key='analytics_version';" 2>/dev/null) || analytics_version=""
+  analytics_dirty=$(sqlite3 "$DB_FILE" "SELECT value FROM analytics_meta WHERE key='analytics_dirty';" 2>/dev/null) || analytics_dirty=""
+  run_facts_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM run_facts_v1;" 2>/dev/null) || run_facts_count=0
+  combo_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM combo_stats_v1;" 2>/dev/null) || combo_count=0
+  next_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM combo_next_stats_v1;" 2>/dev/null) || next_count=0
+  [[ "$analytics_dirty" =~ ^[01]$ ]] || analytics_dirty=0
+  [[ "$run_facts_count" =~ ^[0-9]+$ ]] || run_facts_count=0
+  [[ "$combo_count" =~ ^[0-9]+$ ]] || combo_count=0
+  [[ "$next_count" =~ ^[0-9]+$ ]] || next_count=0
+  if (( telemetry_count == 0 )); then
+    # Empty stores only need a rebuild when stale derived rows are still hanging around.
+    if [[ "$analytics_version" != "2" ]] || [[ "$analytics_dirty" == "1" ]] || (( run_facts_count > 0 )) || (( combo_count > 0 )) || (( next_count > 0 )); then
+      rebuild_analytics
+    fi
+    return 0
+  fi
 
+  # Non-empty stores get rebuilt when analytics are stale or incomplete.
+  if [[ "$analytics_version" != "2" ]] || [[ "$analytics_dirty" == "1" ]] || (( run_facts_count == 0 )) || (( combo_count == 0 )) || (( next_count == 0 )); then
+    rebuild_analytics
+  fi
+}
 ensure_column() {
   local table="$1" column="$2" ddl="$3"
   local exists
@@ -784,50 +786,77 @@ EOF
 }
 
 # -------------------------
-# Subcommand: import
-# -------------------------
 cmd_import() {
-ensure_db
+  if [[ ! -f "$JSONL_FILE" ]]; then
+    if [[ "$OUTPUT" == "json" ]]; then
+      echo "{\"tool\":\"fmetrics\",\"version\":\"$VERSION\",\"subcommand\":\"import\",\"total_lines\":0,\"inserted\":0,\"skipped\":0,\"errors\":0,\"db_path\":\"$DB_FILE\",\"jsonl_path\":\"$JSONL_FILE\"}"
+    else
+      echo "No telemetry data found at $JSONL_FILE"
+      echo "Run fsuite tools (ftree, fsearch, fcontent) to generate telemetry."
+    fi
+    return 0
+  fi
 
-if [[ ! -f "$JSONL_FILE" ]]; then
-if [[ "$OUTPUT" == "json" ]]; then
-echo "{\"tool\":\"fmetrics\",\"version\":\"$VERSION\",\"subcommand\":\"import\",\"total_lines\":0,\"inserted\":0,\"skipped\":0,\"errors\":0,\"db_path\":\"$DB_FILE\",\"jsonl_path\":\"$JSONL_FILE\"}"
-else
-echo "No telemetry data found at $JSONL_FILE"
-echo "Run fsuite tools (ftree, fsearch, fcontent) to generate telemetry."
-fi
-return 0
-fi
+  ensure_db
+  has python3 || die 3 "python3 is required for import. Run: fmetrics --install-hints"
+  local import_script import_output total inserted skipped errors cursor_reset
+  import_script=$(_find_import_script 2>/dev/null) || import_script=""
+  [[ -n "$import_script" ]] || die 3 "fmetrics-import.py not found. Run: ./install.sh --user or set FSUITE_SHARE_DIR"
+  if ! import_output=$(python3 "$import_script" --db "$DB_FILE" --jsonl "$JSONL_FILE" 2>&1); then
+    die 1 "telemetry import failed: ${import_output:-<no output>}"
+  fi
+  total=$(json_get "$import_output" "total_lines") || total=0
+  inserted=$(json_get "$import_output" "inserted") || inserted=0
+  skipped=$(json_get "$import_output" "skipped") || skipped=0
+  errors=$(json_get "$import_output" "errors") || errors=0
+  cursor_reset=$(json_get "$import_output" "cursor_reset") || cursor_reset=0
 
-has python3 || die 3 "python3 is required for import. Run: fmetrics --install-hints"
-local import_script output total inserted skipped errors cursor_reset
-import_script=$(_find_import_script 2>/dev/null) || import_script=""
-[[ -n "$import_script" ]] || die 3 "fmetrics-import.py not found. Run: ./install.sh --user or set FSUITE_SHARE_DIR"
-output=$(python3 "$import_script" --db "$DB_FILE" --jsonl "$JSONL_FILE" 2>&1) || die "telemetry import failed: $output"
-total=$(json_get "$output" "total_lines") || total=0
-inserted=$(json_get "$output" "inserted") || inserted=0
-skipped=$(json_get "$output" "skipped") || skipped=0
-errors=$(json_get "$output" "errors") || errors=0
-cursor_reset=$(json_get "$output" "cursor_reset") || cursor_reset=0
-
-if [[ "$OUTPUT" == "json" ]]; then
-echo "$output"
-else
-echo "Importing telemetry data..."
-echo "  Processed $total lines"
-echo "  Inserted $inserted new records"
-echo "  Skipped $skipped duplicates"
-(( errors > 0 )) && echo "  Errors: $errors (malformed lines)"
-(( cursor_reset > 0 )) && echo "  Import cursor reset (telemetry file changed)"
-if (( inserted > 0 )); then
-echo "  Analytics marked dirty: run fmetrics rebuild now, or let combos/recommend rebuild on demand"
-fi
-local db_size
-db_size=$(du -h "$DB_FILE" 2>/dev/null | cut -f1) || db_size="unknown"
-echo "Database: $DB_FILE ($db_size)"
-fi
+  if [[ "$OUTPUT" == "json" ]]; then
+    echo "$import_output"
+  else
+    echo "Importing telemetry data..."
+    echo "  Processed $total lines"
+    echo "  Inserted $inserted new records"
+    echo "  Skipped $skipped duplicates"
+    (( errors > 0 )) && echo "  Errors: $errors (malformed lines)"
+    (( cursor_reset > 0 )) && echo "  Import cursor reset (telemetry file changed)"
+    if (( inserted > 0 )); then
+      echo "  Analytics marked dirty: run fmetrics rebuild now, or let combos/recommend rebuild on demand"
+    fi
+    local db_size
+    db_size=$(du -h "$DB_FILE" 2>/dev/null | cut -f1) || db_size="unknown"
+    echo "Database: $DB_FILE ($db_size)"
+  fi
 }
 
+cmd_rebuild() {
+  ensure_db
+  rebuild_analytics
+
+  local telemetry_count run_facts_count combo_count next_count dirty rebuilt_at
+  telemetry_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM telemetry;" 2>/dev/null) || telemetry_count=0
+  run_facts_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM run_facts_v1;" 2>/dev/null) || run_facts_count=0
+  combo_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM combo_stats_v1;" 2>/dev/null) || combo_count=0
+  next_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM combo_next_stats_v1;" 2>/dev/null) || next_count=0
+  dirty=$(sqlite3 "$DB_FILE" "SELECT value FROM analytics_meta WHERE key='analytics_dirty';" 2>/dev/null) || dirty=0
+  rebuilt_at=$(sqlite3 "$DB_FILE" "SELECT value FROM analytics_meta WHERE key='last_rebuilt_at';" 2>/dev/null) || rebuilt_at=""
+  [[ "$telemetry_count" =~ ^[0-9]+$ ]] || telemetry_count=0
+  [[ "$run_facts_count" =~ ^[0-9]+$ ]] || run_facts_count=0
+  [[ "$combo_count" =~ ^[0-9]+$ ]] || combo_count=0
+  [[ "$next_count" =~ ^[0-9]+$ ]] || next_count=0
+  [[ "$dirty" =~ ^[01]$ ]] || dirty=0
+
+  if [[ "$OUTPUT" == "json" ]]; then
+    echo "{\"tool\":\"fmetrics\",\"version\":\"$VERSION\",\"subcommand\":\"rebuild\",\"telemetry_rows\":$telemetry_count,\"run_facts\":$run_facts_count,\"combos\":$combo_count,\"next_edges\":$next_count,\"analytics_dirty\":$dirty,\"rebuilt_at\":\"$rebuilt_at\",\"db_path\":\"$DB_FILE\"}"
+  else
+    echo "$(metric_title 'Rebuilt analytics tables')"
+    echo "  Telemetry rows: $telemetry_count"
+    echo "  Run facts: $run_facts_count"
+    echo "  Combos: $combo_count"
+    echo "  Next-step edges: $next_count"
+    echo "  Rebuilt at: ${rebuilt_at:-unknown}"
+  fi
+}
 cmd_rebuild() {
 ensure_db
 rebuild_analytics

@@ -1338,12 +1338,12 @@ main() {
   run_test "Telemetry JSONL includes run_id" test_run_id_in_jsonl
   run_test "Burst runs are not dropped" test_burst_runs_not_dropped
   run_test "Legacy import backfills run_id" test_legacy_import_backfill_run_id
-    run_test "Migration rollback on failure preserves data" test_migration_atomicity
-    run_test "Import marks analytics dirty without rebuild" test_import_marks_analytics_dirty_without_rebuild
-    run_test "Rebuild populates run_facts_v1 analytics" test_rebuild_populates_run_facts_after_import
-    run_test "Import survives malformed lines" test_import_survives_malformed_lines
-    run_test "Import only processes newly appended lines" test_import_only_processes_new_lines
-    run_test "Clean rebuilds run_facts_v1 after direct seed" test_clean_rebuilds_run_facts_after_direct_seed
+  run_test "Migration rollback on failure preserves data" test_migration_atomicity
+  run_test "Import marks analytics dirty without rebuild" test_import_marks_analytics_dirty_without_rebuild
+  run_test "Rebuild populates run_facts_v1 analytics" test_rebuild_populates_run_facts_after_import
+  run_test "Import survives malformed lines" test_import_survives_malformed_lines
+  run_test "Import only processes newly appended lines" test_import_only_processes_new_lines
+  run_test "Clean rebuilds run_facts_v1 after direct seed" test_clean_rebuilds_run_facts_after_direct_seed
   run_test "Combos lazily rebuilds dirty analytics" test_combos_rebuilds_dirty_analytics_on_demand
   run_test "fmetrics combos reports ordered sequences" test_v17_combos_reports_ordered_sequences
   run_test "fmetrics combos filters and errors" test_v17_combos_filters_and_errors

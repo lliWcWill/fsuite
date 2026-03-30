@@ -11,6 +11,10 @@ import sys
 import time
 
 
+class RecordValidationError(ValueError):
+    """Raised when a JSON payload is structurally valid but missing required fields."""
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Incremental telemetry importer for fmetrics")
     parser.add_argument("--db", required=True, help="Path to telemetry SQLite database")
@@ -61,11 +65,25 @@ def starting_offset(conn: sqlite3.Connection, stat_result: os.stat_result) -> tu
     return prev_offset, False
 
 
-def normalize_record(payload: dict[str, object], line_offset: int) -> tuple | None:
+def table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?;",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def clear_derived_tables(conn: sqlite3.Connection) -> None:
+    for table_name in ("run_steps_v1", "run_facts_v1", "combo_stats_v1", "combo_next_stats_v1"):
+        if table_exists(conn, table_name):
+            conn.execute(f"DELETE FROM {table_name};")
+
+
+def normalize_record(payload: dict[str, object], line_offset: int) -> tuple:
     timestamp = str(payload.get("timestamp", "") or "").strip()
     tool = str(payload.get("tool", "") or "").strip()
     if not timestamp or not tool:
-        return None
+        raise RecordValidationError("record missing required timestamp/tool")
 
     version = str(payload.get("version", "") or "").strip()
     mode = str(payload.get("mode", "") or "").strip()
@@ -125,14 +143,20 @@ def main() -> int:
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 5000;")
+
+    total_lines = 0
+    inserted = 0
+    skipped = 0
+    errors = 0
+    validation_errors = 0
+    start_offset = 0
+    end_offset = 0
+    reset_cursor = False
 
     try:
         initial_stat = os.stat(jsonl_path)
         start_offset, reset_cursor = starting_offset(conn, initial_stat)
-        total_lines = 0
-        inserted = 0
-        skipped = 0
-        errors = 0
         end_offset = start_offset
 
         conn.execute("BEGIN IMMEDIATE;")
@@ -164,9 +188,11 @@ def main() -> int:
                 if not isinstance(payload, dict):
                     errors += 1
                     continue
-                row = normalize_record(payload, line_offset)
-                if row is None:
+                try:
+                    row = normalize_record(payload, line_offset)
+                except RecordValidationError:
                     errors += 1
+                    validation_errors += 1
                     continue
                 before = conn.total_changes
                 conn.execute(insert_sql, row)
@@ -178,10 +204,7 @@ def main() -> int:
             final_stat = os.fstat(handle.fileno())
 
         if inserted > 0:
-            conn.execute("DELETE FROM run_steps_v1;")
-            conn.execute("DELETE FROM run_facts_v1;")
-            conn.execute("DELETE FROM combo_stats_v1;")
-            conn.execute("DELETE FROM combo_next_stats_v1;")
+            clear_derived_tables(conn)
             meta_set(conn, "analytics_dirty", 1)
         meta_set(conn, "telemetry_import_device", final_stat.st_dev)
         meta_set(conn, "telemetry_import_inode", final_stat.st_ino)
@@ -189,7 +212,7 @@ def main() -> int:
         meta_set(conn, "telemetry_import_size", final_stat.st_size)
         meta_set(conn, "telemetry_last_imported_at", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
         conn.commit()
-    except Exception as exc:  # pragma: no cover - defensive
+    except (sqlite3.Error, OSError) as exc:
         conn.rollback()
         print(f"fmetrics-import.py: {exc}", file=sys.stderr)
         return 1
@@ -205,6 +228,7 @@ def main() -> int:
         "inserted": inserted,
         "skipped": skipped,
         "errors": errors,
+        "validation_errors": validation_errors,
         "start_offset": start_offset,
         "end_offset": end_offset,
         "cursor_reset": 1 if reset_cursor else 0,

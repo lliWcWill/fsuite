@@ -192,7 +192,7 @@ test_fsuite_help_explains_flow() {
   fi
 }
 
-test_installed_fmetrics_finds_predict_helper() {
+test_installed_fmetrics_finds_import_and_predict_helpers() {
   local prefix="${TEST_ROOT}/metrics"
   FSUITE_TELEMETRY=0 "${INSTALLER}" --prefix "$prefix" >/dev/null 2>&1 || {
     fail "Metrics install should succeed"
@@ -256,7 +256,7 @@ main() {
   run_test "Installed fcase runs real commands" test_installed_fcase_runs_case_commands
   run_test "Installer surfaces sqlite3 verify failures" test_verify_install_surfaces_sqlite3_failures
   run_test "fsuite command explains flow" test_fsuite_help_explains_flow
-  run_test "Installed fmetrics finds predict helper" test_installed_fmetrics_finds_predict_helper
+  run_test "Installed fmetrics finds import and predict helpers" test_installed_fmetrics_finds_import_and_predict_helpers
   run_test "Debian packaging declares fcase runtime contract" test_debian_packaging_declares_fcase_runtime_contract
 
   echo ""
