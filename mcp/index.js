@@ -535,25 +535,84 @@ function colorByExt(filename) {
   return EXT_COLORS[ext] || fg(248, 248, 242);
 }
 
-function renderFsearchResult(jsonStr) {
-try {
-  const d = JSON.parse(jsonStr);
-  if (!d.tool || d.tool !== "fsearch") return null;
+function renderFsearchStructured(d) {
+  if (!d || d.tool !== "fsearch") return null;
 
-  let out = theme.meta(`${d.total_found} files found`) + "\n";
+  const lines = [];
+  const summary = d.shown < d.total_found
+    ? `${d.shown}/${d.total_found} results shown`
+    : `${d.total_found} results found`;
+  lines.push(theme.meta(summary));
 
-  for (const filePath of (d.results || [])) {
-    const short = shortPath(filePath);
+  const hits = (d.hits && d.hits.length > 0)
+    ? d.hits
+    : (d.results || []).map((path) => ({ path, kind: "file", matched_on: "name" }));
+
+  for (const hit of hits) {
+    const fullPath = hit.path;
+    const short = shortPath(fullPath);
     const filename = short.split("/").pop() || short;
     const dir = short.substring(0, short.length - filename.length);
-    const color = colorByExt(filename);
-    out += `  ${DIM}${dir}${UNDIM}${color}${BOLD}${filename}${RESET}\n`;
+    const suffix = hit.kind === "dir" ? "/" : "";
+    const matchNote = hit.matched_on && hit.matched_on !== "name"
+      ? `${DIM} (${hit.matched_on})${RESET}`
+      : "";
+
+    if (hit.kind === "dir") {
+      lines.push(`  ${theme.path(short)}${suffix}${matchNote}`);
+    } else {
+      const color = colorByExt(filename);
+      lines.push(`  ${DIM}${dir}${UNDIM}${color}${BOLD}${filename}${RESET}${matchNote}`);
+    }
+
+    if (hit.kind === "dir" && hit.preview?.length) {
+      for (const child of hit.preview) {
+        const childSuffix = child.kind === "dir" ? "/" : "";
+        lines.push(`    ${DIM}${child.name}${childSuffix}${RESET}`);
+      }
+      if (hit.preview_truncated) {
+        lines.push(`    ${DIM}...${RESET}`);
+      }
+    }
   }
-  return out;
-} catch {
-  return null;
+
+  if (d.next_hint) {
+    const nhArgs = Object.entries(d.next_hint.args || {})
+      .map(([k, v]) => `${fg(166, 226, 46)}${k}${RESET}${DIM}: ${UNDIM}${fg(230, 219, 116)}${v}${RESET}`)
+      .join(DIM + ", " + RESET);
+    lines.push("");
+    lines.push(`${fg(190, 132, 255)}${BOLD}next ->${RESET} ${fg(102, 217, 239)}${d.next_hint.tool}${RESET}(${nhArgs})`);
+  }
+
+  return lines.join("\n") + "\n";
 }
+
+function renderFsearchResult(jsonStr) {
+  try {
+    return renderFsearchStructured(JSON.parse(jsonStr));
+  } catch {
+    return null;
+  }
 }
+
+const fsearchNextHintSchema = z.object({
+  tool: z.string(),
+  args: z.object({}).passthrough(),
+});
+
+const fsearchPreviewEntrySchema = z.object({
+  name: z.string(),
+  kind: z.enum(["file", "dir"]),
+});
+
+const fsearchHitSchema = z.object({
+  path: z.string(),
+  kind: z.enum(["file", "dir"]),
+  matched_on: z.enum(["name", "path", "both"]),
+  preview: z.array(fsearchPreviewEntrySchema).optional(),
+  preview_truncated: z.boolean().optional(),
+  next_hint: fsearchNextHintSchema.nullable().optional(),
+}).passthrough();
 
 // Tool → renderer mapping
 const RENDERERS = {
@@ -690,17 +749,59 @@ server.registerTool(
   "fsearch",
   {
     title: coloredTitle("fsearch"),
-    description: "Find files by name, glob pattern, or extension. Returns matching file paths.",
+    description: "Find files or directories by name or path, with optional shallow directory preview.",
     inputSchema: z.object({
-      query: z.string().describe("Glob pattern or filename (e.g. '*.rs', 'app.rs')"),
+      query: z.string().describe("Literal, glob, or extension-style search input"),
       path: z.string().optional().describe("Directory to search"),
-      output: z.enum(["json", "paths", "pretty"]).default("json"),
+      type: z.enum(["file", "dir", "both"]).optional()
+        .describe("Search files, directories, or both. Default: file"),
+      match: z.enum(["name", "path", "both"]).optional()
+        .describe("Match against basename, full path, or both. Default: name"),
+      mode: z.enum(["auto", "literal", "glob", "ext"]).optional()
+        .describe("Query interpretation mode. Default: auto"),
+      preview: z.number().optional()
+        .describe("Directory preview child limit. Default: 0"),
+    }),
+    outputSchema: z.object({
+      tool: z.literal("fsearch"),
+      version: z.string(),
+      pattern: z.string(),
+      name_glob: z.string(),
+      path: z.string(),
+      backend: z.string(),
+      search_type: z.enum(["file", "dir", "both"]),
+      match_mode: z.enum(["name", "path", "both"]),
+      preview_limit: z.number(),
+      total_found: z.number(),
+      shown: z.number(),
+      results: z.array(z.string()),
+      hits: z.array(fsearchHitSchema),
+      next_hint: fsearchNextHintSchema.nullable(),
     }),
   },
-  async ({ query, path, output }) => {
-    const args = ["-o", output, query];
+  async ({ query, path, type, match, mode, preview }) => {
+    const args = ["-o", "json"];
+    if (type) args.push("--type", type);
+    if (match) args.push("--match", match);
+    if (mode) args.push("--mode", mode);
+    if (preview !== undefined) args.push("--preview", String(preview));
+    args.push(query);
     if (path) args.push(path);
-    return cli("fsearch", args);
+    try {
+      const { stdout } = await run(resolveTool("fsearch"), args, EXEC_OPTS);
+      try {
+        const parsed = JSON.parse(stdout);
+        return {
+          content: [{ type: "text", text: renderFsearchStructured(parsed) }],
+          structuredContent: parsed,
+        };
+      } catch (renderErr) {
+        console.error("fsearch render error:", renderErr);
+        return { content: [{ type: "text", text: stdout }] };
+      }
+    } catch (err) {
+      return { content: [{ type: "text", text: `fsearch error: ${err.stderr || err.message || "unknown"}` }], isError: true };
+    }
   }
 );
 
