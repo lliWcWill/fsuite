@@ -417,7 +417,7 @@ printf '%s' "$sql"
 
 ensure_analytics_populated() {
   ensure_db
-  local telemetry_count analytics_version analytics_dirty run_facts_count combo_count next_count
+  local telemetry_count analytics_version analytics_dirty run_facts_count combo_count next_count multi_step_runs_count
   telemetry_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM telemetry;" 2>/dev/null) || telemetry_count=0
   [[ "$telemetry_count" =~ ^[0-9]+$ ]] || telemetry_count=0
   analytics_version=$(sqlite3 "$DB_FILE" "SELECT value FROM analytics_meta WHERE key='analytics_version';" 2>/dev/null) || analytics_version=""
@@ -425,20 +425,22 @@ ensure_analytics_populated() {
   run_facts_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM run_facts_v1;" 2>/dev/null) || run_facts_count=0
   combo_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM combo_stats_v1;" 2>/dev/null) || combo_count=0
   next_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM combo_next_stats_v1;" 2>/dev/null) || next_count=0
+  multi_step_runs_count=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM run_facts_v1 WHERE step_count > 1;" 2>/dev/null) || multi_step_runs_count=0
   [[ "$analytics_dirty" =~ ^[01]$ ]] || analytics_dirty=0
   [[ "$run_facts_count" =~ ^[0-9]+$ ]] || run_facts_count=0
   [[ "$combo_count" =~ ^[0-9]+$ ]] || combo_count=0
   [[ "$next_count" =~ ^[0-9]+$ ]] || next_count=0
+  [[ "$multi_step_runs_count" =~ ^[0-9]+$ ]] || multi_step_runs_count=0
   if (( telemetry_count == 0 )); then
     # Empty stores only need a rebuild when stale derived rows are still hanging around.
-    if [[ "$analytics_version" != "2" ]] || [[ "$analytics_dirty" == "1" ]] || (( run_facts_count > 0 )) || (( combo_count > 0 )) || (( next_count > 0 )); then
+    if [[ "$analytics_version" != "2" ]] || [[ "$analytics_dirty" == "1" ]] || (( run_facts_count > 0 )) || (( combo_count > 0 )) || (( multi_step_runs_count > 0 && next_count > 0 )); then
       rebuild_analytics
     fi
     return 0
   fi
 
   # Non-empty stores get rebuilt when analytics are stale or incomplete.
-  if [[ "$analytics_version" != "2" ]] || [[ "$analytics_dirty" == "1" ]] || (( run_facts_count == 0 )) || (( combo_count == 0 )) || (( next_count == 0 )); then
+  if [[ "$analytics_version" != "2" ]] || [[ "$analytics_dirty" == "1" ]] || (( run_facts_count == 0 )) || (( combo_count == 0 )) || (( multi_step_runs_count > 0 && next_count == 0 )); then
     rebuild_analytics
   fi
 }
@@ -789,7 +791,10 @@ EOF
 cmd_import() {
   if [[ ! -f "$JSONL_FILE" ]]; then
     if [[ "$OUTPUT" == "json" ]]; then
-      echo "{\"tool\":\"fmetrics\",\"version\":\"$VERSION\",\"subcommand\":\"import\",\"total_lines\":0,\"inserted\":0,\"skipped\":0,\"errors\":0,\"db_path\":\"$DB_FILE\",\"jsonl_path\":\"$JSONL_FILE\"}"
+      local db_path_json jsonl_path_json
+      db_path_json=$(printf '%s' "$DB_FILE" | json_escape)
+      jsonl_path_json=$(printf '%s' "$JSONL_FILE" | json_escape)
+      echo "{\"tool\":\"fmetrics\",\"version\":\"$VERSION\",\"subcommand\":\"import\",\"total_lines\":0,\"inserted\":0,\"skipped\":0,\"errors\":0,\"db_path\":\"$db_path_json\",\"jsonl_path\":\"$jsonl_path_json\"}"
     else
       echo "No telemetry data found at $JSONL_FILE"
       echo "Run fsuite tools (ftree, fsearch, fcontent) to generate telemetry."
@@ -847,7 +852,10 @@ cmd_rebuild() {
   [[ "$dirty" =~ ^[01]$ ]] || dirty=0
 
   if [[ "$OUTPUT" == "json" ]]; then
-    echo "{\"tool\":\"fmetrics\",\"version\":\"$VERSION\",\"subcommand\":\"rebuild\",\"telemetry_rows\":$telemetry_count,\"run_facts\":$run_facts_count,\"combos\":$combo_count,\"next_edges\":$next_count,\"analytics_dirty\":$dirty,\"rebuilt_at\":\"$rebuilt_at\",\"db_path\":\"$DB_FILE\"}"
+    local rebuilt_at_json db_path_json
+    rebuilt_at_json=$(printf '%s' "$rebuilt_at" | json_escape)
+    db_path_json=$(printf '%s' "$DB_FILE" | json_escape)
+    echo "{\"tool\":\"fmetrics\",\"version\":\"$VERSION\",\"subcommand\":\"rebuild\",\"telemetry_rows\":$telemetry_count,\"run_facts\":$run_facts_count,\"combos\":$combo_count,\"next_edges\":$next_count,\"analytics_dirty\":$dirty,\"rebuilt_at\":\"$rebuilt_at_json\",\"db_path\":\"$db_path_json\"}"
   else
     echo "$(metric_title 'Rebuilt analytics tables')"
     echo "  Telemetry rows: $telemetry_count"
