@@ -271,6 +271,28 @@ OPTIONS
         fd:   use fd (fast). Requires fd to be installed
         find: use POSIX find
 
+  --type file|dir|both
+      Choose the search surface. Default: file
+        file: legacy file-name search
+        dir:  directory-oriented nav surface (v1 contract)
+        both: file + directory surface
+
+  --match name|path|both
+      Choose what the query matches against. Default: name
+        name: match file or directory names
+        path: match full paths
+        both: allow either name or path matching
+
+  --mode auto|literal|glob|ext
+      Control query normalization. Default: auto
+        auto:    legacy heuristic in file/name mode only
+        literal: use the query as-is
+        glob:    treat the query as a glob pattern
+        ext:     explicit extension mode placeholder
+
+  --preview N
+      Reserved shallow preview depth. Default: 0
+
   -o, --output pretty|paths|json
       pretty: human-friendly header + list (default)
       paths:  print only matching paths, one per line (best for piping/headless use)
@@ -385,12 +407,23 @@ EOF
 # - Else treat as extension: "*.pattern"
 normalize_pattern() {
   local p="$1"
+  local search_type="${2:-file}"
+  local match_mode="${3:-name}"
+  local query_mode="${4:-auto}"
   local out="$p"
+
+  if [[ "$query_mode" == "literal" ]]; then
+    printf "%s" "$p"
+    return
+  fi
 
   if [[ "$p" == *'*'* || "$p" == *'?'* ]]; then
     # Has wildcards: use as-is
-    out="$p"
-  else
+    printf "%s" "$p"
+    return
+  fi
+
+  if [[ "$search_type" == "file" && "$match_mode" == "name" && "$query_mode" == "auto" ]]; then
     if [[ "$p" == .* ]]; then
       # Starts with dot: treat as extension (.log → *.log)
       out="*${p}"
@@ -464,6 +497,10 @@ SEARCH_PATH=""
 MAX="$DEFAULT_MAX"
 BACKEND="$DEFAULT_BACKEND"
 OUTPUT="$DEFAULT_OUTPUT"
+SEARCH_TYPE="file"
+MATCH_MODE="name"
+QUERY_MODE="auto"
+PREVIEW="0"
 FORCE_INTERACTIVE=0
 INSTALL_HINTS=0
 SELF_CHECK=0
@@ -471,6 +508,10 @@ QUIET=0
 NO_DEFAULT_IGNORE=0
 INCLUDE_PATTERNS=()
 EXCLUDE_PATTERNS=()
+TYPE_SEEN=0
+MATCH_SEEN=0
+MODE_SEEN=0
+PREVIEW_SEEN=0
 
 # Pre-process arguments: expand combined short flags like -m5 to -m 5
 _args=()
@@ -507,6 +548,44 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -b|--backend) BACKEND="${2:-}"; _TELEM_FLAGS+=" -b $2"; shift 2 ;;
+    --type)
+      [[ -n "${2:-}" ]] || die "Missing value for --type"
+      case "$2" in
+        file|dir|both) SEARCH_TYPE="$2" ;;
+        *) die "Invalid --type: $2" ;;
+      esac
+      TYPE_SEEN=1
+      _TELEM_FLAGS+=" --type $2"
+      shift 2
+      ;;
+    --match)
+      [[ -n "${2:-}" ]] || die "Missing value for --match"
+      case "$2" in
+        name|path|both) MATCH_MODE="$2" ;;
+        *) die "Invalid --match: $2" ;;
+      esac
+      MATCH_SEEN=1
+      _TELEM_FLAGS+=" --match $2"
+      shift 2
+      ;;
+    --mode)
+      [[ -n "${2:-}" ]] || die "Missing value for --mode"
+      case "$2" in
+        auto|literal|glob|ext) QUERY_MODE="$2" ;;
+        *) die "Invalid --mode: $2" ;;
+      esac
+      MODE_SEEN=1
+      _TELEM_FLAGS+=" --mode $2"
+      shift 2
+      ;;
+    --preview)
+      [[ -n "${2:-}" ]] || die "Missing value for --preview"
+      [[ "$2" =~ ^[0-9]+$ ]] || die "Invalid --preview: $2"
+      PREVIEW="$2"
+      PREVIEW_SEEN=1
+      _TELEM_FLAGS+=" --preview $2"
+      shift 2
+      ;;
     -o|--output) OUTPUT="${2:-}"; shift 2 ;;
     -q|--quiet) QUIET=1; _TELEM_FLAGS+=" -q"; shift ;;
     -i|--interactive) FORCE_INTERACTIVE=1; shift ;;
@@ -557,6 +636,10 @@ fi
 
 # Seed telemetry flags with defaults
 _TELEM_FLAGS+=" -o ${OUTPUT:-pretty}"
+(( TYPE_SEEN == 0 )) && _TELEM_FLAGS+=" --type $SEARCH_TYPE"
+(( MATCH_SEEN == 0 )) && _TELEM_FLAGS+=" --match $MATCH_MODE"
+(( MODE_SEEN == 0 )) && _TELEM_FLAGS+=" --mode $QUERY_MODE"
+(( PREVIEW_SEEN == 0 )) && _TELEM_FLAGS+=" --preview $PREVIEW"
 
 # Validate output/backend
 case "$OUTPUT" in pretty|paths|json) ;; *) die "Invalid --output: $OUTPUT" ;; esac
@@ -579,7 +662,7 @@ fi
 
 [[ -n "$PATTERN" ]] || die "Missing pattern. Try: fsearch --help"
 
-NAME_GLOB="$(normalize_pattern "$PATTERN")"
+NAME_GLOB="$(normalize_pattern "$PATTERN" "$SEARCH_TYPE" "$MATCH_MODE" "$QUERY_MODE")"
 BACKEND_BIN="$(choose_backend "$BACKEND")"
 
 # -------------------------

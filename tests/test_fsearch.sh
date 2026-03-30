@@ -126,6 +126,16 @@ test_invalid_backend() {
   fi
 }
 
+test_invalid_type() {
+  local output rc=0
+  output=$("${FSEARCH}" --type invalid "docs" "${TEST_DIR}" 2>&1) || rc=$?
+  if [[ $rc -ne 0 ]] && [[ "$output" =~ "Invalid --type" ]]; then
+    pass "Correctly errors on invalid type"
+  else
+    fail "Should error on invalid type"
+  fi
+}
+
 # ============================================================================
 # Pattern Matching Tests
 # ============================================================================
@@ -151,6 +161,26 @@ test_bare_extension() {
     pass "Bare extension 'log' expands to *.log with default ignores"
   else
     fail "Bare extension 'log' should find 3 files with default ignores" "Found: $count"
+  fi
+}
+
+test_default_mode_keeps_extension_heuristic() {
+  local output
+  output=$("${FSEARCH}" --output json "docs" "${TEST_DIR}" 2>&1)
+  if [[ "$output" == *'"name_glob":"*.docs"'* ]]; then
+    pass "Default file mode keeps the short-token extension heuristic"
+  else
+    fail "Default file mode should keep the short-token extension heuristic" "Output: $output"
+  fi
+}
+
+test_dir_mode_disables_extension_heuristic() {
+  local output
+  output=$("${FSEARCH}" --type dir --mode auto --output json "docs" "${TEST_DIR}" 2>&1)
+  if [[ "$output" == *'"name_glob":"docs"'* ]]; then
+    pass "Dir mode disables the short-token extension heuristic"
+  else
+    fail "Dir mode should disable the short-token extension heuristic" "Output: $output"
   fi
 }
 
@@ -660,10 +690,13 @@ main() {
   run_test "Missing pattern error" test_missing_pattern
   run_test "Invalid output format error" test_invalid_output_format
   run_test "Invalid backend error" test_invalid_backend
+  run_test "Invalid type error" test_invalid_type
 
   # Pattern matching
   run_test "Glob extension pattern" test_glob_extension
   run_test "Bare extension" test_bare_extension
+  run_test "Default mode keeps extension heuristic" test_default_mode_keeps_extension_heuristic
+  run_test "Dir mode disables extension heuristic" test_dir_mode_disables_extension_heuristic
   run_test "Dotted extension" test_dotted_extension
   run_test "Starts-with pattern" test_starts_with_pattern
   run_test "Contains pattern" test_contains_pattern
