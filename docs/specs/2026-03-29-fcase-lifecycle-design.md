@@ -154,10 +154,10 @@ No schema migration needed — SQLite `ALTER TABLE ADD COLUMN` is safe for defau
 
 ### New event types
 
-- `case_resolved` — payload: `{"summary": "...", "previous_status": "open"}`
-- `case_archived` — payload: `{"previous_status": "resolved"}`
-- `case_reopened` — payload: `{"previous_status": "resolved|archived|deleted"}`
-- `case_deleted` — payload: `{"previous_status": "open|resolved|archived"}`
+- `case_resolved` — payload: `{"summary": "...", "prior_status": "open"}`
+- `case_archived` — payload: `{"prior_status": "resolved"}`
+- `case_reopened` — payload: `{"prior_status": "resolved|archived|deleted"}`
+- `case_deleted` — payload: `{"prior_status": "open|resolved|archived"}`
 
 ## MCP Registration Updates
 

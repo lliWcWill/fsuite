@@ -498,6 +498,7 @@ assert_contains "export JSON has resolved_at" "$out" '"resolved_at"'
 assert_contains "export JSON has archived_at" "$out" '"archived_at"'
 assert_contains "export JSON has deleted_at" "$out" '"deleted_at"'
 assert_contains "export JSON has delete_reason" "$out" '"delete_reason"'
+assert_contains "export JSON has case_kind" "$out" '"case_kind"'
 
 # list JSON includes lifecycle fields
 out="$(run_fcase list --status all -o json 2>&1)"
