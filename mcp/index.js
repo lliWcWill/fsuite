@@ -1053,7 +1053,7 @@ server.registerTool(
     const args = ["-o", "json", query];
     if (path) args.push("--path", path);
     if (scope) args.push("--scope", scope);
-    if (intent) args.push("--intent", intent);
+    if (intent && intent !== "auto") args.push("--intent", intent);
     try {
       const { stdout } = await run(resolveTool("fs"), args, EXEC_OPTS);
       try {
