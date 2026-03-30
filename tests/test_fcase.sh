@@ -77,7 +77,7 @@ test_version() {
 test_init_creates_case() {
   local output rc=0
   output=$(run_fcase init auth-bug --goal "Find auth failure root cause" --priority high -o json 2>&1) || rc=$?
-  if [[ $rc -eq 0 ]] && python3 -c 'import json,sys; data=json.loads(sys.stdin.read()); assert data["case"]["slug"] == "auth-bug"; assert data["case"]["goal"] == "Find auth failure root cause"; assert data["session"]["id"] >= 1; assert data["event"]["event_type"] == "case_init"' <<< "$output" 2>/dev/null; then
+  if [[ $rc -eq 0 ]] && python3 -c 'import json,sys; data=json.loads(sys.stdin.read()); assert data["case"]["slug"] == "auth-bug"; assert data["case"]["goal"] == "Find auth failure root cause"; assert data["case"]["case_kind"] == "explicit_diagnosis"; assert data["session"]["id"] >= 1; assert data["event"]["event_type"] == "case_init"' <<< "$output" 2>/dev/null; then
     pass "init creates a case"
   else
     fail "init should create a case with JSON envelope" "rc=$rc output=$output"
@@ -109,7 +109,7 @@ test_status_shows_core_case_state() {
   run_fcase init auth-bug --goal "Find auth failure root cause" --priority high >/dev/null 2>&1 || true
   local output rc=0
   output=$(run_fcase status auth-bug -o json 2>&1) || rc=$?
-  if [[ $rc -eq 0 ]] && python3 -c 'import json,sys; data=json.loads(sys.stdin.read()); assert data["case"]["slug"] == "auth-bug"; assert data["case"]["priority"] == "high"; assert isinstance(data["targets"], list); assert isinstance(data["evidence"], list); assert isinstance(data["hypotheses"], list); assert isinstance(data["recent_events"], list); assert data["active_session"]["ended_at"] is None' <<< "$output" 2>/dev/null; then
+  if [[ $rc -eq 0 ]] && python3 -c 'import json,sys; data=json.loads(sys.stdin.read()); assert data["case"]["slug"] == "auth-bug"; assert data["case"]["priority"] == "high"; assert data["case"]["case_kind"] == "explicit_diagnosis"; assert isinstance(data["targets"], list); assert isinstance(data["evidence"], list); assert isinstance(data["hypotheses"], list); assert isinstance(data["recent_events"], list); assert data["active_session"]["ended_at"] is None' <<< "$output" 2>/dev/null; then
     pass "status shows core case state"
   else
     fail "status should show core case state" "rc=$rc output=$output"

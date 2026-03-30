@@ -146,6 +146,7 @@ CREATE TABLE IF NOT EXISTS cases (
   goal TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'open',
   priority TEXT NOT NULL DEFAULT 'normal',
+  case_kind TEXT NOT NULL DEFAULT 'explicit_diagnosis',
   next_move TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -272,8 +273,8 @@ SQL
     current_version=2
   fi
 
-  # --- Migration to version 3: lifecycle columns, indexes, FTS ---
-  if (( current_version < 3 )); then
+    # --- Migration to version 3: lifecycle columns, indexes, FTS ---
+    if (( current_version < 3 )); then
     # New columns on cases (idempotent — SQLite errors if column exists)
     db_exec <<'SQL' 2>/dev/null || true
 ALTER TABLE cases ADD COLUMN resolution_summary TEXT NOT NULL DEFAULT '';
@@ -320,10 +321,24 @@ PRAGMA user_version=3;
 SQL
     current_version=3
 
-    # Rebuild FTS index for all existing cases
-    rebuild_all_fts
-  fi
-}
+      # Rebuild FTS index for all existing cases
+      rebuild_all_fts
+    fi
+
+    # --- Migration to version 4: case kinds for shadow/promoted visibility ---
+    if (( current_version < 4 )); then
+      db_exec <<'SQL' 2>/dev/null || true
+ALTER TABLE cases ADD COLUMN case_kind TEXT NOT NULL DEFAULT 'explicit_diagnosis';
+SQL
+      db_exec <<'SQL'
+UPDATE cases
+SET case_kind = 'explicit_diagnosis'
+WHERE case_kind IS NULL OR TRIM(case_kind) = '';
+PRAGMA user_version=4;
+SQL
+      current_version=4
+    fi
+  }
 
 # ---------------------------------------------------------------------------
 # FTS rebuild helpers
@@ -347,7 +362,7 @@ SELECT
   COALESCE((SELECT group_concat(COALESCE(t.path,'') || ' ' || COALESCE(t.symbol,''), ' ') FROM targets t WHERE t.case_id = c.id), ''),
   COALESCE((SELECT group_concat(COALESCE(e.summary,'') || ' ' || COALESCE(e.body,''), ' ') FROM evidence e WHERE e.case_id = c.id), ''),
   COALESCE((SELECT group_concat(COALESCE(h.body,'') || ' ' || COALESCE(h.reason,''), ' ') FROM hypotheses h WHERE h.case_id = c.id), ''),
-  COALESCE((SELECT group_concat(COALESCE(ev.payload_json,''), ' ') FROM events ev WHERE ev.case_id = c.id AND ev.event_type IN ('note','next_move_set','case_resolved','case_deleted')), '')
+    COALESCE((SELECT group_concat(COALESCE(ev.payload_json,''), ' ') FROM events ev WHERE ev.case_id = c.id AND ev.event_type IN ('note','next_move_set','case_resolved','case_deleted','agent_feedback','user_feedback','insight','progress','verification','promotion')), '')
 FROM cases c WHERE c.id = $case_id;
 SQL
 }
@@ -365,7 +380,7 @@ SELECT
   COALESCE((SELECT group_concat(COALESCE(t.path,'') || ' ' || COALESCE(t.symbol,''), ' ') FROM targets t WHERE t.case_id = c.id), ''),
   COALESCE((SELECT group_concat(COALESCE(e.summary,'') || ' ' || COALESCE(e.body,''), ' ') FROM evidence e WHERE e.case_id = c.id), ''),
   COALESCE((SELECT group_concat(COALESCE(h.body,'') || ' ' || COALESCE(h.reason,''), ' ') FROM hypotheses h WHERE h.case_id = c.id), ''),
-  COALESCE((SELECT group_concat(COALESCE(ev.payload_json,''), ' ') FROM events ev WHERE ev.case_id = c.id AND ev.event_type IN ('note','next_move_set','case_resolved','case_deleted')), '')
+    COALESCE((SELECT group_concat(COALESCE(ev.payload_json,''), ' ') FROM events ev WHERE ev.case_id = c.id AND ev.event_type IN ('note','next_move_set','case_resolved','case_deleted','agent_feedback','user_feedback','insight','progress','verification','promotion')), '')
 FROM cases c;
 COMMIT;
 SQL

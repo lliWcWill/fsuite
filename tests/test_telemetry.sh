@@ -104,6 +104,46 @@ INSERT INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,durati
 SQL
 }
 
+test_import_rebuilds_run_facts_analytics() {
+  mkdir -p "$HOME/.fsuite"
+  cat > "$HOME/.fsuite/telemetry.jsonl" <<'JSONL'
+{"timestamp":"2026-03-20T00:00:00Z","tool":"ftree","version":"2.3.0","mode":"snapshot","path_hash":"alpha-1","project_name":"analytics-fixture","duration_ms":12,"exit_code":0,"depth":2,"items_scanned":10,"bytes_scanned":1000,"flags":"--snapshot","backend":"tree","run_id":"run-alpha"}
+{"timestamp":"2026-03-20T00:00:01Z","tool":"fcontent","version":"2.3.0","mode":"directory","path_hash":"alpha-2","project_name":"analytics-fixture","duration_ms":9,"exit_code":0,"depth":1,"items_scanned":4,"bytes_scanned":400,"flags":"-o json","backend":"read","run_id":"run-alpha"}
+JSONL
+
+  run_fmetrics import >/dev/null 2>&1
+
+  local row
+  row=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT tool_count || '|' || project_name FROM run_facts_v1 WHERE run_id='run-alpha';" 2>/dev/null || true)
+  if [[ "$row" == "2|analytics-fixture" ]]; then
+    pass "Import rebuilds run_facts_v1 analytics"
+  else
+    fail "Import should rebuild run_facts_v1 analytics" "Got: $row"
+  fi
+}
+
+test_clean_rebuilds_run_facts_after_direct_seed() {
+  mkdir -p "$HOME/.fsuite"
+  : > "$HOME/.fsuite/telemetry.jsonl"
+  run_fmetrics import >/dev/null 2>&1 || true
+
+  sqlite3 "$HOME/.fsuite/telemetry.db" <<'SQL'
+DELETE FROM telemetry;
+INSERT INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend,run_id) VALUES
+  ('2026-03-25T00:00:00Z','fsearch','2.3.0','glob','beta-1','direct-seed-fixture',15,0,1,7,700,'-o json','find','run-beta');
+SQL
+
+  run_fmetrics clean --days 9999 >/dev/null 2>&1
+
+  local row
+  row=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT tool_count || '|' || project_name FROM run_facts_v1 WHERE run_id='run-beta';" 2>/dev/null || true)
+  if [[ "$row" == "1|direct-seed-fixture" ]]; then
+    pass "Clean rebuilds run_facts_v1 after direct seed"
+  else
+    fail "Clean should rebuild run_facts_v1 after direct seed" "Got: $row"
+  fi
+}
+
 # ============================================================================
 # bytes_scanned Tests (Phase 1)
 # ============================================================================
@@ -997,6 +1037,8 @@ main() {
   run_test "Burst runs are not dropped" test_burst_runs_not_dropped
   run_test "Legacy import backfills run_id" test_legacy_import_backfill_run_id
   run_test "Migration rollback on failure preserves data" test_migration_atomicity
+  run_test "Import rebuilds run_facts_v1 analytics" test_import_rebuilds_run_facts_analytics
+  run_test "Clean rebuilds run_facts_v1 after direct seed" test_clean_rebuilds_run_facts_after_direct_seed
 
   echo ""
   echo "== Metacharacter Warning =="

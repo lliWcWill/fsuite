@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test_fcase_lifecycle.sh — schema migration tests for fcase lifecycle (v3)
+# test_fcase_lifecycle.sh — schema migration tests for fcase lifecycle (v4)
 # Run with: bash tests/test_fcase_lifecycle.sh
 
 set -euo pipefail
@@ -77,6 +77,8 @@ result=$(sqlite3 "$DB" "SELECT deleted_at FROM cases LIMIT 0;" 2>&1 && echo "ok"
 assert_eq "deleted_at column exists" "ok" "$result"
 result=$(sqlite3 "$DB" "SELECT delete_reason FROM cases LIMIT 0;" 2>&1 && echo "ok" || echo "fail")
 assert_eq "delete_reason column exists" "ok" "$result"
+result=$(sqlite3 "$DB" "SELECT case_kind FROM cases LIMIT 0;" 2>&1 && echo "ok" || echo "fail")
+assert_eq "case_kind column exists" "ok" "$result"
 
 # Check indexes exist (portable: query sqlite_master instead of .indexes)
 result=$(sqlite3 "$DB" "SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_cases_status_updated';" 2>&1)
@@ -104,7 +106,7 @@ assert_contains "FTS contains migrated case" "$result" "migration-test"
 
 # Check user_version bumped to 3
 result=$(sqlite3 "$DB" "PRAGMA user_version;" 2>&1)
-assert_eq "user_version is 3" "3" "$result"
+assert_eq "user_version is 4" "4" "$result"
 
 # ── Section 2: Idempotency ──────────────────────────────────────
 echo ""
@@ -501,12 +503,106 @@ assert_contains "export JSON has delete_reason" "$out" '"delete_reason"'
 out="$(run_fcase list --status all -o json 2>&1)"
 assert_contains "list JSON has resolution_summary" "$out" '"resolution_summary"'
 assert_contains "list JSON has resolved_at" "$out" '"resolved_at"'
+assert_contains "list JSON has case_kind" "$out" '"case_kind"'
 
 teardown_test_db
 
-# ── Section 9: Regression — hypothesis_set FTS rebuild ────────────
+# ── Section 9: Shadow case visibility defaults ─────────────────────
 echo ""
-echo "── Section 9: Regression — hypothesis_set FTS rebuild ──"
+echo "── Section 9: Shadow case visibility defaults ──"
+
+setup_test_db
+
+run_fcase init visible-explicit --goal "Visible explicit case" -o json >/dev/null 2>&1
+DB="$TEST_HOME/.fsuite/fcase.db"
+now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+sqlite3 "$DB" <<SQL
+INSERT INTO cases (slug, goal, status, priority, case_kind, next_move, created_at, updated_at)
+VALUES ('hidden-shadow', 'Shadow case', 'open', 'normal', 'shadow_session', '', '$now', '$now');
+INSERT INTO cases_fts(rowid, slug, goal, resolution_summary, targets_text, evidence_text, hypotheses_text, notes_text)
+SELECT id, slug, goal, '', '', '', '', '' FROM cases WHERE slug = 'hidden-shadow';
+SQL
+
+list_default="$(run_fcase list -o json 2>&1)"
+assert_contains "default list includes explicit case" "$list_default" 'visible-explicit'
+assert_eq "default list hides shadow case" "0" "$(grep -c 'hidden-shadow' <<<"$list_default" || true)"
+
+list_with_shadow="$(run_fcase list --include-shadow -o json 2>&1)"
+assert_contains "list --include-shadow includes shadow case" "$list_with_shadow" 'hidden-shadow'
+
+status_shadow="$(run_fcase status hidden-shadow -o json 2>&1)"
+assert_contains "status JSON exposes shadow case kind" "$status_shadow" '"case_kind":"shadow_session"'
+
+teardown_test_db
+
+# ── Section 10: Shadow case find filtering ────────────────────────
+echo ""
+echo "── Section 10: Shadow case find filtering ──"
+
+setup_test_db
+
+run_fcase init visible-resolved --goal "Visible case" -o json >/dev/null 2>&1
+run_fcase resolve visible-resolved --summary "shared phrase outcome" -o json >/dev/null 2>&1
+DB="$TEST_HOME/.fsuite/fcase.db"
+now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+sqlite3 "$DB" <<SQL
+INSERT INTO cases (slug, goal, status, priority, case_kind, next_move, resolution_summary, resolved_at, created_at, updated_at)
+VALUES ('shadow-resolved', 'Shadow resolved case', 'resolved', 'normal', 'shadow_session', '', 'shared phrase outcome', '$now', '$now', '$now');
+INSERT INTO cases_fts(rowid, slug, goal, resolution_summary, targets_text, evidence_text, hypotheses_text, notes_text)
+SELECT id, slug, goal, resolution_summary, '', '', '', '' FROM cases WHERE slug = 'shadow-resolved';
+SQL
+
+find_default="$(run_fcase find "shared phrase outcome" --status all -o json 2>&1)"
+assert_contains "default find keeps explicit resolved case" "$find_default" 'visible-resolved'
+assert_eq "default find hides shadow case" "0" "$(grep -c 'shadow-resolved' <<<"$find_default" || true)"
+
+find_with_shadow="$(run_fcase find "shared phrase outcome" --status all --include-shadow -o json 2>&1)"
+assert_contains "find --include-shadow includes shadow case" "$find_with_shadow" 'shadow-resolved'
+
+teardown_test_db
+
+# ── Section 11: Extended event vocabulary indexed in FTS ───────────
+echo ""
+echo "── Section 11: Extended event vocabulary indexed in FTS ──"
+
+setup_test_db
+
+run_fcase init event-vocab-test --goal "Index extended event vocabulary" -o json >/dev/null 2>&1
+DB="$TEST_HOME/.fsuite/fcase.db"
+case_id="$(sqlite3 "$DB" "SELECT id FROM cases WHERE slug='event-vocab-test';")"
+session_id="$(sqlite3 "$DB" "SELECT id FROM case_sessions WHERE case_id=$case_id ORDER BY id DESC LIMIT 1;")"
+now="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+sqlite3 "$DB" <<SQL
+INSERT INTO events (case_id, session_id, event_type, payload_json, created_at) VALUES
+  ($case_id, $session_id, 'agent_feedback', '{"note":"agent clarified seam marker"}', '$now'),
+  ($case_id, $session_id, 'user_feedback', '{"note":"user confirmed unblock marker"}', '$now'),
+  ($case_id, $session_id, 'insight', '{"note":"insight narrowed hotspot marker"}', '$now'),
+  ($case_id, $session_id, 'progress', '{"note":"progress reduced search space marker"}', '$now'),
+  ($case_id, $session_id, 'verification', '{"note":"verification green proof marker"}', '$now'),
+  ($case_id, $session_id, 'promotion', '{"note":"promotion elevated case marker"}', '$now');
+SQL
+
+# Trigger the normal FTS rebuild path through an existing mutating command.
+run_fcase note event-vocab-test --body "trigger rebuild after event insert" >/dev/null 2>&1
+
+result=$(run_fcase find "clarified seam marker" --deep --status all -o json 2>&1)
+assert_contains "agent_feedback event searchable via deep find" "$result" "event-vocab-test"
+result=$(run_fcase find "confirmed unblock marker" --deep --status all -o json 2>&1)
+assert_contains "user_feedback event searchable via deep find" "$result" "event-vocab-test"
+result=$(run_fcase find "narrowed hotspot marker" --deep --status all -o json 2>&1)
+assert_contains "insight event searchable via deep find" "$result" "event-vocab-test"
+result=$(run_fcase find "reduced search space marker" --deep --status all -o json 2>&1)
+assert_contains "progress event searchable via deep find" "$result" "event-vocab-test"
+result=$(run_fcase find "green proof marker" --deep --status all -o json 2>&1)
+assert_contains "verification event searchable via deep find" "$result" "event-vocab-test"
+result=$(run_fcase find "elevated case marker" --deep --status all -o json 2>&1)
+assert_contains "promotion event searchable via deep find" "$result" "event-vocab-test"
+
+teardown_test_db
+
+# ── Section 12: Regression — hypothesis_set FTS rebuild ────────────
+echo ""
+echo "── Section 12: Regression — hypothesis_set FTS rebuild ──"
 
 setup_test_db
 
@@ -525,9 +621,9 @@ assert_contains "hypothesis set reason searchable via deep find" "$result" "hyp-
 
 teardown_test_db
 
-# ── Section 10: Regression — next_move_set event indexed in FTS ───
+# ── Section 13: Regression — next_move_set event indexed in FTS ───
 echo ""
-echo "── Section 10: Regression — next_move_set event indexed in FTS ──"
+echo "── Section 13: Regression — next_move_set event indexed in FTS ──"
 
 setup_test_db
 
@@ -541,9 +637,9 @@ assert_contains "next_move_set event searchable via deep find" "$result" "next-f
 
 teardown_test_db
 
-# ── Section 11: Regression — punctuation queries in shallow find ──
+# ── Section 14: Regression — punctuation queries in shallow find ──
 echo ""
-echo "── Section 11: Regression — punctuation queries in shallow find ──"
+echo "── Section 14: Regression — punctuation queries in shallow find ──"
 
 setup_test_db
 

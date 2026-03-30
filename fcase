@@ -43,9 +43,9 @@ USAGE
   fcase --help
   fcase --version
   fcase init <slug> --goal ... [--priority ...] [-o pretty|json]
-  fcase list [--status <csv|all>] [-o pretty|json]
+  fcase list [--status <csv|all>] [--include-shadow] [-o pretty|json]
   fcase status <slug> [-o pretty|json]
-  fcase find <query> [--deep] [--status <csv|all>] [-o pretty|json]
+  fcase find <query> [--deep] [--status <csv|all>] [--include-shadow] [-o pretty|json]
   fcase note <slug> --body ...
   fcase next <slug> --body ... [-o pretty|json]
   fcase handoff <slug> [-o pretty|json]
@@ -64,8 +64,8 @@ USAGE
 DESCRIPTION
   fcase preserves investigation state once the seam is known:
     init         Create a case and open a session
-    list         Show cases (default: open only; --status all for everything)
-    find         Search resolved/archived cases via FTS (--deep for full text)
+    list         Show cases (default: open only; shadow/session cases hidden unless --include-shadow)
+    find         Search resolved/archived cases via FTS (--deep for full text; shadow/session cases hidden unless --include-shadow)
     status       Show current case state
     note         Append a note to a case
     next         Update the next best move
@@ -125,6 +125,20 @@ validate_status_filter() {
   IFS="$_old_ifs"
 }
 
+default_case_kind() {
+  printf '%s' 'explicit_diagnosis'
+}
+
+case_kind_value_expr() {
+  local prefix="${1:-}"
+  printf "COALESCE(%scase_kind, '%s')" "$prefix" "$(default_case_kind)"
+}
+
+visible_case_kind_clause() {
+  local prefix="${1:-}"
+  printf "%s != 'shadow_session'" "$(case_kind_value_expr "$prefix")"
+}
+
 parse_lines_range() {
   local raw="$1"
   [[ "$raw" =~ ^([0-9]+):([0-9]+)$ ]] || return 1
@@ -166,7 +180,7 @@ status_json() {
   local slug="$1"
   db_query <<SQL
 WITH target_case AS (
-  SELECT id, slug, goal, status, priority, next_move,
+  SELECT id, slug, goal, status, priority, $(case_kind_value_expr '') AS case_kind, next_move,
          resolution_summary, resolved_at, archived_at, deleted_at, delete_reason,
          created_at, updated_at
   FROM cases
@@ -177,11 +191,12 @@ SELECT json_object(
     SELECT json_object(
       'id', id,
       'slug', slug,
-      'goal', goal,
-      'status', status,
-      'priority', priority,
-      'next_move', next_move,
-      'resolution_summary', resolution_summary,
+        'goal', goal,
+        'status', status,
+        'priority', priority,
+        'case_kind', case_kind,
+        'next_move', next_move,
+        'resolution_summary', resolution_summary,
       'resolved_at', resolved_at,
       'archived_at', archived_at,
       'deleted_at', deleted_at,
@@ -273,7 +288,7 @@ handoff_json() {
   local slug="$1"
   db_query <<SQL
 WITH target_case AS (
-  SELECT id, slug, goal, status, priority, next_move,
+  SELECT id, slug, goal, status, priority, $(case_kind_value_expr '') AS case_kind, next_move,
          resolution_summary, resolved_at, archived_at, deleted_at, delete_reason,
          created_at, updated_at
   FROM cases
@@ -284,11 +299,12 @@ SELECT json_object(
     SELECT json_object(
       'id', id,
       'slug', slug,
-      'goal', goal,
-      'status', status,
-      'priority', priority,
-      'next_move', next_move,
-      'resolution_summary', resolution_summary,
+        'goal', goal,
+        'status', status,
+        'priority', priority,
+        'case_kind', case_kind,
+        'next_move', next_move,
+        'resolution_summary', resolution_summary,
       'resolved_at', resolved_at,
       'archived_at', archived_at,
       'deleted_at', deleted_at,
@@ -357,7 +373,7 @@ export_json() {
   local slug="$1"
   db_query <<SQL
 WITH target_case AS (
-  SELECT id, slug, goal, status, priority, next_move,
+  SELECT id, slug, goal, status, priority, $(case_kind_value_expr '') AS case_kind, next_move,
          resolution_summary, resolved_at, archived_at, deleted_at, delete_reason,
          created_at, updated_at
   FROM cases
@@ -368,11 +384,12 @@ SELECT json_object(
     SELECT json_object(
       'id', id,
       'slug', slug,
-      'goal', goal,
-      'status', status,
-      'priority', priority,
-      'next_move', next_move,
-      'resolution_summary', resolution_summary,
+        'goal', goal,
+        'status', status,
+        'priority', priority,
+        'case_kind', case_kind,
+        'next_move', next_move,
+        'resolution_summary', resolution_summary,
       'resolved_at', resolved_at,
       'archived_at', archived_at,
       'deleted_at', deleted_at,
@@ -507,18 +524,20 @@ cmd_init() {
 
   ensure_db
 
-  local now actor escaped_slug escaped_goal escaped_priority
+  local now actor case_kind escaped_slug escaped_goal escaped_priority escaped_case_kind
   now="$(now_utc)"
   actor="${USER:-unknown}"
+  case_kind="$(default_case_kind)"
   escaped_slug="$(sql_quote "$slug")"
   escaped_goal="$(sql_quote "$goal")"
   escaped_priority="$(sql_quote "$priority")"
+  escaped_case_kind="$(sql_quote "$case_kind")"
 
   if ! db_exec <<SQL
 PRAGMA foreign_keys=ON;
 BEGIN IMMEDIATE;
-INSERT INTO cases (slug, goal, status, priority, next_move, created_at, updated_at)
-VALUES (${escaped_slug}, ${escaped_goal}, 'open', ${escaped_priority}, '', $(sql_quote "$now"), $(sql_quote "$now"));
+INSERT INTO cases (slug, goal, status, priority, case_kind, next_move, created_at, updated_at)
+VALUES (${escaped_slug}, ${escaped_goal}, 'open', ${escaped_priority}, ${escaped_case_kind}, '', $(sql_quote "$now"), $(sql_quote "$now"));
 INSERT INTO case_sessions (case_id, started_at, ended_at, actor, summary)
 VALUES (last_insert_rowid(), $(sql_quote "$now"), NULL, $(sql_quote "$actor"), '');
 INSERT INTO events (case_id, session_id, event_type, payload_json, created_at)
@@ -547,12 +566,13 @@ SELECT json_object(
     SELECT json_object(
       'id', id,
       'slug', slug,
-      'goal', goal,
-      'status', status,
-      'priority', priority,
-      'next_move', next_move,
-      'created_at', created_at,
-      'updated_at', updated_at
+        'goal', goal,
+        'status', status,
+        'priority', priority,
+        'case_kind', $(case_kind_value_expr ''),
+        'next_move', next_move,
+        'created_at', created_at,
+        'updated_at', updated_at
     )
     FROM cases
     WHERE slug = ${escaped_slug}
@@ -594,6 +614,7 @@ SQL
 cmd_list() {
   local output="$DEFAULT_OUTPUT"
   local filter="open"  # default: show only open cases
+  local include_shadow=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -o|--output)
@@ -603,6 +624,10 @@ cmd_list() {
       --status)
         filter="${2:-}"
         shift 2
+        ;;
+      --include-shadow)
+        include_shadow=true
+        shift
         ;;
       *)
         die "Unknown option for list: $1"
@@ -616,13 +641,19 @@ cmd_list() {
   validate_status_filter "$filter"
 
   # Build SQL WHERE clause from status filter
-  local where_clause
+  local status_clause where_clause
   if [[ "$filter" == "all" ]]; then
-    where_clause="1=1"
+    status_clause="1=1"
   else
     local sql_in
     sql_in=$(echo "$filter" | sed "s/,/','/g")
-    where_clause="status IN ('${sql_in}')"
+    status_clause="status IN ('${sql_in}')"
+  fi
+
+  if [[ "$include_shadow" == "true" ]]; then
+    where_clause="${status_clause}"
+  else
+    where_clause="${status_clause} AND $(visible_case_kind_clause '')"
   fi
 
   if [[ "$output" == "json" ]]; then
@@ -633,11 +664,12 @@ SELECT json_object(
     SELECT json_group_array(json_object(
       'id', id,
       'slug', slug,
-      'goal', goal,
-      'status', status,
-      'priority', priority,
-      'next_move', next_move,
-      'resolution_summary', resolution_summary,
+        'goal', goal,
+        'status', status,
+        'priority', priority,
+        'case_kind', case_kind,
+        'next_move', next_move,
+        'resolution_summary', resolution_summary,
       'resolved_at', resolved_at,
       'archived_at', archived_at,
       'deleted_at', deleted_at,
@@ -646,10 +678,10 @@ SELECT json_object(
       'updated_at', updated_at
     ))
     FROM (
-      SELECT id, slug, goal, status, priority, next_move,
-             resolution_summary, resolved_at, archived_at, deleted_at, delete_reason,
-             created_at, updated_at
-      FROM cases
+        SELECT id, slug, goal, status, priority, $(case_kind_value_expr '') AS case_kind, next_move,
+               resolution_summary, resolved_at, archived_at, deleted_at, delete_reason,
+               created_at, updated_at
+        FROM cases
       WHERE ${where_clause}
       ORDER BY updated_at DESC, id DESC
     )
@@ -1372,11 +1404,12 @@ cmd_find() {
   shift || true
   [[ -n "$query" ]] || die "find requires <query>"
 
-  local deep=false status_filter="resolved,archived" output="$DEFAULT_OUTPUT"
+  local deep=false status_filter="resolved,archived" output="$DEFAULT_OUTPUT" include_shadow=false
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --deep) deep=true; shift ;;
       --status) status_filter="${2:-}"; shift 2 ;;
+      --include-shadow) include_shadow=true; shift ;;
       -o|--output) output="${2:-}"; shift 2 ;;
       *) die "Unknown option for find: $1" ;;
     esac
@@ -1388,13 +1421,19 @@ cmd_find() {
   validate_status_filter "$status_filter"
 
   # Build status WHERE clause (exclude deleted unless explicitly requested)
-  local where_clause
+  local status_clause where_clause
   if [[ "$status_filter" == "all" ]]; then
-    where_clause="1=1"
+    status_clause="1=1"
   else
     local sql_in
     sql_in=$(echo "$status_filter" | sed "s/,/','/g")
-    where_clause="c.status IN ('${sql_in}')"
+    status_clause="c.status IN ('${sql_in}')"
+  fi
+
+  if [[ "$include_shadow" == "true" ]]; then
+    where_clause="${status_clause}"
+  else
+    where_clause="${status_clause} AND $(visible_case_kind_clause 'c.')"
   fi
 
   # Sanitize query for SQL safety.
@@ -1422,11 +1461,12 @@ SELECT json_object(
   'statuses', '${status_filter}',
   'deep', json('true'),
   'results', COALESCE((
-    SELECT json_group_array(json_object(
-      'slug', c.slug, 'status', c.status, 'priority', c.priority,
-      'goal', c.goal, 'resolution_summary', c.resolution_summary,
-      'resolved_at', c.resolved_at, 'archived_at', c.archived_at
-    ))
+      SELECT json_group_array(json_object(
+        'slug', c.slug, 'status', c.status, 'priority', c.priority,
+        'case_kind', $(case_kind_value_expr 'c.'),
+        'goal', c.goal, 'resolution_summary', c.resolution_summary,
+        'resolved_at', c.resolved_at, 'archived_at', c.archived_at
+      ))
     FROM cases_fts fts
     JOIN cases c ON c.id = fts.rowid
     WHERE cases_fts MATCH ${fts_match}
@@ -1441,9 +1481,9 @@ SQL
     else
       local results
       results=$(db_query --separator '|' <<SQL
-SELECT c.slug, c.status, c.priority, c.goal, c.resolution_summary, c.resolved_at
-FROM cases_fts fts
-JOIN cases c ON c.id = fts.rowid
+  SELECT c.slug, c.status, c.priority, $(case_kind_value_expr 'c.'), c.goal, c.resolution_summary, c.resolved_at
+  FROM cases_fts fts
+  JOIN cases c ON c.id = fts.rowid
 WHERE cases_fts MATCH ${fts_match}
   AND ${where_clause}
 ORDER BY
@@ -1464,11 +1504,12 @@ SELECT json_object(
   'statuses', '${status_filter}',
   'deep', json('false'),
   'results', COALESCE((
-    SELECT json_group_array(json_object(
-      'slug', c.slug, 'status', c.status, 'priority', c.priority,
-      'goal', c.goal, 'resolution_summary', c.resolution_summary,
-      'resolved_at', c.resolved_at, 'archived_at', c.archived_at
-    ))
+      SELECT json_group_array(json_object(
+        'slug', c.slug, 'status', c.status, 'priority', c.priority,
+        'case_kind', $(case_kind_value_expr 'c.'),
+        'goal', c.goal, 'resolution_summary', c.resolution_summary,
+        'resolved_at', c.resolved_at, 'archived_at', c.archived_at
+      ))
     FROM cases c
     WHERE ${where_clause}
       AND (c.slug LIKE '%${like_safe}%' ESCAPE '\' OR c.goal LIKE '%${like_safe}%' ESCAPE '\' OR c.resolution_summary LIKE '%${like_safe}%' ESCAPE '\')
@@ -1482,8 +1523,8 @@ SQL
     else
       local results
       results=$(db_query --separator '|' <<SQL
-SELECT c.slug, c.status, c.priority, c.goal, c.resolution_summary, c.resolved_at
-FROM cases c
+  SELECT c.slug, c.status, c.priority, $(case_kind_value_expr 'c.'), c.goal, c.resolution_summary, c.resolved_at
+  FROM cases c
 WHERE ${where_clause}
 AND (c.slug LIKE '%${like_safe}%' ESCAPE '\' OR c.goal LIKE '%${like_safe}%' ESCAPE '\' OR c.resolution_summary LIKE '%${like_safe}%' ESCAPE '\')
 ORDER BY
@@ -1505,11 +1546,15 @@ SQL
       count=$(echo "$results" | wc -l)
       echo "Found $count case(s) matching '$query'"
       echo ""
-      while IFS='|' read -r rslug rstatus rpriority rgoal rsummary rresolved; do
-        echo "  [$rstatus] $rslug ($rpriority)"
-        echo "    Goal: $rgoal"
-        [[ -n "$rsummary" ]] && echo "    Summary: $rsummary"
-        [[ -n "$rresolved" ]] && echo "    Resolved: $rresolved"
+        while IFS='|' read -r rslug rstatus rpriority rkind rgoal rsummary rresolved; do
+          local label="$rpriority"
+          if [[ "$rkind" != "$(default_case_kind)" ]]; then
+            label="${label}, ${rkind}"
+          fi
+          echo "  [$rstatus] $rslug ($label)"
+          echo "    Goal: $rgoal"
+          [[ -n "$rsummary" ]] && echo "    Summary: $rsummary"
+          [[ -n "$rresolved" ]] && echo "    Resolved: $rresolved"
         echo ""
       done <<< "$results"
     fi

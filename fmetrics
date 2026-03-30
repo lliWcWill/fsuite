@@ -143,7 +143,21 @@ CREATE TABLE IF NOT EXISTS telemetry (
 CREATE INDEX IF NOT EXISTS idx_tool ON telemetry(tool);
 CREATE INDEX IF NOT EXISTS idx_project ON telemetry(project_name);
 CREATE INDEX IF NOT EXISTS idx_timestamp ON telemetry(timestamp);
-PRAGMA journal_mode=WAL;
+CREATE TABLE IF NOT EXISTS analytics_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS run_facts_v1 (
+  run_id TEXT PRIMARY KEY,
+  first_timestamp TEXT NOT NULL,
+  last_timestamp TEXT NOT NULL,
+  project_name TEXT NOT NULL,
+  tool_count INTEGER NOT NULL,
+  nonzero_exit_count INTEGER NOT NULL,
+  tools_csv TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_run_facts_project ON run_facts_v1(project_name);
+  PRAGMA journal_mode=WAL;
 SQL
 
   # Migrate legacy UNIQUE(timestamp,tool,path_hash) schema to run_id-based dedupe.
@@ -199,10 +213,38 @@ SQL
     ensure_column telemetry ram_total_kb "ALTER TABLE telemetry ADD COLUMN ram_total_kb INTEGER DEFAULT -1;" || true
     ensure_column telemetry ram_available_kb "ALTER TABLE telemetry ADD COLUMN ram_available_kb INTEGER DEFAULT -1;" || true
     ensure_column telemetry load_avg_1m "ALTER TABLE telemetry ADD COLUMN load_avg_1m TEXT DEFAULT '-1';" || true
-    ensure_column telemetry filesystem_type "ALTER TABLE telemetry ADD COLUMN filesystem_type TEXT DEFAULT 'unknown';" || true
-    ensure_column telemetry storage_type "ALTER TABLE telemetry ADD COLUMN storage_type TEXT DEFAULT 'unknown';" || true
-    ensure_column telemetry run_id "ALTER TABLE telemetry ADD COLUMN run_id TEXT DEFAULT '';" || true
-  fi
+      ensure_column telemetry filesystem_type "ALTER TABLE telemetry ADD COLUMN filesystem_type TEXT DEFAULT 'unknown';" || true
+      ensure_column telemetry storage_type "ALTER TABLE telemetry ADD COLUMN storage_type TEXT DEFAULT 'unknown';" || true
+      ensure_column telemetry run_id "ALTER TABLE telemetry ADD COLUMN run_id TEXT DEFAULT '';" || true
+    fi
+  }
+
+rebuild_analytics() {
+  ensure_db
+  local rebuilt_at
+  rebuilt_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+  sqlite3 "$DB_FILE" <<SQL >/dev/null 2>&1 || die "analytics rebuild failed"
+BEGIN IMMEDIATE;
+DELETE FROM run_facts_v1;
+INSERT INTO run_facts_v1 (run_id, first_timestamp, last_timestamp, project_name, tool_count, nonzero_exit_count, tools_csv)
+SELECT
+  run_id,
+  MIN(timestamp) AS first_timestamp,
+  MAX(timestamp) AS last_timestamp,
+  COALESCE(MAX(project_name), '') AS project_name,
+  COUNT(*) AS tool_count,
+  SUM(CASE WHEN exit_code != 0 THEN 1 ELSE 0 END) AS nonzero_exit_count,
+  COALESCE(group_concat(DISTINCT tool), '') AS tools_csv
+FROM telemetry
+WHERE COALESCE(run_id, '') != ''
+GROUP BY run_id;
+INSERT INTO analytics_meta (key, value) VALUES ('analytics_version', '1')
+  ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+INSERT INTO analytics_meta (key, value) VALUES ('last_rebuilt_at', '$rebuilt_at')
+  ON CONFLICT(key) DO UPDATE SET value=excluded.value;
+COMMIT;
+SQL
 }
 
 # -------------------------
@@ -264,6 +306,7 @@ cmd_import() {
   ensure_db
 
   if [[ ! -f "$JSONL_FILE" ]]; then
+    rebuild_analytics
     echo "No telemetry data found at $JSONL_FILE"
     echo "Run fsuite tools (ftree, fsearch, fcontent) to generate telemetry."
     return 0
@@ -339,10 +382,12 @@ cmd_import() {
       (( inserted++ )) || true
     else
       (( skipped++ )) || true
-    fi
-  done < "$JSONL_FILE"
+      fi
+    done < "$JSONL_FILE"
 
-  if [[ "$OUTPUT" == "json" ]]; then
+    rebuild_analytics
+
+    if [[ "$OUTPUT" == "json" ]]; then
     echo "{\"tool\":\"fmetrics\",\"version\":\"$VERSION\",\"subcommand\":\"import\",\"total_lines\":$total,\"inserted\":$inserted,\"skipped\":$skipped,\"errors\":$errors,\"db_path\":\"$DB_FILE\"}"
   else
     echo "Importing telemetry data..."
@@ -886,12 +931,14 @@ cmd_clean() {
   fi
 
   if (( to_delete == 0 )); then
+    rebuild_analytics
     echo "Nothing to clean. All $to_keep records are within the last $days days."
     return 0
   fi
 
   sqlite3 "$DB_FILE" "DELETE FROM telemetry WHERE timestamp < '$cutoff';"
   sqlite3 "$DB_FILE" "VACUUM;"
+  rebuild_analytics
 
   if [[ "$OUTPUT" == "json" ]]; then
     local db_size
