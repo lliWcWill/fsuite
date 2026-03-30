@@ -136,6 +136,36 @@ test_invalid_type() {
   fi
 }
 
+test_invalid_match() {
+  local output rc=0
+  output=$("${FSEARCH}" --match invalid "docs" "${TEST_DIR}" 2>&1) || rc=$?
+  if [[ $rc -ne 0 ]] && [[ "$output" =~ "Invalid --match" ]]; then
+    pass "Correctly errors on invalid match"
+  else
+    fail "Should error on invalid match"
+  fi
+}
+
+test_invalid_mode() {
+  local output rc=0
+  output=$("${FSEARCH}" --mode invalid "docs" "${TEST_DIR}" 2>&1) || rc=$?
+  if [[ $rc -ne 0 ]] && [[ "$output" =~ "Invalid --mode" ]]; then
+    pass "Correctly errors on invalid mode"
+  else
+    fail "Should error on invalid mode"
+  fi
+}
+
+test_invalid_preview() {
+  local output rc=0
+  output=$("${FSEARCH}" --preview nope "docs" "${TEST_DIR}" 2>&1) || rc=$?
+  if [[ $rc -ne 0 ]] && [[ "$output" =~ "Invalid --preview" ]]; then
+    pass "Correctly errors on invalid preview"
+  else
+    fail "Should error on invalid preview"
+  fi
+}
+
 # ============================================================================
 # Pattern Matching Tests
 # ============================================================================
@@ -732,6 +762,9 @@ main() {
   run_test "Invalid output format error" test_invalid_output_format
   run_test "Invalid backend error" test_invalid_backend
   run_test "Invalid type error" test_invalid_type
+  run_test "Invalid match error" test_invalid_match
+  run_test "Invalid mode error" test_invalid_mode
+  run_test "Invalid preview error" test_invalid_preview
 
   # Pattern matching
   run_test "Glob extension pattern" test_glob_extension
