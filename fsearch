@@ -482,19 +482,122 @@ choose_backend() {
 # Find results with find
 run_find() {
   local path="$1"
-  local glob="$2"
+  local query="$2"
+  local search_type="${3:-file}"
+  local match_mode="${4:-name}"
+  local type_args=()
+
+  case "$search_type" in
+    file) type_args=(-type f) ;;
+    dir) type_args=(-type d) ;;
+    both) type_args=( \( -type f -o -type d \) ) ;;
+  esac
+
   # 2>/dev/null to avoid permission noise in normal use; agent can rerun with sudo if needed.
-  find "$path" -type f -name "$glob" 2>/dev/null
+  if [[ "$match_mode" == "name" ]]; then
+    find "$path" "${type_args[@]}" -name "$query" 2>/dev/null | normalize_result_paths_stream
+  else
+    find "$path" "${type_args[@]}" 2>/dev/null \
+      | normalize_result_paths_stream \
+      | match_paths_stream "$query" "$match_mode"
+  fi
 }
 
 # Find results with fd/fdfind
 run_fd() {
   local bin="$1"   # fd or fdfind
   local path="$2"
-  local glob="$3"
+  local query="$3"
+  local search_type="${4:-file}"
+  local match_mode="${5:-name}"
+  local type_args=()
+
+  case "$search_type" in
+    file) type_args=(-t f) ;;
+    dir) type_args=(-t d) ;;
+    both) type_args=(-t f -t d) ;;
+  esac
+
   # fd uses pattern matching; for glob, use --glob
-  # We search files only (-t f). Quiet permission errors by default.
-  "$bin" -t f --glob "$glob" "$path" 2>/dev/null
+  if [[ "$match_mode" == "name" ]]; then
+    "$bin" "${type_args[@]}" --glob "$query" "$path" 2>/dev/null | normalize_result_paths_stream
+  else
+    "$bin" "${type_args[@]}" . "$path" 2>/dev/null \
+      | normalize_result_paths_stream \
+      | match_paths_stream "$query" "$match_mode"
+  fi
+}
+
+normalize_result_paths_stream() {
+  local item
+  while IFS= read -r item; do
+    [[ -z "$item" ]] && continue
+    if [[ "$item" != "/" ]]; then
+      item="${item%/}"
+    fi
+    printf "%s\n" "$item"
+  done
+}
+
+match_paths_stream() {
+  local query="$1"
+  local match_mode="$2"
+  local item base
+
+  while IFS= read -r item; do
+    [[ -z "$item" ]] && continue
+    base="${item##*/}"
+
+    case "$match_mode" in
+      path)
+        path_matches_filter "$item" "$query" && printf "%s\n" "$item"
+        ;;
+      both)
+        if path_matches_filter "$base" "$query" || path_matches_filter "$item" "$query"; then
+          printf "%s\n" "$item"
+        fi
+        ;;
+      *)
+        path_matches_filter "$base" "$query" && printf "%s\n" "$item"
+        ;;
+    esac
+  done
+}
+
+collect_preview() {
+  local dir_path="$1"
+  local limit="$2"
+
+  [[ "$limit" =~ ^[0-9]+$ ]] || return 0
+  (( limit > 0 )) || return 0
+  [[ -d "$dir_path" ]] || return 0
+
+  find "$dir_path" -mindepth 1 -maxdepth 1 2>/dev/null \
+    | filter_results_stream \
+    | LC_ALL=C sort \
+    | head -n "$((limit + 1))"
+}
+
+path_kind() {
+  local path="$1"
+  if [[ -d "$path" ]]; then
+    printf "dir"
+  else
+    printf "file"
+  fi
+}
+
+render_next_hint_json() {
+  local path="$1"
+  local kind="$2"
+  local escaped_path
+
+  escaped_path="$(printf "%s" "$path" | json_escape)"
+  if [[ "$kind" == "dir" ]]; then
+    printf '{"tool":"ftree","args":{"path":"%s","depth":2}}' "$escaped_path"
+  else
+    printf '{"tool":"fread","args":{"path":"%s"}}' "$escaped_path"
+  fi
 }
 
 # JSON escape minimal
@@ -685,24 +788,30 @@ BACKEND_BIN="$(choose_backend "$BACKEND")"
 # Bound memory: collect only MAX+1 filtered results first, then compute exact
 # filtered total only when truncation is detected.
 if [[ "$BACKEND_BIN" == "find" ]]; then
-  mapfile -t RESULTS < <(run_find "$SEARCH_PATH" "$NAME_GLOB" | filter_results_stream | head -n "$((MAX + 1))" || true)
+  mapfile -t RESULTS < <(run_find "$SEARCH_PATH" "$NAME_GLOB" "$SEARCH_TYPE" "$MATCH_MODE" | filter_results_stream | head -n "$((MAX + 1))" || true)
 else
-  mapfile -t RESULTS < <(run_fd "$BACKEND_BIN" "$SEARCH_PATH" "$NAME_GLOB" | filter_results_stream | head -n "$((MAX + 1))" || true)
+  mapfile -t RESULTS < <(run_fd "$BACKEND_BIN" "$SEARCH_PATH" "$NAME_GLOB" "$SEARCH_TYPE" "$MATCH_MODE" | filter_results_stream | head -n "$((MAX + 1))" || true)
 fi
 
 TOTAL_FOUND="${#RESULTS[@]}"
 if (( TOTAL_FOUND > MAX )); then
   _full_count=0
   if [[ "$BACKEND_BIN" == "find" ]]; then
-    _full_count=$(run_find "$SEARCH_PATH" "$NAME_GLOB" | filter_results_stream | wc -l || true)
+    _full_count=$(run_find "$SEARCH_PATH" "$NAME_GLOB" "$SEARCH_TYPE" "$MATCH_MODE" | filter_results_stream | wc -l || true)
   else
-    _full_count=$(run_fd "$BACKEND_BIN" "$SEARCH_PATH" "$NAME_GLOB" | filter_results_stream | wc -l || true)
+    _full_count=$(run_fd "$BACKEND_BIN" "$SEARCH_PATH" "$NAME_GLOB" "$SEARCH_TYPE" "$MATCH_MODE" | filter_results_stream | wc -l || true)
   fi
   _full_count="${_full_count//[[:space:]]/}"
   [[ "$_full_count" =~ ^[0-9]+$ ]] && TOTAL_FOUND="$_full_count"
 fi
 SHOWN="$TOTAL_FOUND"
 if (( SHOWN > MAX )); then SHOWN="$MAX"; fi
+
+TOP_LEVEL_NEXT_HINT_JSON="null"
+if (( TOTAL_FOUND == 1 && SHOWN == 1 )); then
+  _top_kind="$(path_kind "${RESULTS[0]}")"
+  TOP_LEVEL_NEXT_HINT_JSON="$(render_next_hint_json "${RESULTS[0]}" "$_top_kind")"
+fi
 
 # -------------------------
 # Output
@@ -724,6 +833,9 @@ if [[ "$OUTPUT" == "json" ]]; then
   echo -n "\"name_glob\":\"$(printf "%s" "$NAME_GLOB" | json_escape)\","
   echo -n "\"path\":\"$(printf "%s" "$SEARCH_PATH" | json_escape)\","
   echo -n "\"backend\":\"$BACKEND_BIN\","
+  echo -n "\"search_type\":\"$SEARCH_TYPE\","
+  echo -n "\"match_mode\":\"$MATCH_MODE\","
+  echo -n "\"preview_limit\":$PREVIEW,"
   echo -n "\"total_found\":$TOTAL_FOUND,"
   echo -n "\"shown\":$SHOWN,"
   echo -n "\"results\":["
@@ -732,7 +844,40 @@ if [[ "$OUTPUT" == "json" ]]; then
     if (( i > 0 )); then echo -n ","; fi
     echo -n "\"$p\""
   done
-  echo -n "]}"
+  echo -n "],\"hits\":["
+  for ((i=0; i<SHOWN; i++)); do
+    hit_path="${RESULTS[i]}"
+    hit_kind="$(path_kind "$hit_path")"
+    if (( i > 0 )); then echo -n ","; fi
+    echo -n "{"
+    echo -n "\"path\":\"$(printf "%s" "$hit_path" | json_escape)\","
+    echo -n "\"kind\":\"$hit_kind\","
+    echo -n "\"matched_on\":\"$MATCH_MODE\""
+
+    if [[ "$hit_kind" == "dir" && "$PREVIEW" -gt 0 ]]; then
+      mapfile -t PREVIEW_PATHS < <(collect_preview "$hit_path" "$PREVIEW" || true)
+      preview_truncated="false"
+      preview_count="${#PREVIEW_PATHS[@]}"
+      if (( preview_count > PREVIEW )); then
+        preview_truncated="true"
+        preview_count="$PREVIEW"
+      fi
+
+      echo -n ",\"preview\":["
+      for ((j=0; j<preview_count; j++)); do
+        child_path="${PREVIEW_PATHS[j]}"
+        child_name="${child_path##*/}"
+        child_kind="$(path_kind "$child_path")"
+        if (( j > 0 )); then echo -n ","; fi
+        echo -n "{\"name\":\"$(printf "%s" "$child_name" | json_escape)\",\"kind\":\"$child_kind\"}"
+      done
+      echo -n "],\"preview_truncated\":$preview_truncated"
+    fi
+
+    echo -n ",\"next_hint\":$(render_next_hint_json "$hit_path" "$hit_kind")"
+    echo -n "}"
+  done
+  echo -n "],\"next_hint\":$TOP_LEVEL_NEXT_HINT_JSON}"
   echo
   exit 0
 fi
@@ -740,7 +885,7 @@ fi
 # pretty output
 if (( QUIET == 0 )); then
   echo "Search(pattern: \"$PATTERN\" -> name \"$NAME_GLOB\", path: \"$SEARCH_PATH\")"
-  echo "  ⎿ Found $TOTAL_FOUND files (backend: $BACKEND_BIN)"
+  echo "  ⎿ Found $TOTAL_FOUND results (backend: $BACKEND_BIN)"
 fi
 if (( TOTAL_FOUND == 0 )); then exit 0; fi
 for ((i=0; i<SHOWN; i++)); do

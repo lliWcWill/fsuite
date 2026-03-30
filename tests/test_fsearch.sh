@@ -23,9 +23,12 @@ setup() {
   mkdir -p "${TEST_DIR}/subdir1"
   mkdir -p "${TEST_DIR}/subdir2/nested"
   mkdir -p "${TEST_DIR}/src"
+  mkdir -p "${TEST_DIR}/src/auth"
   mkdir -p "${TEST_DIR}/dist"
   mkdir -p "${TEST_DIR}/node_modules"
   mkdir -p "${TEST_DIR}/node_modules/cache"
+  mkdir -p "${TEST_DIR}/docs/handoffs"
+  mkdir -p "${TEST_DIR}/docs/plans"
   touch "${TEST_DIR}/file1.log"
   touch "${TEST_DIR}/file2.txt"
   touch "${TEST_DIR}/subdir1/test.log"
@@ -38,6 +41,9 @@ setup() {
   touch "${TEST_DIR}/upscale_video.mp4"
   touch "${TEST_DIR}/progress_bar.js"
   touch "${TEST_DIR}/test_progress.py"
+  touch "${TEST_DIR}/docs/handoffs/note.md"
+  touch "${TEST_DIR}/docs/plans/plan.md"
+  touch "${TEST_DIR}/src/auth/index.ts"
   touch "${TEST_DIR}/node_modules/cache/bundle.log"
   touch "${TEST_DIR}/node_modules/legacy.log"
   touch "${TEST_DIR}/package.json"
@@ -364,6 +370,63 @@ test_question_mark_wildcard() {
     pass "Question mark wildcard *.p? works"
   else
     fail "Question mark wildcard should find at least 1 file"
+  fi
+}
+
+test_type_dir_finds_directory() {
+  local output
+  output=$("${FSEARCH}" --type dir --output paths "docs" "${TEST_DIR}" 2>&1)
+  if [[ "$output" == "${TEST_DIR}/docs" ]]; then
+    pass "--type dir returns directory hits"
+  else
+    fail "--type dir should find docs directory without backend-specific suffixes" "Output: $output"
+  fi
+}
+
+test_type_both_path_match_finds_dir_and_file() {
+  local output
+  output=$("${FSEARCH}" --type both --match path --output json "auth" "${TEST_DIR}" 2>&1)
+  if [[ "$output" == *'"search_type":"both"'* ]] && \
+     [[ "$output" == *'"match_mode":"path"'* ]] && \
+     [[ "$output" == *"${TEST_DIR}/src/auth"* ]] && \
+     [[ "$output" == *"${TEST_DIR}/src/auth/index.ts"* ]]; then
+    pass "--type both with path matching finds directories and files"
+  else
+    fail "--type both with --match path should include auth dir and file hits" "Output: $output"
+  fi
+}
+
+test_json_hits_are_additive() {
+  local output
+  output=$("${FSEARCH}" --type dir --preview 2 --output json "docs" "${TEST_DIR}" 2>&1)
+  if [[ "$output" == *'"results":['* ]] && \
+     [[ "$output" == *'"hits":['* ]] && \
+     [[ "$output" == *'"preview_limit":2'* ]] && \
+     [[ "$output" == *'"search_type":"dir"'* ]]; then
+    pass "JSON keeps results[] and adds hits[]"
+  else
+    fail "JSON should include additive navigation fields" "Output: $output"
+  fi
+}
+
+test_dir_preview_is_shallow_and_deterministic() {
+  local output
+  output=$("${FSEARCH}" --type dir --preview 2 --output json "docs" "${TEST_DIR}" 2>&1)
+  if [[ "$output" == *'"preview":[{"name":"handoffs","kind":"dir"},{"name":"plans","kind":"dir"}]'* ]]; then
+    pass "Preview is shallow, sorted, and deterministic"
+  else
+    fail "Preview should list immediate sorted children only" "Output: $output"
+  fi
+}
+
+test_top_level_next_hint_stays_null_when_truncated() {
+  local output
+  mkdir -p "${TEST_DIR}/alt/docs"
+  output=$("${FSEARCH}" --type dir --preview 1 --max 1 --output json "docs" "${TEST_DIR}" 2>&1)
+  if [[ "$output" == *'"total_found":2'* ]] && [[ "$output" == *'"shown":1'* ]] && [[ "$output" == *'"next_hint":null'* ]]; then
+    pass "Top-level next_hint stays null when max truncates ambiguous results"
+  else
+    fail "Top-level next_hint should stay null when multiple hits were truncated" "Output: $output"
   fi
 }
 
@@ -783,6 +846,11 @@ main() {
   run_test "Combined include and exclude" test_include_and_exclude_combined
   run_test "Default ignore filters dependency trees" test_default_ignore_filters_dependency_trees
   run_test "--no-default-ignore restores dependency trees" test_no_default_ignore_restores_dependency_trees
+  run_test "--type dir returns directory hits" test_type_dir_finds_directory
+  run_test "--type both path matching finds dirs and files" test_type_both_path_match_finds_dir_and_file
+  run_test "JSON keeps additive hit metadata" test_json_hits_are_additive
+  run_test "Preview is shallow and deterministic" test_dir_preview_is_shallow_and_deterministic
+  run_test "Top-level next_hint stays null when truncated" test_top_level_next_hint_stays_null_when_truncated
 
   # Output formats
   run_test "Pretty output format" test_pretty_output
