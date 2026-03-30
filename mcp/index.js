@@ -791,8 +791,12 @@ server.registerTool(
       const { stdout } = await run(resolveTool("fsearch"), args, EXEC_OPTS);
       try {
         const parsed = JSON.parse(stdout);
+        const rendered = renderFsearchStructured(parsed);
+        if (typeof rendered !== "string") {
+          return { content: [{ type: "text", text: stdout }] };
+        }
         return {
-          content: [{ type: "text", text: renderFsearchStructured(parsed) }],
+          content: [{ type: "text", text: rendered }],
           structuredContent: parsed,
         };
       } catch (renderErr) {

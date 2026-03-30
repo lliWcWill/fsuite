@@ -434,7 +434,19 @@ test_json_hits_are_additive() {
 test_dir_preview_is_shallow_and_deterministic() {
   local output
   output=$("${FSEARCH}" --type dir --preview 2 --output json "docs" "${TEST_DIR}" 2>&1)
-  if [[ "$output" == *'"preview":[{"name":"handoffs","kind":"dir"},{"name":"plans","kind":"dir"}]'* ]]; then
+  local preview_ok
+  preview_ok=$(echo "$output" | python3 -c '
+import sys, json
+data = json.load(sys.stdin)
+hits = data.get("hits", [])
+preview = hits[0].get("preview") if hits else None
+expected = [
+    {"name": "handoffs", "kind": "dir"},
+    {"name": "plans", "kind": "dir"},
+]
+print("yes" if preview == expected else "no")
+' 2>/dev/null || echo "no")
+  if [[ "$preview_ok" == "yes" ]]; then
     pass "Preview is shallow, sorted, and deterministic"
   else
     fail "Preview should list immediate sorted children only" "Output: $output"
@@ -741,6 +753,40 @@ test_json_parseable() {
   fi
 }
 
+test_json_escapes_control_chars_in_paths() {
+  local control_name control_dir output parsed
+  control_name=$'docs-\001control'
+  control_dir="${TEST_DIR}/${control_name}"
+  mkdir -p "${control_dir}"
+
+  output=$("${FSEARCH}" --output json --type dir --mode literal "${control_name}" "${TEST_DIR}" 2>&1)
+  parsed=$(printf '%s' "${output}" | python3 -c '
+import json
+import sys
+
+data = json.load(sys.stdin)
+if len(data.get("hits", [])) != 1:
+    print("no")
+    raise SystemExit(0)
+
+hit = data["hits"][0]
+next_hint = data.get("next_hint") or {}
+ok = (
+    hit.get("kind") == "dir"
+    and hit.get("path", "").endswith("docs-\x01control")
+    and next_hint.get("tool") == "ftree"
+    and (next_hint.get("args") or {}).get("path") == hit.get("path")
+)
+print("yes" if ok else "no")
+' 2>/dev/null || echo "no")
+
+  if [[ "${parsed}" == "yes" ]]; then
+    pass "JSON escapes control characters in nav paths"
+  else
+    fail "JSON output should remain parseable for control-character paths"
+  fi
+}
+
 test_paths_pipeable() {
   local output
   output=$("${FSEARCH}" --output paths "*.log" "${TEST_DIR}" 2>&1) || true
@@ -936,6 +982,7 @@ main() {
 
   # Integration
   run_test "JSON parseable" test_json_parseable
+  run_test "JSON escapes control-char paths" test_json_escapes_control_chars_in_paths
   run_test "Paths pipeable" test_paths_pipeable
 
   # Negative tests

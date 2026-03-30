@@ -610,8 +610,8 @@ render_next_hint_json() {
 
 # JSON escape minimal
 json_escape() {
-  # Escapes backslashes, double quotes, tabs, carriage returns, and newlines.
-  sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/\\t/g' -e 's/\r/\\r/g' -e ':a;N;$!ba;s/\n/\\n/g'
+  # Escapes JSON string delimiters plus all ASCII control characters.
+  perl -0pe 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\r/\\r/g; s/\n/\\n/g; s/([\x00-\x1f])/sprintf("\\u%04x", ord($1))/ge'
 }
 
 # -------------------------

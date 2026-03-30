@@ -56,6 +56,40 @@ run_engine() {
   echo "$1" | python3 "$ENGINE" 2>/dev/null
 }
 
+run_engine_with_stubbed_fsearch() {
+  local request_json="$1"
+  local stub_stdout="${2-}"
+  local stub_stderr="${3-}"
+  local stub_rc="${4-0}"
+
+  python3 - "$ENGINE" "$request_json" "$stub_stdout" "$stub_stderr" "$stub_rc" <<'PY'
+import importlib.util
+import json
+import sys
+
+engine_path, request_json, stub_stdout, stub_stderr, stub_rc = sys.argv[1:6]
+stub_rc = int(stub_rc)
+spec = importlib.util.spec_from_file_location("fs_engine_test", engine_path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+request = json.loads(request_json)
+
+def fake_run_tool(name, args, stdin_data=None, timeout=module.TIMEOUT_SECONDS):
+    if name != "fsearch":
+        raise AssertionError(f"unexpected tool call: {name}")
+    return stub_stdout, stub_stderr, stub_rc, False
+
+module.run_tool = fake_run_tool
+
+try:
+    result = module.orchestrate(request)
+except Exception as exc:
+    result = {"error": f"engine error: {exc}", "query": request.get("query", "")}
+
+print(json.dumps(result))
+PY
+}
+
 # ── Preflight check ─────────────────────────────────────────────────────────
 
 if [[ ! -f "$ENGINE" ]]; then
@@ -346,6 +380,78 @@ assert_eq "CLI --help exits 0" "0" "$help_rc"
 version_out=$("$FS" --version 2>/dev/null)
 assert_eq "CLI --version contains 2.3.0" "true" "$([[ "$version_out" == *"2.3.0"* ]] && echo true || echo false)"
 
+# CLI pretty output should not show orphan preview ellipsis without visible children
+STUB_FS_DIR=$(mktemp -d)
+cp "$FS" "$STUB_FS_DIR/fs"
+chmod +x "$STUB_FS_DIR/fs"
+cat > "$STUB_FS_DIR/fs-engine.py" <<'PYEOF'
+#!/usr/bin/env python3
+import json
+import sys
+
+sys.stdin.read()
+json.dump({
+    "query": "docs",
+    "path": "/tmp",
+    "intent": "nav",
+    "resolved_intent": "nav",
+    "route_reason": "explicit override",
+    "route_confidence": "high",
+    "selected_chain": ["fsearch"],
+    "hits": [
+        {
+            "path": "/tmp/docs",
+            "kind": "dir",
+            "preview": [],
+            "preview_truncated": True,
+        }
+    ],
+    "truncated": False,
+    "budget": {
+        "candidate_files": 1,
+        "enriched_files": 0,
+        "time_ms": 1,
+    },
+    "next_hint": {
+        "tool": "ftree",
+        "args": {
+            "path": "/tmp/docs",
+            "depth": 2,
+        }
+    },
+}, sys.stdout)
+PYEOF
+chmod +x "$STUB_FS_DIR/fs-engine.py"
+PRETTY_STDERR=$(mktemp)
+if pretty_out=$("$STUB_FS_DIR/fs" -o pretty docs /tmp 2>"$PRETTY_STDERR"); then
+  pretty_rc=0
+else
+  pretty_rc=$?
+fi
+pretty_err=$(cat "$PRETTY_STDERR")
+rm -f "$PRETTY_STDERR"
+rm -rf "$STUB_FS_DIR"
+pretty_check=$(printf '%s' "$pretty_out" | python3 -c '
+import re
+import sys
+text = re.sub(r"\x1b\[[0-9;]*m", "", sys.stdin.read())
+has_path = "/tmp/docs/" in text
+has_orphan_ellipsis = any(line == "  ..." for line in text.splitlines())
+print("yes" if has_path and not has_orphan_ellipsis else "no")
+' 2>/dev/null || echo "no")
+assert_eq "CLI pretty output regression exits 0" "0" "$pretty_rc"
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "$pretty_check" == "yes" ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} CLI pretty output suppresses orphan preview ellipsis"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} CLI pretty output should suppress orphan preview ellipsis"
+  echo "  exit: ${pretty_rc}"
+  echo "  stderr: ${pretty_err}"
+  echo "  output: ${pretty_out}"
+fi
+
 # ============================================================================
 # Section 7: Chain Execution Integration Tests
 # ============================================================================
@@ -490,6 +596,60 @@ assert_json_field "7.8 bare docs remains low confidence" "$result" "route_confid
 result=$("$FS" -o json "docs" "$TEST_DIR" --intent nav 2>/dev/null || true)
 next_tool=$(echo "$result" | python3 -c "import sys,json; print((json.load(sys.stdin).get('next_hint') or {}).get('tool', ''))" 2>/dev/null || echo "")
 assert_eq "7.9 nav dir hit suggests ftree" "ftree" "$next_tool"
+
+# 7.10 — malformed nav JSON from fsearch surfaces as an error
+result=$(run_engine_with_stubbed_fsearch '{"query":"docs","path":"/tmp","intent":"nav"}' '{not json')
+assert_json_field "7.10 malformed nav JSON keeps query context" "$result" "query" "docs"
+engine_error=$(echo "$result" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(data.get('error', ''))
+" 2>/dev/null || echo "")
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "$engine_error" == *"fsearch returned invalid JSON"* ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} 7.10 malformed nav JSON returns an engine error"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} 7.10 malformed nav JSON should return an engine error"
+  echo "  actual error: ${engine_error}"
+fi
+
+# 7.11 — nav fsearch exit failures surface as engine errors
+result=$(run_engine_with_stubbed_fsearch '{"query":"docs","path":"/tmp","intent":"nav"}' '' 'permission denied' 17)
+assert_json_field "7.11 fsearch exit failure keeps query context" "$result" "query" "docs"
+engine_error=$(echo "$result" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(data.get('error', ''))
+" 2>/dev/null || echo "")
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "$engine_error" == *"fsearch failed with exit 17: permission denied"* ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} 7.11 fsearch exit failures return an engine error"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} 7.11 fsearch exit failures should return an engine error"
+  echo "  actual error: ${engine_error}"
+fi
+
+# 7.12 — empty nav JSON output surfaces as engine errors
+result=$(run_engine_with_stubbed_fsearch '{"query":"docs","path":"/tmp","intent":"nav"}')
+assert_json_field "7.12 empty nav JSON keeps query context" "$result" "query" "docs"
+engine_error=$(echo "$result" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print(data.get('error', ''))
+" 2>/dev/null || echo "")
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "$engine_error" == *"fsearch returned empty JSON output"* ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} 7.12 empty nav JSON returns an engine error"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} 7.12 empty nav JSON should return an engine error"
+  echo "  actual error: ${engine_error}"
+fi
 
 # ============================================================================
 # Results

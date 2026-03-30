@@ -232,8 +232,9 @@ else:
         item_path = h.get('file') or h.get('path', '')
         suffix = '/' if h.get('kind') == 'dir' else ''
         print(f'{GREEN}{item_path}{suffix}{NC}')
-        if 'preview' in h:
-            for child in h['preview'][:5]:
+        preview = h.get('preview')
+        if isinstance(preview, list) and preview:
+            for child in preview[:5]:
                 child_name = child.get('name', '')
                 child_suffix = '/' if child.get('kind') == 'dir' else ''
                 print(f'  {DIM}{child_name}{child_suffix}{NC}')

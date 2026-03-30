@@ -222,11 +222,22 @@ def run_fsearch_json(query, path, timeout=TIMEOUT_SECONDS):
     stdout, stderr, rc, timed_out = run_tool("fsearch", args, timeout=timeout)
     if timed_out:
         return None, True
+    if rc != 0:
+        detail = stderr.strip() or stdout.strip() or "no output"
+        raise ValueError(f"fsearch failed with exit {rc}: {detail}")
+    if not stdout.strip():
+        raise ValueError("fsearch returned empty JSON output")
 
     try:
         result = json.loads(stdout) if stdout.strip() else {}
-    except json.JSONDecodeError:
-        result = {}
+    except json.JSONDecodeError as exc:
+        detail = stderr.strip() or stdout.strip()
+        if len(detail) > 160:
+            detail = detail[:157] + "..."
+        location = f"line {exc.lineno} column {exc.colno}"
+        if detail:
+            raise ValueError(f"fsearch returned invalid JSON at {location}: {detail}") from exc
+        raise ValueError(f"fsearch returned invalid JSON at {location}") from exc
     return result, False
 
 
