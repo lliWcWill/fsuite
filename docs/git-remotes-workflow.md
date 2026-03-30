@@ -35,6 +35,11 @@ This repo uses three remotes with different jobs. Do not assume `origin` is the 
 
 `fork` is the integration point for upstream-facing work. `origin` is a private derivative with extra history that should not be flattened, rebased away, or accidentally published upstream.
 
+## Memory anchors
+
+- Memory ID `730`: canonical note for the fsuite git remotes and PR workflow
+- Memory ID `731`: canonical note for this workflow document path
+
 ## Quick command examples
 
 ```bash
