@@ -616,6 +616,7 @@ fcontent [OPTIONS] <query> [path]
 - Configurable match (`-m`) and file (`-n`) caps to prevent terminal floods
 - Quiet mode (`-q`) for existence checks — exit 0 if found, 1 if not
 - Pass-through for extra `rg` flags via `--rg-args`
+- MCP mode forces fixed-string matching by default so regex metacharacters stay literal for agents
 
 **Operational note:** use `fcontent` after narrowing with `fsearch`/`fmap`/`fread`, but do not treat literal search as a fallback. Within a narrowed scope, exact text is often the cleanest and fastest route to the next structural step. `fcontent -o paths` is especially useful when the next move is `fmap`.
 
@@ -1535,7 +1536,7 @@ All twelve tools with their functional roles:
 | `fs` | Meta | Unified search orchestrator — load the mental model, auto-route queries, and return ranked results |
 | `ftree` | Scout | Directory tree with snapshot mode and JSON output. The first call on any new project. |
 | `fsearch` | Search | Find files by glob or name pattern. Produces `-o paths` compatible output. |
-| `fcontent` | Search | Search file contents for a literal string. Can consume a file list from stdin in CLI mode; in MCP mode, accepts a path or file list directly. |
+| `fcontent` | Search | Search file contents for a literal string. Can consume a file list from stdin in CLI mode; in MCP mode, accepts a path or file list directly and forces fixed-string matching by default. |
 | `fmap` | Structure | Extract symbol maps (functions, classes, imports, exports) from source files. Core of the investigation chain. |
 | `fread` | Read | Budgeted file reading with symbol resolution, line ranges, and context windows around patterns. The primary file reading tool. |
 | `fedit` | Mutation | Surgical text editing — replace by function name, exact string, or line range. Emits a diff on completion. |

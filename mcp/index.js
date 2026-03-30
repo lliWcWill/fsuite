@@ -16,6 +16,7 @@ import { writeFile as fsWriteFile, mkdtemp, unlink, rmdir } from "node:fs/promis
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import hljs from "highlight.js";
+import { buildFcontentArgs } from "./fcontent-args.js";
 
 // ─── ANSI helpers ────────────────────────────────────────────────
 const RESET = "\x1b[0m";
@@ -670,7 +671,8 @@ server.registerTool(
     title: coloredTitle("fcontent"),
     description:
       "Search inside files for literal strings. Wraps ripgrep with agent-friendly output. " +
-      "Use LITERAL strings only — no grep regex. For multiple terms, call multiple times.",
+      "MCP mode forces fixed-string matching by default so regex metacharacters stay literal. " +
+      "For multiple terms, call multiple times.",
     inputSchema: z.object({
       query: z.string().describe("Literal string to search for"),
       path: z.string().optional().describe("Directory to search (recursive). Default: cwd"),
@@ -679,13 +681,7 @@ server.registerTool(
     }),
   },
   async ({ query, path, max_matches, case_insensitive }) => {
-    const args = [query];
-    if (path) args.push(path);
-    // Always get JSON from CLI — MCP renderer handles pretty formatting with syntax highlighting
-    args.push("-o", "json");
-    if (max_matches) args.push("-m", String(max_matches));
-    if (case_insensitive) args.push("--rg-args", "-i");
-    return cli("fcontent", args);
+    return cli("fcontent", buildFcontentArgs({ query, path, max_matches, case_insensitive }));
   }
 );
 
