@@ -117,14 +117,22 @@ DEFAULT_MAX=50
 DEFAULT_BACKEND="auto"   # auto|find|fd
 DEFAULT_OUTPUT="pretty"  # pretty|json|paths
 DEFAULT_EXCLUDE_PATTERNS=(
-  "*/node_modules/*"
-  "*/dist/*"
-  "*/build/*"
-  "*/.next/*"
-  "*/coverage/*"
-  "*/.git/*"
-  "*/vendor/*"
-  "*/target/*"
+"*/node_modules"
+"*/node_modules/*"
+"*/dist"
+"*/dist/*"
+"*/build"
+"*/build/*"
+"*/.next"
+"*/.next/*"
+"*/coverage"
+"*/coverage/*"
+"*/.git"
+"*/.git/*"
+"*/vendor"
+"*/vendor/*"
+"*/target"
+"*/target/*"
 )
 
 # -------------------------

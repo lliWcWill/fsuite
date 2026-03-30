@@ -29,6 +29,7 @@ setup() {
   mkdir -p "${TEST_DIR}/node_modules/cache"
   mkdir -p "${TEST_DIR}/docs/handoffs"
   mkdir -p "${TEST_DIR}/docs/plans"
+  mkdir -p "${TEST_DIR}/docs/node_modules"
   touch "${TEST_DIR}/file1.log"
   touch "${TEST_DIR}/file2.txt"
   touch "${TEST_DIR}/subdir1/test.log"
@@ -43,6 +44,7 @@ setup() {
   touch "${TEST_DIR}/test_progress.py"
   touch "${TEST_DIR}/docs/handoffs/note.md"
   touch "${TEST_DIR}/docs/plans/plan.md"
+  touch "${TEST_DIR}/docs/node_modules/hidden.js"
   touch "${TEST_DIR}/src/auth/index.ts"
   touch "${TEST_DIR}/node_modules/cache/bundle.log"
   touch "${TEST_DIR}/node_modules/legacy.log"
@@ -373,6 +375,26 @@ test_question_mark_wildcard() {
   fi
 }
 
+test_default_ignore_filters_low_signal_dir_roots() {
+  local output
+  output=$("${FSEARCH}" --type dir --output paths "node_modules" "${TEST_DIR}" 2>&1)
+  if [[ -z "$output" ]]; then
+    pass "Default ignore filters low-signal directory roots in nav mode"
+  else
+    fail "Default ignore should suppress low-signal directory roots in nav mode" "Output: $output"
+  fi
+}
+
+test_no_default_ignore_restores_low_signal_dir_roots() {
+  local output
+  output=$("${FSEARCH}" --no-default-ignore --type dir --output paths "node_modules" "${TEST_DIR}" 2>&1)
+  if [[ "$output" == *"${TEST_DIR}/node_modules"* ]] && [[ "$output" == *"${TEST_DIR}/docs/node_modules"* ]]; then
+    pass "--no-default-ignore restores low-signal directory roots in nav mode"
+  else
+    fail "--no-default-ignore should restore low-signal directory roots in nav mode" "Output: $output"
+  fi
+}
+
 test_type_dir_finds_directory() {
   local output
   output=$("${FSEARCH}" --type dir --output paths "docs" "${TEST_DIR}" 2>&1)
@@ -416,6 +438,16 @@ test_dir_preview_is_shallow_and_deterministic() {
     pass "Preview is shallow, sorted, and deterministic"
   else
     fail "Preview should list immediate sorted children only" "Output: $output"
+  fi
+}
+
+test_dir_preview_filters_low_signal_children() {
+  local output
+  output=$("${FSEARCH}" --type dir --preview 5 --output json "docs" "${TEST_DIR}" 2>&1)
+  if [[ "$output" != *'"name":"node_modules"'* ]]; then
+    pass "Preview filters low-signal child directories"
+  else
+    fail "Preview should suppress low-signal child directories by default" "Output: $output"
   fi
 }
 
@@ -859,10 +891,13 @@ main() {
   run_test "Combined include and exclude" test_include_and_exclude_combined
   run_test "Default ignore filters dependency trees" test_default_ignore_filters_dependency_trees
   run_test "--no-default-ignore restores dependency trees" test_no_default_ignore_restores_dependency_trees
+  run_test "Default ignore filters low-signal dir roots" test_default_ignore_filters_low_signal_dir_roots
+  run_test "--no-default-ignore restores low-signal dir roots" test_no_default_ignore_restores_low_signal_dir_roots
   run_test "--type dir returns directory hits" test_type_dir_finds_directory
   run_test "--type both path matching finds dirs and files" test_type_both_path_match_finds_dir_and_file
   run_test "JSON keeps additive hit metadata" test_json_hits_are_additive
   run_test "Preview is shallow and deterministic" test_dir_preview_is_shallow_and_deterministic
+  run_test "Preview filters low-signal child dirs" test_dir_preview_filters_low_signal_children
   run_test "Top-level next_hint stays null when truncated" test_top_level_next_hint_stays_null_when_truncated
 
   # Output formats
