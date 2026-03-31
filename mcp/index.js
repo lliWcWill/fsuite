@@ -625,20 +625,43 @@ const RENDERERS = {
   fsearch: renderFsearchResult,
 };
 
+function maybeParseJson(raw) {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeStructuredContent(parsed) {
+  if (parsed === undefined) return undefined;
+  // MCP results are happiest when structured content is object-shaped.
+  // Preserve array payloads without forcing agents to scrape text output.
+  if (Array.isArray(parsed)) return { items: parsed };
+  return parsed;
+}
+
 // ─── Helper: run CLI tool, pretty-render if possible ─────────────
 async function cli(tool, args, renderAs) {
   try {
     const { stdout, stderr } = await run(resolveTool(tool), args, EXEC_OPTS);
     const raw = stdout || stderr || "(no output)";
+    const parsed = normalizeStructuredContent(maybeParseJson(raw));
 
-    // Try pretty rendering
+    // Try pretty rendering first so humans still get a readable summary.
     const renderer = RENDERERS[renderAs || tool];
     if (renderer) {
       const pretty = renderer(raw);
-      if (pretty) return { content: [{ type: "text", text: pretty }] };
+      if (pretty) {
+        const result = { content: [{ type: "text", text: pretty }] };
+        if (parsed !== undefined) result.structuredContent = parsed;
+        return result;
+      }
     }
 
-    return { content: [{ type: "text", text: raw }] };
+    const result = { content: [{ type: "text", text: raw }] };
+    if (parsed !== undefined) result.structuredContent = parsed;
+    return result;
   } catch (err) {
     return { content: [{ type: "text", text: `Error running ${tool}: ${err.stderr || err.stdout || err.message}` }], isError: true };
   }
@@ -894,40 +917,40 @@ server.registerTool(
 );
 
 // ─── fcase ───────────────────────────────────────────────────────
-server.registerTool(
-  "fcase",
-  {
-    title: coloredTitle("fcase"),
-    description:
-      "Investigation continuity ledger. Track findings, evidence, and handoff state across sessions. Supports full lifecycle: open, resolve, archive, delete. Search resolved cases with find.",
-    inputSchema: z.object({
-      action: z.enum(["init", "note", "status", "list", "next", "handoff", "export",
-        "resolve", "archive", "delete", "find"]).describe("Case action"),
-      slug: z.string().optional().describe("Case identifier (e.g. 'auth-refactor')"),
-      goal: z.string().optional().describe("Case goal (for init)"),
-      body: z.string().optional().describe("Note body (for note/next)"),
-      priority: z.enum(["low", "medium", "high", "critical"]).optional(),
-      summary: z.string().optional().describe("Resolution summary (required for resolve action)"),
-      reason: z.string().optional().describe("Deletion reason (required for delete action)"),
-      confirm_delete: z.string().optional().describe("Must be literal 'DELETE' to confirm deletion"),
-      query: z.string().optional().describe("Search query (for find action)"),
-      deep: z.boolean().optional().describe("Deep search including evidence/hypotheses (for find)"),
-      statuses: z.string().optional().describe("Comma-separated status filter: open,resolved,archived,deleted,all (for list/find)"),
-    }),
-  },
+  server.registerTool(
+    "fcase",
+    {
+      title: coloredTitle("fcase"),
+      description:
+        "Investigation continuity ledger. Track findings, evidence, and handoff state across sessions. Supports full lifecycle: open, resolve, archive, delete. Search resolved cases with find.",
+      inputSchema: z.object({
+        action: z.enum(["init", "note", "status", "list", "next", "handoff", "export",
+          "resolve", "archive", "delete", "find"]).describe("Case action"),
+        slug: z.string().optional().describe("Case identifier (e.g. 'auth-refactor')"),
+        goal: z.string().optional().describe("Case goal (for init)"),
+        body: z.string().optional().describe("Note body (for note/next)"),
+        priority: z.enum(["low", "medium", "high", "critical"]).optional(),
+        summary: z.string().optional().describe("Resolution summary (required for resolve action)"),
+        reason: z.string().optional().describe("Deletion reason (required for delete action)"),
+        confirm_delete: z.string().optional().describe("Must be literal 'DELETE' to confirm deletion"),
+        query: z.string().optional().describe("Search query (for find action)"),
+        deep: z.boolean().optional().describe("Deep search including evidence/hypotheses (for find)"),
+        statuses: z.string().optional().describe("Comma-separated status filter: open,resolved,archived,deleted,all (for list/find)"),
+      }),
+    },
     async ({ action, slug, goal, body, priority, summary, reason, confirm_delete, query, deep, statuses }) => {
       const args = [action];
       const outputModeByAction = {
-        init: "pretty",
-        status: "pretty",
-        list: "pretty",
-        next: "pretty",
-        handoff: "pretty",
+        init: "json",
+        status: "json",
+        list: "json",
+        next: "json",
+        handoff: "json",
         export: "json",
-        resolve: "pretty",
-        archive: "pretty",
-        delete: "pretty",
-        find: "pretty",
+        resolve: "json",
+        archive: "json",
+        delete: "json",
+        find: "json",
       };
       if (action === "find" && query) {
         args.push(query);
@@ -948,7 +971,7 @@ server.registerTool(
     }
   );
 
-// ─── fmetrics ────────────────────────────────────────────────────
+  // ─── fmetrics ────────────────────────────────────────────────────
   server.registerTool(
     "fmetrics",
     {
@@ -974,52 +997,99 @@ server.registerTool(
       if (contains) args.push("--contains", contains);
       if (min_occurrences !== undefined) args.push("--min-occurrences", String(min_occurrences));
       if (after) args.push("--after", after);
+      args.push("-o", "json");
       return cli("fmetrics", args);
     }
   );
 
-// ─── fprobe ─────────────────────────────────────────────────────
-server.registerTool(
-  "fprobe",
-  {
-    title: coloredTitle("fprobe"),
-    description:
-      "Binary/opaque file reconnaissance. Extracts printable strings, scans for literal " +
-      "byte patterns with context, and reads raw byte windows at known offsets. Works on " +
-      "compiled binaries, SEA bundles, packed assets — anything with embedded text.",
-    inputSchema: z.object({
-      action: z.enum(["strings", "scan", "window"]).describe("Subcommand"),
-      file: z.string().describe("File to probe"),
-      filter: z.string().optional().describe("Filter strings to those containing this literal (strings mode)"),
-      pattern: z.string().optional().describe("Literal pattern to find (scan mode)"),
-      context: z.number().optional().describe("Bytes of context around match (scan mode, default 300)"),
-      offset: z.number().optional().describe("Byte offset to read from (window mode)"),
-      before: z.number().optional().describe("Bytes before offset (window mode, default 0)"),
-      after: z.number().optional().describe("Bytes after offset (window mode, default 200)"),
-      decode: z.enum(["printable", "utf8", "hex"]).optional().describe("Decode mode (window mode, default printable)"),
-      ignore_case: z.boolean().optional().describe("Case-insensitive matching"),
-    }),
-  },
-async ({ action, file, filter, pattern, context, offset, before, after, decode, ignore_case }) => {
-    if (action === "scan" && !pattern) {
-      return { content: [{ type: "text", text: "fprobe scan requires pattern" }], isError: true };
+  // ─── freplay ──────────────────────────────────────────────────────
+  server.registerTool(
+    "freplay",
+    {
+      title: coloredTitle("freplay"),
+      description:
+        "Deterministic replay engine for fsuite investigation commands. Record, inspect, export, verify, and manage replays tied to a case.",
+      inputSchema: z.object({
+        action: z.enum(["record", "show", "list", "export", "verify", "promote", "archive"]).describe("Replay action"),
+        slug: z.string().describe("Case slug"),
+        replay_id: z.number().int().positive().optional().describe("Replay ID for show/export/verify, or positional replay for promote/archive"),
+        purpose: z.string().optional().describe("Human-readable purpose for record"),
+        links: z.array(z.string()).optional().describe("Related links as type:id entries for record"),
+        new: z.boolean().optional().describe("Force a new replay when recording"),
+        command: z.array(z.string()).optional().describe("Command argv after -- for record, e.g. ['fsearch', '-o', 'json', 'docs', '/repo']"),
+      }),
+    },
+    async ({ action, slug, replay_id, purpose, links, new: createNew, command }) => {
+      const args = [action, slug];
+
+      if (action === "record") {
+        if (purpose) args.push("--purpose", purpose);
+        for (const link of (links || [])) args.push("--link", link);
+        if (replay_id !== undefined) args.push("--replay-id", String(replay_id));
+        if (createNew) args.push("--new");
+        if (!command || command.length === 0) {
+          return { content: [{ type: "text", text: "freplay record requires command" }], isError: true };
+        }
+        args.push("--", ...command);
+        return cli("freplay", args);
+      }
+
+      if (action === "promote" || action === "archive") {
+        if (replay_id === undefined) {
+          return { content: [{ type: "text", text: `freplay ${action} requires replay_id` }], isError: true };
+        }
+        args.push(String(replay_id));
+        return cli("freplay", args);
+      }
+
+      if (replay_id !== undefined) args.push("--replay-id", String(replay_id));
+      args.push("-o", "json");
+      return cli("freplay", args);
     }
-    if (action === "window" && offset === undefined) {
-      return { content: [{ type: "text", text: "fprobe window requires offset" }], isError: true };
+  );
+
+  // ─── fprobe ─────────────────────────────────────────────────────
+  server.registerTool(
+    "fprobe",
+    {
+      title: coloredTitle("fprobe"),
+      description:
+        "Binary/opaque file reconnaissance. Extracts printable strings, scans for literal " +
+        "byte patterns with context, and reads raw byte windows at known offsets. Works on " +
+        "compiled binaries, SEA bundles, packed assets — anything with embedded text.",
+      inputSchema: z.object({
+        action: z.enum(["strings", "scan", "window"]).describe("Subcommand"),
+        file: z.string().describe("File to probe"),
+        filter: z.string().optional().describe("Filter strings to those containing this literal (strings mode)"),
+        pattern: z.string().optional().describe("Literal pattern to find (scan mode)"),
+        context: z.number().optional().describe("Bytes of context around match (scan mode, default 300)"),
+        offset: z.number().optional().describe("Byte offset to read from (window mode)"),
+        before: z.number().optional().describe("Bytes before offset (window mode, default 0)"),
+        after: z.number().optional().describe("Bytes after offset (window mode, default 200)"),
+        decode: z.enum(["printable", "utf8", "hex"]).optional().describe("Decode mode (window mode, default printable)"),
+        ignore_case: z.boolean().optional().describe("Case-insensitive matching"),
+      }),
+    },
+    async ({ action, file, filter, pattern, context, offset, before, after, decode, ignore_case }) => {
+      if (action === "scan" && !pattern) {
+        return { content: [{ type: "text", text: "fprobe scan requires pattern" }], isError: true };
+      }
+      if (action === "window" && offset === undefined) {
+        return { content: [{ type: "text", text: "fprobe window requires offset" }], isError: true };
+      }
+      const args = [action, file];
+      if (action === "strings" && filter) args.push("--filter", filter);
+      if (action === "scan" && pattern) args.push("--pattern", pattern);
+      if (context) args.push("--context", String(context));
+      if (offset !== undefined) args.push("--offset", String(offset));
+      if (before !== undefined) args.push("--before", String(before));
+      if (after !== undefined) args.push("--after", String(after));
+      if (decode) args.push("--decode", decode);
+      if (ignore_case) args.push("--ignore-case");
+      args.push("-o", "json");
+      return cli("fprobe", args);
     }
-    const args = [action, file];
-    if (action === "strings" && filter) args.push("--filter", filter);
-    if (action === "scan" && pattern) args.push("--pattern", pattern);
-    if (context) args.push("--context", String(context));
-    if (offset !== undefined) args.push("--offset", String(offset));
-    if (before !== undefined) args.push("--before", String(before));
-    if (after !== undefined) args.push("--after", String(after));
-    if (decode) args.push("--decode", decode);
-    if (ignore_case) args.push("--ignore-case");
-    args.push("-o", "json");
-    return cli("fprobe", args);
-  }
-);
+  );
 
 // ─── fs (unified search orchestrator) ───────────────────────────
 server.registerTool(
