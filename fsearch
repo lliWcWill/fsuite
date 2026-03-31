@@ -817,16 +817,10 @@ else
 fi
 
 TOTAL_FOUND="${#RESULTS[@]}"
-if (( TOTAL_FOUND > MAX )); then
-  _full_count=0
-  if [[ "$BACKEND_BIN" == "find" ]]; then
-    _full_count=$(run_find "$SEARCH_PATH" "$NAME_GLOB" "$SEARCH_TYPE" "$MATCH_MODE" | filter_results_stream | wc -l || true)
-  else
-    _full_count=$(run_fd "$BACKEND_BIN" "$SEARCH_PATH" "$NAME_GLOB" "$SEARCH_TYPE" "$MATCH_MODE" | filter_results_stream | wc -l || true)
-  fi
-  _full_count="${_full_count//[[:space:]]/}"
-  [[ "$_full_count" =~ ^[0-9]+$ ]] && TOTAL_FOUND="$_full_count"
-fi
+# When results exceed MAX, report the collected count (MAX+1) rather than
+# rerunning the entire search pipeline unbounded just to get an exact total.
+# The recount was O(2N) and caused 10s+ timeouts on large trees.
+# Callers already have "truncated: true" to know there are more.
 SHOWN="$TOTAL_FOUND"
 if (( SHOWN > MAX )); then SHOWN="$MAX"; fi
 

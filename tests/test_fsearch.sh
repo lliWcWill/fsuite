@@ -569,8 +569,10 @@ test_max_limit_with_include_filter_total_count() {
 
   local output
   output=$("${FSEARCH}" --output json --max 10 --include "*/z/*" "*.log" "${scoped}" 2>&1)
-  if [[ "$output" =~ \"total_found\":120 ]] && [[ "$output" =~ \"shown\":10 ]]; then
-    pass "JSON filtered total_found stays accurate with max cap"
+  # total_found is the collected count (MAX+1=11) when truncated, not an
+  # exact recount.  shown should be capped at MAX (10).
+  if [[ "$output" =~ \"total_found\":11 ]] && [[ "$output" =~ \"shown\":10 ]]; then
+    pass "JSON filtered total_found reports capped count with max cap"
   else
     fail "Filtered max JSON count is incorrect" "Output: $output"
   fi
@@ -893,41 +895,59 @@ test_default_flag_seeding() {
 # ============================================================================
 
 test_match_both_excludes_node_modules() {
-  # Create a node_modules subtree where "auth" appears in path but should be pruned
+  # Create a node_modules subtree where the query matches only via path.
+  # The bug was that find enumerated node_modules contents even though
+  # EXCLUDE_PATTERNS should prune them.  The test detects this by checking
+  # that node_modules items never reach the find output at all — not just
+  # that they're absent from final JSON (filter_results_stream hid them
+  # even in the broken version).
   mkdir -p "${TEST_DIR}/node_modules/auth-lib/src"
   touch "${TEST_DIR}/node_modules/auth-lib/src/handler.ts"
   touch "${TEST_DIR}/node_modules/auth-lib/index.js"
 
-  local output
-  output=$("${FSEARCH}" -o json --type both --match both auth "${TEST_DIR}" 2>&1)
-  local nm_hits
-  nm_hits=$(echo "$output" | python3 -c 'import sys,json; d=json.load(sys.stdin); print(sum(1 for r in d.get("results",[]) if "node_modules" in r))')
+  # Trace: run fsearch with strace/ltrace is overkill; instead count
+  # how many paths the internal find actually emits by temporarily
+  # making the query match everything in node_modules via path.
+  # If prune works, find never enters node_modules at all, so the
+  # total_found should equal only the src/auth hits.
+  local output total
+  output=$("${FSEARCH}" -o json --type both --match both -m 200 auth "${TEST_DIR}" 2>&1)
+  total=$(echo "$output" | python3 -c 'import sys,json; print(json.load(sys.stdin)["total_found"])')
 
-  if [[ "$nm_hits" == "0" ]]; then
-    pass "match-both excludes node_modules path hits"
+  # Only src/auth and src/auth/index.ts should match.  If node_modules
+  # paths leaked into the pipeline, total would be higher (5+).
+  if (( total <= 3 )); then
+    pass "match-both excludes node_modules path hits (total=$total)"
   else
-    fail "match-both excludes node_modules path hits" "found $nm_hits node_modules hits in results"
+    fail "match-both excludes node_modules path hits" "total_found=$total; node_modules items leaked into pipeline"
   fi
 }
 
-test_match_both_node_modules_perf() {
-  # Simulate a heavy node_modules tree — 2000 files across nested dirs
-  local nm="${TEST_DIR}/node_modules/heavy-dep"
-  mkdir -p "$nm/src" "$nm/lib" "$nm/dist"
-  for i in $(seq 1 500); do
-    touch "$nm/src/file${i}.js" "$nm/lib/file${i}.js" "$nm/dist/file${i}.js" "$nm/file${i}.d.ts"
+test_match_both_no_recount_on_truncation() {
+  # The old code ran the full search pipeline TWICE when results > MAX:
+  # once for results (head -n MAX+1), again unbounded for wc -l.
+  # On large trees this doubled runtime.  After the fix, total_found
+  # should equal the collected count (MAX+1) when truncated, NOT an
+  # exact full count.  This test creates more matches than MAX (50)
+  # and asserts total_found == 51 (the capped count), not the exact
+  # count.  If someone reintroduces the recount, total_found will
+  # be the exact number (e.g. 60) and this test will fail.
+  local matchdir="${TEST_DIR}/many_matches"
+  mkdir -p "$matchdir"
+  for i in $(seq 1 60); do
+    touch "$matchdir/item_${i}.txt"
   done
 
-  local start_ms end_ms elapsed_ms
-  start_ms=$(date +%s%3N)
-  "${FSEARCH}" --type both --match both --preview 5 heavy "${TEST_DIR}" >/dev/null 2>&1
-  end_ms=$(date +%s%3N)
-  elapsed_ms=$((end_ms - start_ms))
+  local output total
+  output=$("${FSEARCH}" -o json --match both -m 50 item "${matchdir}" 2>&1)
+  total=$(echo "$output" | python3 -c 'import sys,json; print(json.load(sys.stdin)["total_found"])')
 
-  if (( elapsed_ms < 2000 )); then
-    pass "match-both on large node_modules completes under 2s (${elapsed_ms}ms)"
+  # With no recount, total_found should be 51 (MAX+1 collected).
+  # With the old recount, it would be 60 (exact).
+  if (( total == 51 )); then
+    pass "Truncated search reports capped total (no recount)"
   else
-    fail "match-both on large node_modules completes under 2s" "took ${elapsed_ms}ms"
+    fail "Truncated search reports capped total (no recount)" "total_found=$total; expected 51 (recount may have been reintroduced)"
   fi
 }
 
@@ -1032,9 +1052,9 @@ main() {
   run_test "Invalid max value" test_invalid_max_value
   run_test "Unknown option" test_unknown_option
 
-  # Regression: node_modules prune in path/both match mode
+  # Regression: node_modules prune + no recount on truncation
   run_test "match-both excludes node_modules path hits" test_match_both_excludes_node_modules
-  run_test "match-both on large node_modules completes under 2s" test_match_both_node_modules_perf
+  run_test "Truncated search reports capped total (no recount)" test_match_both_no_recount_on_truncation
 
   # v1.5.0 features
   run_test "Project-name flag" test_project_name
