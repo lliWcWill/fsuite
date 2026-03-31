@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+# fls — list directory contents as structured JSON.
+# Part of fsuite. The simplest companion tool: one path in, children out.
+#
+# Default: list direct children of the given directory (or cwd).
+# Output: pretty (human) or json (agent). JSON includes name, kind, size.
+#
+# Usage:
+#   fls                    List cwd
+#   fls src/               List src/
+#   fls -o json src/       Structured JSON
+#   fls -a src/            Include hidden files
+#   fls -l src/            Long format (size, mtime, permissions)
+
+set -euo pipefail
+
+VERSION="2.3.0"
+
+# ── Source common library for telemetry ──────────────────────────
+_FSUITE_SCRIPT_DIR="$(cd "$(dirname "$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
+_FSUITE_PARENT_DIR="$(cd "$_FSUITE_SCRIPT_DIR/.." 2>/dev/null && pwd || true)"
+_FSUITE_LIB_CANDIDATES=()
+[[ -n "${FSUITE_SHARE_DIR:-}" ]] && _FSUITE_LIB_CANDIDATES+=("${FSUITE_SHARE_DIR%/}/_fsuite_common.sh")
+_FSUITE_LIB_CANDIDATES+=(
+  "$_FSUITE_SCRIPT_DIR/_fsuite_common.sh"
+  "$_FSUITE_PARENT_DIR/share/fsuite/_fsuite_common.sh"
+  "/usr/local/share/fsuite/_fsuite_common.sh"
+  "/usr/share/fsuite/_fsuite_common.sh"
+)
+for _fsuite_candidate in "${_FSUITE_LIB_CANDIDATES[@]}"; do
+  if [[ -f "$_fsuite_candidate" ]]; then
+    # shellcheck disable=SC1090
+    source "$_fsuite_candidate"
+    break
+  fi
+done
+
+# ── Helpers ──────────────────────────────────────────────────────
+
+json_escape() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+
+die() { echo "fls: error: $*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+fls — list directory contents (fsuite companion tool)
+
+USAGE
+  fls [options] [path]
+
+OPTIONS
+  -o, --output <format>   Output format: pretty (default) or json
+  -a, --all               Include hidden files (dotfiles)
+  -l, --long              Long format: include size, mtime, permissions
+  -h, --help              Show this help
+  --version               Show version
+
+EXAMPLES
+  fls                     List current directory
+  fls src/                List src/
+  fls -o json src/        JSON output for agents
+  fls -al src/            Long format with hidden files
+
+HEADLESS / AI AGENT USAGE
+  fls -o json /path
+  The agent can parse:
+    - "path"      — directory listed
+    - "total"     — number of entries
+    - "entries"   — array of { name, kind, size?, mtime?, mode? }
+    - "kind"      — "file" or "dir" or "symlink" or "other"
+EOF
+}
+
+# ── Parse arguments ──────────────────────────────────────────────
+
+OUTPUT="pretty"
+SHOW_ALL=0
+LONG_FORMAT=0
+TARGET=""
+
+while (( $# > 0 )); do
+  case "$1" in
+    -o|--output) OUTPUT="${2:-pretty}"; shift 2 ;;
+    -a|--all) SHOW_ALL=1; shift ;;
+    -l|--long) LONG_FORMAT=1; shift ;;
+    -al|-la) SHOW_ALL=1; LONG_FORMAT=1; shift ;;
+    -h|--help) usage; exit 0 ;;
+    --version) echo "fls $VERSION"; exit 0 ;;
+    -*) die "unknown option: $1" ;;
+    *)
+      [[ -z "$TARGET" ]] || die "unexpected argument: $1"
+      TARGET="$1"; shift ;;
+  esac
+done
+
+# ── Resolve path ─────────────────────────────────────────────────
+
+if [[ -z "$TARGET" ]]; then
+  TARGET="$PWD"
+elif [[ "$TARGET" == "~/"* ]]; then
+  TARGET="${HOME}/${TARGET#\~/}"
+elif [[ "$TARGET" == "~" ]]; then
+  TARGET="$HOME"
+fi
+
+if [[ "$TARGET" != /* ]]; then
+  TARGET="$PWD/$TARGET"
+fi
+
+TARGET=$(realpath -e "$TARGET" 2>/dev/null || printf '%s' "$TARGET")
+
+[[ -d "$TARGET" ]] || die "not a directory: $TARGET"
+
+# ── Collect entries ──────────────────────────────────────────────
+
+declare -a NAMES=()
+declare -a KINDS=()
+declare -a SIZES=()
+declare -a MTIMES=()
+declare -a MODES=()
+
+while IFS= read -r -d '' entry; do
+  name="${entry##*/}"
+  [[ -n "$name" ]] || continue
+
+  # Skip hidden unless -a
+  if (( SHOW_ALL == 0 )) && [[ "$name" == .* ]]; then
+    continue
+  fi
+
+  # Determine kind
+  if [[ -L "$entry" ]]; then
+    kind="symlink"
+  elif [[ -d "$entry" ]]; then
+    kind="dir"
+  elif [[ -f "$entry" ]]; then
+    kind="file"
+  else
+    kind="other"
+  fi
+
+  NAMES+=("$name")
+  KINDS+=("$kind")
+
+  if (( LONG_FORMAT )); then
+    local_size=$(stat -c '%s' "$entry" 2>/dev/null || stat -f '%z' "$entry" 2>/dev/null || echo "-1")
+    local_mtime=$(stat -c '%Y' "$entry" 2>/dev/null || stat -f '%m' "$entry" 2>/dev/null || echo "0")
+    local_mode=$(stat -c '%A' "$entry" 2>/dev/null || stat -f '%Sp' "$entry" 2>/dev/null || echo "?")
+    SIZES+=("$local_size")
+    MTIMES+=("$local_mtime")
+    MODES+=("$local_mode")
+  fi
+done < <(find "$TARGET" -maxdepth 1 -mindepth 1 -print0 2>/dev/null | sort -z)
+
+TOTAL="${#NAMES[@]}"
+
+# ── Telemetry ────────────────────────────────────────────────────
+
+if type -t _fsuite_emit_telemetry &>/dev/null; then
+  _fsuite_emit_telemetry "fls" "$VERSION" "list" "$TARGET" "" "$TOTAL" "-1" "" "find" "" 2>/dev/null || true
+fi
+
+# ── Output ───────────────────────────────────────────────────────
+
+if [[ "$OUTPUT" == "json" ]]; then
+  echo -n "{\"tool\":\"fls\",\"version\":\"$VERSION\""
+  echo -n ",\"path\":\"$(json_escape "$TARGET")\""
+  echo -n ",\"total\":$TOTAL"
+  echo -n ",\"show_hidden\":$(( SHOW_ALL ))"
+  echo -n ",\"long\":$(( LONG_FORMAT ))"
+  echo -n ",\"entries\":["
+  for ((i=0; i<TOTAL; i++)); do
+    (( i > 0 )) && echo -n ","
+    echo -n "{\"name\":\"$(json_escape "${NAMES[$i]}")\""
+    echo -n ",\"kind\":\"${KINDS[$i]}\""
+    if (( LONG_FORMAT )); then
+      echo -n ",\"size\":${SIZES[$i]}"
+      echo -n ",\"mtime\":${MTIMES[$i]}"
+      echo -n ",\"mode\":\"${MODES[$i]}\""
+    fi
+    echo -n "}"
+  done
+  echo "]}"
+else
+  # Pretty output
+  echo "fls: $TARGET ($TOTAL entries)"
+  for ((i=0; i<TOTAL; i++)); do
+    local_name="${NAMES[$i]}"
+    local_kind="${KINDS[$i]}"
+    if [[ "$local_kind" == "dir" ]]; then
+      printf "  %s/\n" "$local_name"
+    elif [[ "$local_kind" == "symlink" ]]; then
+      printf "  %s@\n" "$local_name"
+    else
+      if (( LONG_FORMAT )); then
+        # Human-readable size
+        local_bytes="${SIZES[$i]}"
+        if (( local_bytes >= 1048576 )); then
+          hr_size="$(( local_bytes / 1048576 ))M"
+        elif (( local_bytes >= 1024 )); then
+          hr_size="$(( local_bytes / 1024 ))K"
+        else
+          hr_size="${local_bytes}B"
+        fi
+        printf "  %-40s %8s  %s\n" "$local_name" "$hr_size" "${MODES[$i]}"
+      else
+        printf "  %s\n" "$local_name"
+      fi
+    fi
+  done
+fi
