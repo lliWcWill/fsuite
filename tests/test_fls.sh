@@ -202,6 +202,26 @@ print("ok" if "size" in e and "mtime" in e and "mode" in e else "missing")
   fi
 }
 
+test_long_pretty_shows_all_metadata() {
+  local output
+  output=$("${FLS}" -l "${TEST_DIR}" 2>&1)
+  # Long pretty should show permissions, size, mtime, and name for ALL entry kinds
+  # including dirs and symlinks, not just regular files.
+  local ok=1
+  # Check a dir entry has permissions (drwx pattern)
+  [[ "$output" == *"drwx"* ]] || ok=0
+  # Check mtime appears (YYYY-MM-DD pattern)
+  [[ "$output" =~ [0-9]{4}-[0-9]{2}-[0-9]{2} ]] || ok=0
+  # Check dirs still get / suffix in long mode
+  [[ "$output" == *"src/"* ]] || ok=0
+
+  if (( ok )); then
+    pass "Long pretty shows metadata for all entry kinds"
+  else
+    fail "Long pretty shows metadata for all entry kinds" "$output"
+  fi
+}
+
 # ── Edge cases ───────────────────────────────────────────────────
 
 test_empty_dir() {
@@ -264,6 +284,7 @@ main() {
   run_test "JSON total matches entries" test_json_total_matches_entries
   run_test "JSON symlink kind" test_json_symlink_kind
   run_test "Long JSON metadata" test_long_json_has_metadata
+  run_test "Long pretty metadata for all kinds" test_long_pretty_shows_all_metadata
   run_test "Empty directory" test_empty_dir
   run_test "Nonexistent path" test_nonexistent_path
   run_test "Default cwd" test_cwd_default

@@ -157,7 +157,7 @@ while IFS= read -r -d '' entry; do
     MTIMES+=("$local_mtime")
     MODES+=("$local_mode")
   fi
-done < <(find "$TARGET" -maxdepth 1 -mindepth 1 -print0 2>/dev/null | sort -z)
+done < <(find "$TARGET" -maxdepth 1 -mindepth 1 -print0 2>/dev/null | LC_ALL=C sort -z 2>/dev/null || find "$TARGET" -maxdepth 1 -mindepth 1 -print0 2>/dev/null)
 
 TOTAL="${#NAMES[@]}"
 
@@ -194,25 +194,28 @@ else
   for ((i=0; i<TOTAL; i++)); do
     local_name="${NAMES[$i]}"
     local_kind="${KINDS[$i]}"
-    if [[ "$local_kind" == "dir" ]]; then
-      printf "  %s/\n" "$local_name"
-    elif [[ "$local_kind" == "symlink" ]]; then
-      printf "  %s@\n" "$local_name"
-    else
-      if (( LONG_FORMAT )); then
-        # Human-readable size
-        local_bytes="${SIZES[$i]}"
-        if (( local_bytes >= 1048576 )); then
-          hr_size="$(( local_bytes / 1048576 ))M"
-        elif (( local_bytes >= 1024 )); then
-          hr_size="$(( local_bytes / 1024 ))K"
-        else
-          hr_size="${local_bytes}B"
-        fi
-        printf "  %-40s %8s  %s\n" "$local_name" "$hr_size" "${MODES[$i]}"
+
+    # Suffix: / for dirs, @ for symlinks
+    suffix=""
+    [[ "$local_kind" == "dir" ]] && suffix="/"
+    [[ "$local_kind" == "symlink" ]] && suffix="@"
+    display_name="${local_name}${suffix}"
+
+    if (( LONG_FORMAT )); then
+      local_bytes="${SIZES[$i]}"
+      if (( local_bytes >= 1048576 )); then
+        hr_size="$(( local_bytes / 1048576 ))M"
+      elif (( local_bytes >= 1024 )); then
+        hr_size="$(( local_bytes / 1024 ))K"
       else
-        printf "  %s\n" "$local_name"
+        hr_size="${local_bytes}B"
       fi
+      hr_mtime=$(date -d "@${MTIMES[$i]}" '+%Y-%m-%d %H:%M' 2>/dev/null \
+        || date -r "${MTIMES[$i]}" '+%Y-%m-%d %H:%M' 2>/dev/null \
+        || echo "${MTIMES[$i]}")
+      printf "  %-10s %8s  %s  %s\n" "${MODES[$i]}" "$hr_size" "$hr_mtime" "$display_name"
+    else
+      printf "  %s\n" "$display_name"
     fi
   done
 fi

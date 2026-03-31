@@ -17,6 +17,7 @@ override_dh_auto_install:
 	install -D -m 755 freplay $(CURDIR)/debian/fsuite/usr/bin/freplay
 	install -D -m 755 fprobe $(CURDIR)/debian/fsuite/usr/bin/fprobe
 	install -D -m 755 fs $(CURDIR)/debian/fsuite/usr/bin/fs
+	install -D -m 755 fls $(CURDIR)/debian/fsuite/usr/bin/fls
 	install -D -m 755 fprobe-engine.py $(CURDIR)/debian/fsuite/usr/share/fsuite/fprobe-engine.py
 	install -D -m 755 fs-engine.py $(CURDIR)/debian/fsuite/usr/share/fsuite/fs-engine.py
 	install -D -m 755 fmetrics-predict.py $(CURDIR)/debian/fsuite/usr/share/fsuite/fmetrics-predict.py

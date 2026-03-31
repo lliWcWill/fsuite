@@ -1209,6 +1209,46 @@ const parsed = JSON.parse(stdout);
   }
 );
 
+// ─── fls (companion directory lister) ────────────────────────────
+server.registerTool(
+  "fls",
+  {
+    title: coloredTitle("fls"),
+    description:
+      "List directory contents — the simple companion to ftree. " +
+      "One path in, flat list of children out. Use for quick directory inspection " +
+      "without the overhead of ftree. Returns structured JSON with name, kind, " +
+      "and optional size/mtime/mode. Default: list cwd.",
+    inputSchema: z.object({
+      path: z.string().optional().describe("Directory to list (default: cwd)"),
+      all: z.boolean().optional().describe("Include hidden files (dotfiles)"),
+      long: z.boolean().optional().describe("Include size, mtime, permissions"),
+    }),
+    outputSchema: z.object({
+      tool: z.literal("fls"),
+      version: z.string(),
+      path: z.string(),
+      total: z.number(),
+      show_hidden: z.number(),
+      long: z.number(),
+      entries: z.array(z.object({
+        name: z.string(),
+        kind: z.enum(["file", "dir", "symlink", "other"]),
+        size: z.number().optional(),
+        mtime: z.number().optional(),
+        mode: z.string().optional(),
+      })),
+    }),
+  },
+  async ({ path, all, long }) => {
+    const args = ["-o", "json"];
+    if (all) args.push("-a");
+    if (long) args.push("-l");
+    if (path) args.push(path);
+    return cli("fls", args);
+  }
+);
+
 // ─── Start ───────────────────────────────────────────────────────
 const transport = new StdioServerTransport();
 await server.connect(transport);

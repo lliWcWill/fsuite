@@ -35,6 +35,7 @@
 | **`freplay`** | Deterministic replay of recorded investigation command sequences |
 | **`fprobe`** | Binary and opaque-file reconnaissance — strings, scan, and byte-window reads |
 | **`fmetrics`** | Analyze telemetry, history, combo patterns, recommendations, and predicted runtime |
+| **`fls`** | List directory contents — the simple companion to `ftree` for flat directory views |
 
 The first reconnaissance tools are the sensor layer. `fs` is the unified entry point that accepts a raw query, classifies intent (path pattern, literal content, or structural symbol), and builds the right tool chain automatically — removing the decision overhead from the agent's first move. `fcase` is the continuity ledger. `fedit` is the surgical patch arm. `fwrite` is the safe write surface exposed through the MCP adapter. `freplay` is the investigation playback engine. `fprobe` is the binary sensor. `fmetrics` is the flight recorder and analyst. Together they cover **scout -> find/search -> map -> read -> preserve -> edit -> replay -> probe -> measure**. The `fsuite` command is the suite-level explainer that teaches that flow to humans and agents on first contact.
 
