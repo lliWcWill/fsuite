@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 20
     env:
       FSUITE_TELEMETRY: '3'
-      steps:
+    steps:
       - name: Checkout
         uses: actions/checkout@v6
 
