@@ -92,6 +92,10 @@ def patch_binary(file_path, target_str, replacement_str, dry_run=False):
     """Find and replace a byte pattern in a binary file. Same-length enforced."""
     target = target_str.encode("utf-8", errors="replace")
     replacement = replacement_str.encode("utf-8", errors="replace")
+    write_path = os.path.realpath(file_path)
+
+    if len(target) == 0:
+        return {"error": "target pattern must not be empty", "patched": 0}
 
     if len(replacement) > len(target):
         return {"error": f"replacement ({len(replacement)} bytes) exceeds target ({len(target)} bytes)", "patched": 0}
@@ -99,7 +103,7 @@ def patch_binary(file_path, target_str, replacement_str, dry_run=False):
     if len(replacement) < len(target):
         replacement = replacement + b" " * (len(target) - len(replacement))
 
-    with open(file_path, "rb") as f:
+    with open(write_path, "rb") as f:
         data = bytearray(f.read())
 
     file_size = len(data)
@@ -125,16 +129,16 @@ def patch_binary(file_path, target_str, replacement_str, dry_run=False):
 
     backup_path = None
     if not dry_run and offsets:
-        backup_path = file_path + ".bak"
+        backup_path = write_path + ".bak"
         if not os.path.exists(backup_path):
             import shutil
-            shutil.copy2(file_path, backup_path)
+            shutil.copy2(write_path, backup_path)
         # Write via temp file + rename to handle "Text file busy"
-        tmp_path = file_path + ".fprobe-tmp"
+        tmp_path = write_path + ".fprobe-tmp"
         with open(tmp_path, "wb") as f:
             f.write(data)
-        os.chmod(tmp_path, os.stat(file_path).st_mode)
-        os.rename(tmp_path, file_path)
+        os.chmod(tmp_path, os.stat(write_path).st_mode)
+        os.rename(tmp_path, write_path)
 
     return {
         "patched": len(offsets),

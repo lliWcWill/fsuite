@@ -110,8 +110,8 @@ test_version() {
 test_help() {
   local output
   output=$("${FPROBE}" --help 2>&1)
-  if [[ "$output" == *"strings"* ]] && [[ "$output" == *"scan"* ]] && [[ "$output" == *"window"* ]]; then
-    pass "Help documents all three subcommands"
+  if [[ "$output" == *"strings"* ]] && [[ "$output" == *"scan"* ]] && [[ "$output" == *"window"* ]] && [[ "$output" == *"patch"* ]]; then
+    pass "Help documents all four subcommands"
   else
     fail "Help missing subcommand docs" "Got: $output"
   fi
@@ -353,6 +353,48 @@ test_window_zero_length() {
 }
 
 # ============================================================================
+# patch subcommand
+# ============================================================================
+
+test_patch_dry_run() {
+  local target output
+  target="${TEST_DIR}/patch-dry-run.bin"
+  printf 'hello world hello world' > "$target"
+  output=$("${FPROBE}" patch "$target" --target "hello" --replacement "HELLO" --dry-run -o json 2>&1)
+  if [[ "$output" == *'"patched": 2'* ]] && [[ "$(cat "$target")" == "hello world hello world" ]]; then
+    pass "patch --dry-run reports matches without writing"
+  else
+    fail "patch --dry-run should not modify the file" "Got: $output"
+  fi
+}
+
+test_patch_symlink_preserves_link() {
+  local real link output
+  real="${TEST_DIR}/patch-real.bin"
+  link="${TEST_DIR}/patch-link.bin"
+  printf 'hello world' > "$real"
+  ln -s "$real" "$link"
+  output=$("${FPROBE}" patch "$link" --target "hello" --replacement "HELLO" -o json 2>&1)
+  if [[ -L "$link" ]] && [[ "$(cat "$real")" == "HELLO world" ]] && [[ "$(cat "$link")" == "HELLO world" ]]; then
+    pass "patch preserves symlinks and modifies the target file"
+  else
+    fail "patch should preserve symlinks and patch the real file" "link=$(ls -ld "$link" 2>/dev/null || true), output: $output"
+  fi
+}
+
+test_patch_rejects_empty_target() {
+  local target output rc=0
+  target="${TEST_DIR}/patch-empty-target.bin"
+  printf 'abc' > "$target"
+  output=$("${FPROBE}" patch "$target" --target "" --replacement "" -o json 2>&1) || rc=$?
+  if [[ $rc -ne 0 ]] && [[ "$output" == *"empty"* || "$output" == *"target"* ]]; then
+    pass "patch rejects an empty target pattern"
+  else
+    fail "patch should reject an empty target pattern" "rc=$rc, output: $output"
+  fi
+}
+
+# ============================================================================
 # Cross-cutting concerns
 # ============================================================================
 
@@ -422,9 +464,15 @@ run_test 22 test_window_out_of_bounds
 run_test 23 test_window_zero_length
 
 echo ""
+echo "── patch ──"
+run_test 24 test_patch_dry_run
+run_test 25 test_patch_symlink_preserves_link
+run_test 26 test_patch_rejects_empty_target
+
+echo ""
 echo "── Cross-cutting ──"
-run_test 24 test_plain_text_file
-run_test 25 test_strings_on_text_file
+run_test 27 test_plain_text_file
+run_test 28 test_strings_on_text_file
 
 echo ""
 echo "═══════════════════════════════════════════"
