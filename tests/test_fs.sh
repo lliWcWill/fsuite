@@ -319,6 +319,11 @@ result=$(run_engine '{"query": "config.yaml", "path": "/tmp"}')
 assert_json_field "config.yaml → file intent" "$result" "resolved_intent" "file"
 assert_json_field "config.yaml → high confidence" "$result" "route_confidence" "high"
 
+# Hidden filename query (.toolrc) → file
+result=$(run_engine '{"query": ".toolrc", "path": "/tmp"}')
+assert_json_field ".toolrc → file intent" "$result" "resolved_intent" "file"
+assert_json_field ".toolrc → high confidence" "$result" "route_confidence" "high"
+
 # Scope field present when scope is provided
 result=$(run_engine '{"query": "test", "path": "/tmp", "scope": "*.py"}')
 has_scope=$(echo "$result" | python3 -c "
@@ -351,6 +356,22 @@ else
   echo -e "${RED}✗${NC} scope field should be absent when scope not provided"
 fi
 
+# config_only field present when requested
+result=$(run_engine '{"query": "test", "path": "/tmp", "config_only": true}')
+has_config_only=$(echo "$result" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print('yes' if data.get('config_only') is True else 'no')
+" 2>/dev/null || echo "no")
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "$has_config_only" == "yes" ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} config_only field present when requested"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} config_only field should be present when requested"
+fi
+
 # ============================================================================
 # Section 6: CLI Entrypoint
 # ============================================================================
@@ -368,6 +389,10 @@ assert_json_field "CLI *.py → file" "$result" "resolved_intent" "file"
 result=$("$FS" -o json "renderTool" --scope "*.js" --path /tmp 2>/dev/null || true)
 assert_json_field "CLI --scope passes through" "$result" "resolved_intent" "symbol"
 
+# CLI --config-only flag
+result=$("$FS" -o json "renderTool" --config-only --scope "*.js" --path /tmp 2>/dev/null || true)
+assert_json_field "CLI --config-only passes through" "$result" "config_only" "True"
+
 # CLI --intent override
 result=$("$FS" -o json "authenticate" --intent symbol --path /tmp 2>/dev/null || true)
 assert_json_field "CLI --intent symbol" "$result" "resolved_intent" "symbol"
@@ -376,6 +401,7 @@ assert_json_field "CLI --intent symbol" "$result" "resolved_intent" "symbol"
 help_out=$("$FS" --help 2>/dev/null); help_rc=$?
 assert_eq "CLI --help exits 0" "0" "$help_rc"
 assert_eq "CLI --help documents compact nav mode" "true" "$([[ "$help_out" == *"--compact"* ]] && [[ "$help_out" == *"nav"* ]] && echo true || echo false)"
+assert_eq "CLI --help documents config-only mode" "true" "$([[ "$help_out" == *"--config-only"* ]] && echo true || echo false)"
 
 # CLI --version
 version_out=$("$FS" --version 2>/dev/null)
@@ -465,6 +491,9 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 
 mkdir -p "$TEST_DIR/src"
 mkdir -p "$TEST_DIR/docs/handoffs"
+mkdir -p "$TEST_DIR/.config/opencode"
+mkdir -p "$TEST_DIR/.local/share"
+mkdir -p "$TEST_DIR/visible"
 
 cat > "$TEST_DIR/src/auth.py" << 'PYEOF'
 def authenticate(token, secret):
@@ -490,6 +519,22 @@ PYEOF
 cat > "$TEST_DIR/src/config.json" << 'JSONEOF'
 {"api_key": "test123", "debug": true}
 JSONEOF
+
+cat > "$TEST_DIR/.config/opencode/opencode.json" << 'JSONEOF'
+{"source": "config"}
+JSONEOF
+
+cat > "$TEST_DIR/.local/share/opencode.json" << 'JSONEOF'
+{"source": "local"}
+JSONEOF
+
+cat > "$TEST_DIR/visible/opencode.json" << 'JSONEOF'
+{"source": "visible"}
+JSONEOF
+
+cat > "$TEST_DIR/.toolrc" << 'TXTEOF'
+top-level hidden config
+TXTEOF
 
 cat > "$TEST_DIR/docs/handoffs/note.md" << 'MDEOF'
 # note
@@ -654,6 +699,45 @@ else
   echo "  actual error: ${engine_error}"
 fi
 
+# 7.13 — config-only file search narrows to config roots
+result=$("$FS" -o json "opencode.json" "$TEST_DIR" --config-only 2>/dev/null || true)
+config_search_check=$(echo "$result" | python3 -c '
+import sys, json
+data = json.load(sys.stdin)
+paths = [h.get("file", "") for h in data.get("hits", [])]
+print(
+    (data.get("config_only") is True) and
+    any("/.config/opencode/opencode.json" in p for p in paths) and
+    any("/.local/share/opencode.json" in p for p in paths) and
+    all("/visible/opencode.json" not in p for p in paths)
+)
+' 2>/dev/null || echo "False")
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "$config_search_check" == "True" ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} 7.13 config-only file search stays within config roots"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} 7.13 config-only file search should stay within config roots"
+fi
+
+# 7.14 — config-only includes top-level hidden files
+result=$("$FS" -o json ".toolrc" "$TEST_DIR" --config-only 2>/dev/null || true)
+hidden_file_check=$(echo "$result" | python3 -c '
+import sys, json
+data = json.load(sys.stdin)
+paths = [h.get("file", "") for h in data.get("hits", [])]
+print(any(p.endswith("/.toolrc") for p in paths))
+' 2>/dev/null || echo "False")
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "$hidden_file_check" == "True" ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} 7.14 config-only includes top-level hidden files"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} 7.14 config-only should include top-level hidden files"
+fi
+
 
 # 8 — compact mode
 # 8.1 — compact nav produces relative paths and no next_hint
@@ -705,7 +789,7 @@ spec = importlib.util.spec_from_file_location("fs_engine_test", engine_path)
 mod = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mod)
 
-mod.run_fsearch_json = lambda query, path, max_results=None, timeout=None: ({}, False)
+mod.run_fsearch_json = lambda query, path, config_only=False, max_results=None, timeout=None: ({}, False)
 mod.shape_nav_hits = lambda result: [
     {"path": "/tmp/docs", "kind": "dir", "preview": None},
     {"path": "/tmp/api", "kind": "dir", "preview": ["bad", {"name": "ok"}, {"kind": "dir"}, {"name": "fine", "kind": "dir"}]},

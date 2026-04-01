@@ -134,6 +134,8 @@ DEFAULT_EXCLUDE_PATTERNS=(
 "*/target"
 "*/target/*"
 )
+CONFIG_RECURSIVE_ROOTS=()
+CONFIG_TOP_LEVEL_ROOT=""
 
 # -------------------------
 # Helpers
@@ -187,6 +189,26 @@ path_matches_filter() {
   else
     [[ "$path" == *"$pattern"* ]]
   fi
+}
+
+build_config_roots() {
+  local base="$1"
+  local base_name
+  CONFIG_RECURSIVE_ROOTS=()
+  CONFIG_TOP_LEVEL_ROOT=""
+
+  [[ -d "$base" ]] || return 0
+  base_name="${base##*/}"
+
+  if [[ "$base_name" == ".config" || "$base_name" == ".local" ]]; then
+    CONFIG_RECURSIVE_ROOTS+=("$base")
+    CONFIG_TOP_LEVEL_ROOT="$base"
+    return 0
+  fi
+
+  [[ -d "$base/.config" ]] && CONFIG_RECURSIVE_ROOTS+=("$base/.config")
+  [[ -d "$base/.local" ]] && CONFIG_RECURSIVE_ROOTS+=("$base/.local")
+  CONFIG_TOP_LEVEL_ROOT="$base"
 }
 
 filter_results_stream() {
@@ -257,6 +279,9 @@ QUICK EXAMPLES
   # Prefer fd backend if available (faster than find)
   fsearch --backend fd '*.log' /
 
+  # Narrow to config-like roots under HOME (e.g. ~/.config, ~/.local, top-level dotfiles)
+  fsearch --config-only opencode.json ~
+
 OPTIONS
   -p, --path PATH
       Search root. If omitted, uses current directory.
@@ -279,6 +304,12 @@ OPTIONS
       Disable built-in low-signal directory filtering.
       By default, fsearch suppresses dependency/build trees such as:
         node_modules, dist, build, .next, coverage, .git, vendor, target
+
+  --config-only
+      Narrow traversal to config-like roots under the requested path.
+      Searches recursively in .config/ and .local/, plus top-level hidden
+      files/directories at the root path. Intended for fast dotfile/config lookups.
+      This preset currently uses a dedicated find-based traversal.
 
   -b, --backend auto|find|fd
       Choose search backend.
@@ -563,6 +594,65 @@ run_fd() {
   fi
 }
 
+run_config_find() {
+  local base="$1"
+  local query="$2"
+  local search_type="${3:-file}"
+  local match_mode="${4:-name}"
+  local type_args=()
+  local prune_args=()
+  local root
+
+  build_config_roots "$base"
+
+  case "$search_type" in
+    file) type_args=(-type f) ;;
+    dir) type_args=(-type d) ;;
+    both) type_args=( \( -type f -o -type d \) ) ;;
+  esac
+
+  if (( ${#EXCLUDE_PATTERNS[@]} > 0 )); then
+    for _ep in "${EXCLUDE_PATTERNS[@]}"; do
+      prune_args+=(-path "$_ep" -o)
+    done
+  fi
+
+  {
+    for root in "${CONFIG_RECURSIVE_ROOTS[@]}"; do
+      local find_cmd=(find "$root")
+      if (( ${#prune_args[@]} > 0 )); then
+        find_cmd+=(\( "${prune_args[@]}" -false \) -prune -o)
+      fi
+
+      if [[ "$match_mode" == "name" ]]; then
+        "${find_cmd[@]}" "${type_args[@]}" -name "$query" -print 2>/dev/null
+      else
+        "${find_cmd[@]}" "${type_args[@]}" -print 2>/dev/null
+      fi
+    done
+
+    if [[ -n "$CONFIG_TOP_LEVEL_ROOT" ]]; then
+      local hidden_cmd=(
+        find "$CONFIG_TOP_LEVEL_ROOT"
+        -mindepth 1 -maxdepth 1
+        "${type_args[@]}"
+        -name '.*'
+        ! -name '.'
+        ! -name '..'
+        ! -name '.config'
+        ! -name '.local'
+      )
+
+      if [[ "$match_mode" == "name" ]]; then
+        "${hidden_cmd[@]}" -name "$query" -print 2>/dev/null
+      else
+        "${hidden_cmd[@]}" -print 2>/dev/null
+      fi
+    fi
+  } | normalize_result_paths_stream \
+    | if [[ "$match_mode" == "name" ]]; then cat; else match_paths_stream "$query" "$match_mode"; fi
+}
+
 normalize_result_paths_stream() {
   local item
   while IFS= read -r item; do
@@ -695,6 +785,7 @@ INSTALL_HINTS=0
 SELF_CHECK=0
 QUIET=0
 NO_DEFAULT_IGNORE=0
+CONFIG_ONLY=0
 INCLUDE_PATTERNS=()
 EXCLUDE_PATTERNS=()
 TYPE_SEEN=0
@@ -734,6 +825,11 @@ while [[ $# -gt 0 ]]; do
     --no-default-ignore)
       NO_DEFAULT_IGNORE=1
       _TELEM_FLAGS+=" --no-default-ignore"
+      shift
+      ;;
+    --config-only)
+      CONFIG_ONLY=1
+      _TELEM_FLAGS+=" --config-only"
       shift
       ;;
     -b|--backend) BACKEND="${2:-}"; _TELEM_FLAGS+=" -b $2"; shift 2 ;;
@@ -852,14 +948,20 @@ fi
 [[ -n "$PATTERN" ]] || die "Missing pattern. Try: fsearch --help"
 
 NAME_GLOB="$(normalize_pattern "$PATTERN" "$SEARCH_TYPE" "$MATCH_MODE" "$QUERY_MODE")"
-BACKEND_BIN="$(choose_backend "$BACKEND")"
+if (( CONFIG_ONLY == 1 )); then
+  BACKEND_BIN="config-find"
+else
+  BACKEND_BIN="$(choose_backend "$BACKEND")"
+fi
 
 # -------------------------
 # Execute search
 # -------------------------
 # Bound memory: collect only MAX+1 filtered results first, then compute exact
 # filtered total only when truncation is detected.
-if [[ "$BACKEND_BIN" == "find" ]]; then
+if [[ "$BACKEND_BIN" == "config-find" ]]; then
+  mapfile -t RESULTS < <(collect_limited_results_stream "$((MAX + 1))" run_config_find "$SEARCH_PATH" "$NAME_GLOB" "$SEARCH_TYPE" "$MATCH_MODE" || true)
+elif [[ "$BACKEND_BIN" == "find" ]]; then
   mapfile -t RESULTS < <(collect_limited_results_stream "$((MAX + 1))" run_find "$SEARCH_PATH" "$NAME_GLOB" "$SEARCH_TYPE" "$MATCH_MODE" || true)
 else
   mapfile -t RESULTS < <(collect_limited_results_stream "$((MAX + 1))" run_fd "$BACKEND_BIN" "$SEARCH_PATH" "$NAME_GLOB" "$SEARCH_TYPE" "$MATCH_MODE" || true)
@@ -904,6 +1006,9 @@ if [[ "$OUTPUT" == "json" ]]; then
   echo -n "\"pattern\":\"$(printf "%s" "$PATTERN" | json_escape)\","
   echo -n "\"name_glob\":\"$(printf "%s" "$NAME_GLOB" | json_escape)\","
   echo -n "\"path\":\"$(printf "%s" "$SEARCH_PATH" | json_escape)\","
+  if (( CONFIG_ONLY == 1 )); then
+    echo -n "\"config_only\":true,"
+  fi
   echo -n "\"backend\":\"$BACKEND_BIN\","
   echo -n "\"search_type\":\"$SEARCH_TYPE\","
   echo -n "\"match_mode\":\"$MATCH_MODE\","

@@ -30,6 +30,10 @@ setup() {
   mkdir -p "${TEST_DIR}/docs/handoffs"
   mkdir -p "${TEST_DIR}/docs/plans"
   mkdir -p "${TEST_DIR}/docs/node_modules"
+  mkdir -p "${TEST_DIR}/.config/opencode"
+  mkdir -p "${TEST_DIR}/.local/share"
+  mkdir -p "${TEST_DIR}/.ssh"
+  mkdir -p "${TEST_DIR}/visible"
   touch "${TEST_DIR}/file1.log"
   touch "${TEST_DIR}/file2.txt"
   touch "${TEST_DIR}/subdir1/test.log"
@@ -52,6 +56,11 @@ setup() {
   touch "${TEST_DIR}/src/package.json"
   touch "${TEST_DIR}/dist/package.json"
   touch "${TEST_DIR}/node_modules/package.json"
+  touch "${TEST_DIR}/.config/opencode/opencode.json"
+  touch "${TEST_DIR}/.local/share/opencode.json"
+  touch "${TEST_DIR}/.toolrc"
+  touch "${TEST_DIR}/.ssh/config"
+  touch "${TEST_DIR}/visible/opencode.json"
 }
 
 teardown() {
@@ -342,6 +351,38 @@ test_no_default_ignore_restores_dependency_trees() {
     pass "--no-default-ignore restores dependency/build tree results"
   else
     fail "--no-default-ignore should include node_modules and dist results" "Output: $output"
+  fi
+}
+
+test_config_only_limits_to_config_roots() {
+  local output
+  output=$("${FSEARCH}" --config-only --output paths "opencode.json" "${TEST_DIR}" 2>&1)
+  if [[ "$output" == *"${TEST_DIR}/.config/opencode/opencode.json"* ]] && \
+     [[ "$output" == *"${TEST_DIR}/.local/share/opencode.json"* ]] && \
+     [[ "$output" != *"${TEST_DIR}/visible/opencode.json"* ]]; then
+    pass "--config-only narrows to config roots and skips visible siblings"
+  else
+    fail "--config-only should search only config-like roots" "Output: $output"
+  fi
+}
+
+test_config_only_includes_top_level_hidden_files() {
+  local output
+  output=$("${FSEARCH}" --config-only --output paths ".toolrc" "${TEST_DIR}" 2>&1)
+  if [[ "$output" == *"${TEST_DIR}/.toolrc"* ]]; then
+    pass "--config-only includes top-level hidden files"
+  else
+    fail "--config-only should include top-level hidden files" "Output: $output"
+  fi
+}
+
+test_config_only_surfaces_top_level_hidden_dirs_in_nav_mode() {
+  local output
+  output=$("${FSEARCH}" --config-only --type dir --mode literal --output paths ".ssh" "${TEST_DIR}" 2>&1)
+  if [[ "$output" == *"${TEST_DIR}/.ssh"* ]]; then
+    pass "--config-only nav mode surfaces top-level hidden dirs"
+  else
+    fail "--config-only should surface top-level hidden dirs in nav mode" "Output: $output"
   fi
 }
 
@@ -1101,6 +1142,9 @@ main() {
   run_test "Combined include and exclude" test_include_and_exclude_combined
   run_test "Default ignore filters dependency trees" test_default_ignore_filters_dependency_trees
   run_test "--no-default-ignore restores dependency trees" test_no_default_ignore_restores_dependency_trees
+  run_test "--config-only limits to config roots" test_config_only_limits_to_config_roots
+  run_test "--config-only includes top-level hidden files" test_config_only_includes_top_level_hidden_files
+  run_test "--config-only nav surfaces hidden dirs" test_config_only_surfaces_top_level_hidden_dirs_in_nav_mode
   run_test "Default ignore filters low-signal dir roots" test_default_ignore_filters_low_signal_dir_roots
   run_test "--no-default-ignore restores low-signal dir roots" test_no_default_ignore_restores_low_signal_dir_roots
   run_test "--type dir returns directory hits" test_type_dir_finds_directory
