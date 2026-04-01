@@ -156,6 +156,42 @@ test("fprobe MCP preserves JSON arrays as structured content", async () => {
   }
 });
 
+test("fprobe MCP decode_escapes decodes escape sequences", async () => {
+  const fixture = makeFixture();
+  try {
+    // Create a fixture with literal escape sequence text (not an actual ESC byte)
+    const escapeFile = join(fixture, "escapes.bin");
+    writeFileSync(escapeFile, Buffer.from("\\x1b[31mRED\\x1b[0m", "utf-8"));
+
+    // Test 1: With decode_escapes: false (default), search for literal "\x1b" (4 ASCII chars)
+    const resultLiteral = await callTool("fprobe", {
+      action: "scan",
+      file: escapeFile,
+      pattern: "\\x1b",
+      decode_escapes: false,
+    });
+
+    assert.ok(!resultLiteral.isError, textContent(resultLiteral));
+    assert.ok(Array.isArray(resultLiteral.structuredContent?.items), "should return items array");
+    assert.equal(resultLiteral.structuredContent.items.length, 2, "should find two literal \\x1b sequences");
+
+    // Test 2: With decode_escapes: true, pattern "\\x1b" decodes to ESC byte (0x1b)
+    // The file contains literal "\x1b" not the actual byte, so scan should NOT match
+    const resultDecoded = await callTool("fprobe", {
+      action: "scan",
+      file: escapeFile,
+      pattern: "\\x1b",
+      decode_escapes: true,
+    });
+
+    assert.ok(!resultDecoded.isError, textContent(resultDecoded));
+    assert.ok(Array.isArray(resultDecoded.structuredContent?.items), "should return items array");
+    assert.equal(resultDecoded.structuredContent.items.length, 0, "should NOT find ESC byte (0x1b) in literal \\x1b text");
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
 test("fedit and fwrite MCP return pretty-rendered content", async () => {
   const fixture = makeFixture();
   try {
