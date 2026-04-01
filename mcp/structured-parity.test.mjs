@@ -192,8 +192,9 @@ test("fmetrics MCP preserves stats JSON as structured content", async () => {
   });
 
   assert.ok(!result.isError, textContent(result));
-  assert.equal(result.structuredContent.tool, "fmetrics");
-  assert.ok(Array.isArray(result.structuredContent.tools));
+  assert.ok(result.structuredContent, "fmetrics should have structuredContent");
+  // tool field is stripped by slimStructuredContent — check tools array instead
+  assert.ok(Array.isArray(result.structuredContent.tools), "fmetrics stats should have tools array");
 });
 
 test("fcase MCP preserves JSON envelopes for JSON-capable actions", async () => {

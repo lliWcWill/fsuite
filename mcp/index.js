@@ -643,12 +643,66 @@ function normalizeStructuredContent(parsed) {
   return parsed;
 }
 
+// ─── Helper: strip redundant/telemetry fields from structured JSON ──
+// Runs AFTER normalizeStructuredContent, BEFORE return in cli().
+// Goal: reduce token waste — agents don't need internal telemetry or
+// duplicate representations (lines[] vs tree_json, size_human vs size_bytes).
+function slimStructuredContent(obj) {
+  if (obj === undefined || obj === null) return obj;
+
+  // Top-level keys to remove entirely
+  const TOP_STRIP = new Set([
+    "tool", "version", "mode", "backend",
+    "budget_seconds", "budget_used_seconds", "budget_budget",
+    "recon_depth", "ignored",
+  ]);
+
+  // Keys to remove from nested objects only (keep top-level duration_ms)
+  const NESTED_STRIP = new Set([
+    "tool", "version", "mode", "backend",
+    "budget_seconds", "budget_used_seconds", "budget_budget",
+    "recon_depth", "ignored", "duration_ms",
+    "size_human",
+  ]);
+
+  function slim(node, depth) {
+    if (node === null || node === undefined) return node;
+    if (Array.isArray(node)) return node.map(item => slim(item, depth));
+    if (typeof node !== "object") return node;
+
+    const strip = depth === 0 ? TOP_STRIP : NESTED_STRIP;
+    const out = {};
+    for (const [k, v] of Object.entries(node)) {
+      if (strip.has(k)) continue;
+      // Drop lines[] from tree output — tree_json has the data
+      if (k === "lines" && node.tree_json) continue;
+      out[k] = slim(v, depth + 1);
+    }
+
+    // Flatten single-key nesting: { snapshot: { recon: X, tree: Y } } stays,
+    // but { result: { ...data } } flattens when only one key remains.
+    const keys = Object.keys(out);
+    if (keys.length === 1) {
+      const only = out[keys[0]];
+      // Flatten { wrapper: <object> } but not { wrapper: <primitive/array> }
+      // Exception: keep "items" wrapper for arrays (normalizeStructuredContent made it)
+      if (typeof only === "object" && only !== null && !Array.isArray(only) && keys[0] !== "items") {
+        return only;
+      }
+    }
+    return out;
+  }
+
+  return slim(obj, 0);
+}
+
+
 // ─── Helper: run CLI tool, pretty-render if possible ─────────────
 async function cli(tool, args, renderAs) {
   try {
     const { stdout, stderr } = await run(resolveTool(tool), args, EXEC_OPTS);
     const raw = stdout || stderr || "(no output)";
-    const parsed = normalizeStructuredContent(maybeParseJson(raw));
+    const parsed = slimStructuredContent(normalizeStructuredContent(maybeParseJson(raw)));
 
     // Try pretty rendering first so humans still get a readable summary.
     const renderer = RENDERERS[renderAs || tool];
