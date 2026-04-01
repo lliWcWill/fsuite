@@ -1034,6 +1034,15 @@ server.registerTool(
   );
 
   // ─── fprobe ─────────────────────────────────────────────────────
+
+// LLM text interfaces can't emit raw control chars — \x1b arrives as literal
+// 6-char string "\\x1b". Decode \xNN and \uNNNN for fprobe binary params only.
+function unescapeBytes(s) {
+  if (!s) return s;
+  return s
+    .replace(/\\x([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+}
   server.registerTool(
     "fprobe",
     {
@@ -1070,15 +1079,15 @@ server.registerTool(
       }
       const args = [action, file];
       if (action === "strings" && filter) args.push("--filter", filter);
-      if (action === "scan" && pattern) args.push("--pattern", pattern);
-      if (context) args.push("--context", String(context));
-      if (offset !== undefined) args.push("--offset", String(offset));
-      if (before !== undefined) args.push("--before", String(before));
-      if (after !== undefined) args.push("--after", String(after));
-      if (decode) args.push("--decode", decode);
-      if (ignore_case) args.push("--ignore-case");
-      if (action === "patch" && target) args.push("--target", target);
-      if (action === "patch" && replacement) args.push("--replacement", replacement);
+    if (action === "scan" && pattern) args.push("--pattern", unescapeBytes(pattern));
+    if (context) args.push("--context", String(context));
+    if (offset !== undefined) args.push("--offset", String(offset));
+    if (before !== undefined) args.push("--before", String(before));
+    if (after !== undefined) args.push("--after", String(after));
+    if (decode) args.push("--decode", decode);
+    if (ignore_case) args.push("--ignore-case");
+    if (action === "patch" && target) args.push("--target", unescapeBytes(target));
+    if (action === "patch" && replacement) args.push("--replacement", unescapeBytes(replacement));
       if (action === "patch" && dry_run) args.push("--dry-run");
       args.push("-o", "json");
       return cli("fprobe", args);
