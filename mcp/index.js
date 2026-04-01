@@ -709,9 +709,7 @@ async function cli(tool, args, renderAs) {
     if (renderer) {
       const pretty = renderer(raw);
       if (pretty) {
-        const result = { content: [{ type: "text", text: pretty }] };
-        if (parsed !== undefined) result.structuredContent = parsed;
-        return result;
+        return { content: [{ type: "text", text: pretty }] };
       }
     }
 
