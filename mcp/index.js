@@ -655,7 +655,9 @@ async function cli(tool, args, renderAs) {
     if (renderer) {
       const pretty = renderer(raw);
       if (pretty) {
-        return { content: [{ type: "text", text: pretty }] };
+        const result = { content: [{ type: "text", text: pretty }] };
+        if (parsed !== undefined) result.structuredContent = parsed;
+        return result;
       }
     }
 
@@ -1055,19 +1057,20 @@ function unescapeBytes(s) {
         action: z.enum(["strings", "scan", "window", "patch"]).describe("Subcommand"),
         file: z.string().describe("File to probe or patch"),
         filter: z.string().optional().describe("Filter strings to those containing this literal (strings mode)"),
-        pattern: z.string().optional().describe("Literal pattern to find (scan mode)"),
+        pattern: z.string().optional().describe("Pattern to find (scan mode). Literal by default; set decode_escapes for \\xNN/\\uNNNN"),
         context: z.number().optional().describe("Bytes of context around match (scan mode, default 300)"),
         offset: z.number().optional().describe("Byte offset to read from (window mode)"),
         before: z.number().optional().describe("Bytes before offset (window mode, default 0)"),
         after: z.number().optional().describe("Bytes after offset (window mode, default 200)"),
         decode: z.enum(["printable", "utf8", "hex"]).optional().describe("Decode mode (window mode, default printable)"),
         ignore_case: z.boolean().optional().describe("Case-insensitive matching"),
-        target: z.string().optional().describe("Literal text to find and replace (patch mode)"),
-        replacement: z.string().optional().describe("Replacement text, padded with spaces if shorter (patch mode)"),
+        target: z.string().optional().describe("Text to find and replace (patch mode). Literal by default; set decode_escapes for \\xNN/\\uNNNN"),
+        replacement: z.string().optional().describe("Replacement text, padded with spaces if shorter (patch mode). Literal by default; set decode_escapes for \\xNN/\\uNNNN"),
         dry_run: z.boolean().optional().describe("Preview patch without writing (patch mode)"),
+        decode_escapes: z.boolean().optional().describe("Decode \\\\xNN and \\\\uNNNN escape sequences in pattern/target/replacement to raw bytes. Default false (literal)"),
       }),
     },
-    async ({ action, file, filter, pattern, context, offset, before, after, decode, ignore_case, target, replacement, dry_run }) => {
+    async ({ action, file, filter, pattern, context, offset, before, after, decode, ignore_case, target, replacement, dry_run, decode_escapes }) => {
       if (action === "scan" && !pattern) {
         return { content: [{ type: "text", text: "fprobe scan requires pattern" }], isError: true };
       }
@@ -1077,17 +1080,18 @@ function unescapeBytes(s) {
       if (action === "patch" && (!target || !replacement)) {
         return { content: [{ type: "text", text: "fprobe patch requires --target and --replacement" }], isError: true };
       }
+      const esc = decode_escapes ? unescapeBytes : (s) => s;
       const args = [action, file];
       if (action === "strings" && filter) args.push("--filter", filter);
-    if (action === "scan" && pattern) args.push("--pattern", unescapeBytes(pattern));
-    if (context) args.push("--context", String(context));
-    if (offset !== undefined) args.push("--offset", String(offset));
-    if (before !== undefined) args.push("--before", String(before));
-    if (after !== undefined) args.push("--after", String(after));
-    if (decode) args.push("--decode", decode);
-    if (ignore_case) args.push("--ignore-case");
-    if (action === "patch" && target) args.push("--target", unescapeBytes(target));
-    if (action === "patch" && replacement) args.push("--replacement", unescapeBytes(replacement));
+      if (action === "scan" && pattern) args.push("--pattern", esc(pattern));
+      if (context) args.push("--context", String(context));
+      if (offset !== undefined) args.push("--offset", String(offset));
+      if (before !== undefined) args.push("--before", String(before));
+      if (after !== undefined) args.push("--after", String(after));
+      if (decode) args.push("--decode", decode);
+      if (ignore_case) args.push("--ignore-case");
+      if (action === "patch" && target) args.push("--target", esc(target));
+      if (action === "patch" && replacement) args.push("--replacement", esc(replacement));
       if (action === "patch" && dry_run) args.push("--dry-run");
       args.push("-o", "json");
       return cli("fprobe", args);
