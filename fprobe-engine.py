@@ -130,9 +130,8 @@ def patch_binary(file_path, target_str, replacement_str, dry_run=False):
     backup_path = None
     if not dry_run and offsets:
         backup_path = write_path + ".bak"
-        if not os.path.exists(backup_path):
-            import shutil
-            shutil.copy2(write_path, backup_path)
+        import shutil
+        shutil.copy2(write_path, backup_path)
         # Write via temp file + rename to handle "Text file busy"
         tmp_path = write_path + ".fprobe-tmp"
         try:

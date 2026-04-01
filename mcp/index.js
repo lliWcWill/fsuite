@@ -703,9 +703,8 @@ function renderFprobeResult(jsonStr) {
     const d = JSON.parse(jsonStr);
     // Handle array results (strings mode returns array of match objects)
     const items = Array.isArray(d) ? d : d.items || d.matches || d.results;
-    if (items && Array.isArray(items)) {
-      const filter = d.filter || "";
-      let out = theme.meta(`${items.length} ${items.length === 1 ? "match" : "matches"}${filter ? ` | filter: "${filter}"` : ""}`) + "\n";
+if (items && Array.isArray(items)) {
+  const filter = (d && typeof d === 'object' && !Array.isArray(d)) ? d.filter : undefined;
       items.forEach(item => {
         const offset = item.offset !== undefined ? item.offset : item.start;
         const hex = offset !== undefined ? `0x${offset.toString(16).padStart(4, "0")}` : "    ";
@@ -764,8 +763,7 @@ const RENDERERS = {
   ftree: renderFtreeResult,
   fls: renderFtreeResult,
   fsearch: renderFsearchResult,
-  fcase: renderFcaseResult,
-  fprobe: renderFprobeResult,
+  // fcase and fprobe removed to avoid structuredContent loss
 };
 
 function maybeParseJson(raw) {
@@ -864,7 +862,7 @@ async function cli(tool, args, renderAs) {
 }
 
 // ─── Server ──────────────────────────────────────────────────────
-const server = new McpServer({ name: "fsuite", version: "2.3.0" });
+const server = new McpServer({ name: "fsuite", version: "3.1.0" });
 
 // ─── ftree ───────────────────────────────────────────────────────
 server.registerTool(
@@ -1240,10 +1238,14 @@ function unescapeBytes(s) {
     .replace(/\\x([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
     .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
 }
-  server.registerTool(
-    "fprobe",
-    {
-      title: coloredTitle("fprobe"),
+function decodeFprobeParam(name, s) {
+  const decoded = unescapeBytes(s);
+  if (decoded && decoded.includes('\0')) {
+    throw new Error(name + ' contains \\x00 which cannot be passed via argv');
+  }
+  return decoded;
+}
+server.registerTool("fprobe", {
       description:
         "Binary reconnaissance and surgical patching. Scan for patterns, read byte windows, " +
         "extract strings, and patch binaries with same-length replacements. Works on compiled " +
@@ -1274,19 +1276,19 @@ function unescapeBytes(s) {
       }
       if (action === "patch" && (!target || !replacement)) {
         return { content: [{ type: "text", text: "fprobe patch requires --target and --replacement" }], isError: true };
-      }
-      const esc = decode_escapes ? unescapeBytes : (s) => s;
+}
+      const esc = decode_escapes ? (name, s) => decodeFprobeParam(name, s) : (_name, s) => s;
       const args = [action, file];
       if (action === "strings" && filter) args.push("--filter", filter);
-      if (action === "scan" && pattern) args.push("--pattern", esc(pattern));
-      if (context) args.push("--context", String(context));
+      if (action === "scan" && pattern) args.push("--pattern", esc("pattern", pattern));
+if (context !== undefined) args.push("--context", String(context));
       if (offset !== undefined) args.push("--offset", String(offset));
       if (before !== undefined) args.push("--before", String(before));
       if (after !== undefined) args.push("--after", String(after));
       if (decode) args.push("--decode", decode);
       if (ignore_case) args.push("--ignore-case");
-      if (action === "patch" && target) args.push("--target", esc(target));
-      if (action === "patch" && replacement) args.push("--replacement", esc(replacement));
+      if (action === "patch" && target) args.push("--target", esc("target", target));
+      if (action === "patch" && replacement) args.push("--replacement", esc("replacement", replacement));
       if (action === "patch" && dry_run) args.push("--dry-run");
       args.push("-o", "json");
       return cli("fprobe", args);
