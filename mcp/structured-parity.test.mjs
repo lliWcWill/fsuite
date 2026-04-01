@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -192,42 +192,46 @@ test("fprobe MCP decode_escapes decodes escape sequences", async () => {
   }
 });
 
-test("fprobe patch mode with decode_escapes \\uNNNN escape sequences", async () => {
+test("fprobe patch mode with decode_escapes — control byte survives MCP path", async () => {
   const fixture = makeFixture();
   try {
-    // Create a binary fixture with literal "HELLO" (5 bytes)
+    // Create binary with 5-byte target "ABCDE" followed by filler
     const patchFile = join(fixture, "patch-escape.bin");
-    writeFileSync(patchFile, Buffer.from("HELLO"));
+    writeFileSync(patchFile, Buffer.from("ABCDE_padding_ABCDE"));
 
-    // Test 1: Patch with \\uNNNN escapes that decode to same length as target
-    // Target: "HELLO" (5 bytes)
-    // Replacement: "\\u0048\\u0045\\u004c\\u004c\\u004f" → decodes to "HELLO" (5 bytes)
-    // Same length, so patch should succeed
-    const resultUnicode = await callTool("fprobe", {
+    // Test 1: Patch "ABCDE" with \u001b (ESC) + printable chars via decode_escapes
+    // Replacement: "\\u001bXYZ!" decodes to ESC + "XYZ!" = 5 bytes, same as target
+    // This proves the ACTUAL control byte (0x1b) survives MCP -> execFile -> CLI
+    const result = await callTool("fprobe", {
       action: "patch",
       file: patchFile,
-      target: "HELLO",
-      replacement: "\\u0048\\u0045\\u004c\\u004c\\u004f",
+      target: "ABCDE",
+      replacement: "\\u001bXYZ!",
       decode_escapes: true,
     });
 
-    assert.ok(!resultUnicode.isError, `patch with \\uNNNN should not error: ${textContent(resultUnicode)}`);
-    assert.ok(resultUnicode.structuredContent?.patched === 1, "should report 1 successful patch for \\uNNNN escapes");
+    assert.ok(!result.isError, `patch with control byte should not error: ${textContent(result)}`);
+    assert.ok(result.structuredContent?.patched >= 1, "should report at least 1 patch with ESC byte replacement");
 
-    // Test 2: Patch with mismatched byte lengths should fail
-    // Target: "XX" (2 bytes)
-    // Replacement: "\\x41" → decodes to "A" (1 byte)
-    // Different lengths, so patch should fail with length mismatch error
-    const resultMismatch = await callTool("fprobe", {
+    // Verify the file actually contains the ESC byte (0x1b)
+    const patched = readFileSync(patchFile);
+    assert.ok(patched.includes(0x1b), "patched file should contain ESC byte (0x1b)");
+
+    // Test 2: NUL byte guard — \\x00 in decoded replacement must be rejected
+    // decodeFprobeParam catches NUL before execFile (Node rejects NUL in argv)
+    const padFile = join(fixture, "nul-test.bin");
+    writeFileSync(padFile, Buffer.from("ZZZZZ_filler"));
+    const nulResult = await callTool("fprobe", {
       action: "patch",
-      file: patchFile,
-      target: "XX",
-      replacement: "\\x41",
+      file: padFile,
+      target: "ZZZZZ",
+      replacement: "A\\x00B\\x00C",
       decode_escapes: true,
     });
 
-    assert.ok(resultMismatch.isError || textContent(resultMismatch).toLowerCase().includes("length"), 
-      `patch with mismatched lengths should fail or report error: ${textContent(resultMismatch)}`);
+    assert.ok(nulResult.isError, "patch with \\x00 in decoded replacement should be rejected by NUL guard");
+    assert.ok(textContent(nulResult).includes("\\x00") || textContent(nulResult).toLowerCase().includes("nul") || textContent(nulResult).toLowerCase().includes("argv"),
+      `error should mention NUL/argv issue: ${textContent(nulResult)}`);
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
