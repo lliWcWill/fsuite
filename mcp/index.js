@@ -646,7 +646,6 @@ function renderFcaseResult(jsonStr) {
     const resolved = cases.filter(c => c.status === "resolved");
     const open = cases.filter(c => c.status === "open");
     const archived = cases.filter(c => c.status === "archived");
-    const deleted = cases.filter(c => c.status === "deleted");
 
     // Priority sort: critical > high > medium > low > normal
     const priOrder = { critical: 0, high: 1, medium: 2, low: 3, normal: 4 };

@@ -139,7 +139,7 @@ def patch_binary(file_path, target_str, replacement_str, dry_run=False):
             with open(tmp_path, "wb") as f:
                 f.write(data)
             os.chmod(tmp_path, os.stat(write_path).st_mode)
-            os.rename(tmp_path, write_path)
+            os.replace(tmp_path, write_path)
         except Exception:
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)

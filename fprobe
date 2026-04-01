@@ -229,15 +229,14 @@ detect_output_mode
 # ── Run engine ───────────────────────────────────────────────────
 _stdout_tmp=$(mktemp)
 _stderr_tmp=$(mktemp)
+trap 'rm -f "$_stdout_tmp" "$_stderr_tmp"' EXIT
 engine_rc=0
 python3 "$ENGINE" "$SUBCMD" ${ENGINE_ARGS[@]+"${ENGINE_ARGS[@]}"} >"$_stdout_tmp" 2>"$_stderr_tmp" || engine_rc=$?
 json_output=$(cat "$_stdout_tmp")
 if [[ $engine_rc -ne 0 && -z "$json_output" ]]; then
   cat "$_stderr_tmp" >&2
-  rm -f "$_stdout_tmp" "$_stderr_tmp"
   exit $engine_rc
 fi
-rm -f "$_stdout_tmp" "$_stderr_tmp"
 
 # ── Format output ────────────────────────────────────────────────
 if [[ "$OUTPUT_MODE" == "json" ]]; then
