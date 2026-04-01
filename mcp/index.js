@@ -808,6 +808,7 @@ function slimStructuredContent(obj) {
 
   function slim(node, depth) {
     if (node === null || node === undefined) return node;
+    if (depth >= 20) return node;
     if (Array.isArray(node)) return node.map(item => slim(item, depth));
     if (typeof node !== "object") return node;
 
@@ -1232,6 +1233,7 @@ server.registerTool(
 
 // LLM text interfaces can't emit raw control chars — \x1b arrives as literal
 // 6-char string "\\x1b". Decode \xNN and \uNNNN for fprobe binary params only.
+// Note: This only handles BMP codepoints; surrogate pairs will produce broken output (intentional for binary patching).
 function unescapeBytes(s) {
   if (!s) return s;
   return s
