@@ -615,6 +615,146 @@ const fsearchHitSchema = z.object({
   next_hint: fsearchNextHintSchema.nullable().optional(),
 }).passthrough();
 
+// ─── fcase pretty renderer ────────────────────────────────────────
+function renderFcaseResult(jsonStr) {
+  try {
+    const d = JSON.parse(jsonStr);
+    // Only render case lists (from list/find actions)
+    if (!d.cases && !d.case) return null;
+
+    // Single case view (status, note, init, resolve, etc.)
+    if (d.case) {
+      const c = d.case;
+      const icon = c.status === "resolved" ? `${fg(80,200,80)}\u2713${RESET}`
+                 : c.status === "archived" ? `${DIM}\u25CB${RESET}`
+                 : c.status === "deleted"  ? `${fg(255,80,80)}\u2717${RESET}`
+                 : `${fg(255,200,50)}\u25CF${RESET}`;
+      const pri = c.priority === "critical" ? ` ${fg(255,80,80)}crit${RESET}`
+                : c.priority === "high"     ? ` ${fg(255,80,80)}high${RESET}`
+                : "";
+      let out = `${icon} ${BOLD}#${c.id}${RESET} ${c.slug}${pri}\n`;
+      if (c.goal) out += `${DIM}  ${c.goal}${UNDIM}\n`;
+      if (c.resolution_summary) out += `${fg(80,200,80)}  ${c.resolution_summary}${RESET}\n`;
+      if (c.next_move) out += `${fg(255,200,50)}  next: ${c.next_move}${RESET}\n`;
+      // Pass through any message from the action
+      if (d.message) out += `${DIM}${d.message}${UNDIM}\n`;
+      return out;
+    }
+
+    // Case list view
+    const cases = d.cases || [];
+    const resolved = cases.filter(c => c.status === "resolved");
+    const open = cases.filter(c => c.status === "open");
+    const archived = cases.filter(c => c.status === "archived");
+    const deleted = cases.filter(c => c.status === "deleted");
+
+    // Priority sort: critical > high > medium > low > normal
+    const priOrder = { critical: 0, high: 1, medium: 2, low: 3, normal: 4 };
+    const sortByPri = (a, b) => (priOrder[a.priority] ?? 4) - (priOrder[b.priority] ?? 4);
+
+    // Summary bar
+    const parts = [`${cases.length} cases`];
+    if (resolved.length) parts.push(`${resolved.length} resolved`);
+    if (open.length) parts.push(`${open.length} open`);
+    if (archived.length) parts.push(`${archived.length} archived`);
+    let out = theme.meta(parts.join(" | ")) + "\n";
+
+    const renderCase = (c) => {
+      const icon = c.status === "resolved" ? `${fg(80,200,80)}\u2713${RESET}`
+                 : c.status === "archived" ? `${DIM}\u25CB${RESET}`
+                 : `${fg(255,200,50)}\u25CF${RESET}`;
+      const pri = c.priority === "critical" ? `${fg(255,80,80)}crit${RESET}   `
+                : c.priority === "high"     ? `${fg(255,80,80)}high${RESET}   `
+                : "       ";
+      const slug = c.slug.length > 24 ? c.slug.slice(0, 24) : c.slug.padEnd(24);
+      const goal = c.resolution_summary || c.goal || "";
+      const goalTrim = goal.length > 50 ? goal.slice(0, 47) + "..." : goal;
+      return `  ${icon} ${BOLD}#${String(c.id).padStart(2)}${RESET} ${slug} ${pri}${DIM}\u2014 ${goalTrim}${UNDIM}`;
+    };
+
+    const MAX_PER_GROUP = 6;
+
+    if (resolved.length) {
+      resolved.sort(sortByPri);
+      out += `${fg(80,200,80)}${BOLD} RESOLVED (${resolved.length})${RESET}\n`;
+      resolved.slice(0, MAX_PER_GROUP).forEach(c => { out += renderCase(c) + "\n"; });
+      if (resolved.length > MAX_PER_GROUP) out += `${DIM}  ... +${resolved.length - MAX_PER_GROUP} more${UNDIM}\n`;
+    }
+    if (open.length) {
+      open.sort(sortByPri);
+      out += `${fg(255,200,50)}${BOLD} OPEN (${open.length})${RESET}\n`;
+      open.slice(0, MAX_PER_GROUP).forEach(c => { out += renderCase(c) + "\n"; });
+      if (open.length > MAX_PER_GROUP) out += `${DIM}  ... +${open.length - MAX_PER_GROUP} more (ctrl+o to expand)${UNDIM}\n`;
+    }
+    if (archived.length) {
+      out += `${DIM}${BOLD} ARCHIVED (${archived.length})${RESET}\n`;
+      archived.slice(0, 3).forEach(c => { out += renderCase(c) + "\n"; });
+      if (archived.length > 3) out += `${DIM}  ... +${archived.length - 3} more${UNDIM}\n`;
+    }
+
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+// ─── fprobe pretty renderer ──────────────────────────────────────
+function renderFprobeResult(jsonStr) {
+  try {
+    const d = JSON.parse(jsonStr);
+    // Handle array results (strings mode returns array of match objects)
+    const items = Array.isArray(d) ? d : d.items || d.matches || d.results;
+    if (items && Array.isArray(items)) {
+      const filter = d.filter || "";
+      let out = theme.meta(`${items.length} ${items.length === 1 ? "match" : "matches"}${filter ? ` | filter: "${filter}"` : ""}`) + "\n";
+      items.forEach(item => {
+        const offset = item.offset !== undefined ? item.offset : item.start;
+        const hex = offset !== undefined ? `0x${offset.toString(16).padStart(4, "0")}` : "    ";
+        let text = item.text || item.content || item.value || "";
+        if (text.length > 80) text = "..." + text.slice(-77);
+        // Highlight filter term if present
+        if (filter && text.includes(filter)) {
+          text = text.replace(new RegExp(filter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"),
+            `${fg(255,200,50)}${BOLD}${filter}${RESET}`);
+        }
+        out += `${fg(190,132,255)}${hex}${RESET} \u2502 ${text}\n`;
+      });
+      return out;
+    }
+
+    // Scan mode results
+    if (d.matches !== undefined && typeof d.matches === "number") {
+      let out = theme.meta(`fprobe scan | ${d.matches} matches`) + "\n";
+      if (d.offsets && Array.isArray(d.offsets)) {
+        d.offsets.forEach(o => {
+          const hex = `0x${o.toString(16).padStart(8, "0")}`;
+          out += `${fg(190,132,255)}${hex}${RESET}\n`;
+        });
+      }
+      if (d.context_preview) out += `${DIM}${d.context_preview}${UNDIM}\n`;
+      return out;
+    }
+
+    // Patch mode result
+    if (d.patched !== undefined || d.dry_run !== undefined) {
+      const status = d.patched ? `${fg(80,200,80)}Patched${RESET}` : d.dry_run ? `${fg(255,200,50)}Dry run${RESET}` : `${fg(255,80,80)}Failed${RESET}`;
+      let out = `${status} ${d.replacements || 0} replacements`;
+      if (d.file) out += ` in ${d.file}`;
+      out += "\n";
+      return out;
+    }
+
+    // Window mode — just show the hex/printable dump
+    if (d.window || d.hex || d.printable) {
+      return null; // fall through to raw JSON for window dumps
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // Tool → renderer mapping
 const RENDERERS = {
   fedit: renderFeditResult,
@@ -625,6 +765,8 @@ const RENDERERS = {
   ftree: renderFtreeResult,
   fls: renderFtreeResult,
   fsearch: renderFsearchResult,
+  fcase: renderFcaseResult,
+  fprobe: renderFprobeResult,
 };
 
 function maybeParseJson(raw) {
