@@ -764,7 +764,8 @@ const RENDERERS = {
   ftree: renderFtreeResult,
   fls: renderFtreeResult,
   fsearch: renderFsearchResult,
-  // fcase and fprobe removed to avoid structuredContent loss
+  fcase: renderFcaseResult,
+  fprobe: renderFprobeResult,
 };
 
 function maybeParseJson(raw) {
@@ -845,14 +846,18 @@ async function cli(tool, args, renderAs) {
     const raw = stdout || stderr || "(no output)";
     const parsed = slimStructuredContent(normalizeStructuredContent(maybeParseJson(raw)));
 
-    // Try pretty rendering first so humans still get a readable summary.
-    const renderer = RENDERERS[renderAs || tool];
-    if (renderer) {
-      const pretty = renderer(raw);
-      if (pretty) {
-        return { content: [{ type: "text", text: pretty }] };
+      // Pretty rendering for humans + structuredContent for agents.
+      // With the safeParse binary patch, Claude Code shows content[text]
+      // to the user and feeds structuredContent to the model.
+      const renderer = RENDERERS[renderAs || tool];
+      if (renderer) {
+        const pretty = renderer(raw);
+        if (pretty) {
+          const result = { content: [{ type: "text", text: pretty }] };
+          if (parsed !== undefined) result.structuredContent = parsed;
+          return result;
+        }
       }
-    }
 
     const result = { content: [{ type: "text", text: raw }] };
     if (parsed !== undefined) result.structuredContent = parsed;

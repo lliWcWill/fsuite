@@ -65,7 +65,7 @@ async function callTool(name, args) {
 }
 
 // ─── Tools WITH renderers return pretty ANSI in content[text] ───
-// structuredContent is intentionally omitted to work around the
+// With safeParse binary patch, rendered tools return BOTH pretty text AND
 // Claude Code 2.1.88 outputSchema safeParse bug.
 
 test("ftree MCP returns pretty-rendered content", async () => {
@@ -80,7 +80,7 @@ test("ftree MCP returns pretty-rendered content", async () => {
     assert.ok(!result.isError, textContent(result));
     const text = textContent(result);
     assert.ok(text.length > 0, "ftree should return non-empty content");
-    assert.ok(!result.structuredContent, "rendered tools should not return structuredContent");
+    assert.ok(result.structuredContent, "rendered tools should return structuredContent alongside pretty text");
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
@@ -98,7 +98,7 @@ test("fcontent MCP returns pretty-rendered content", async () => {
     assert.ok(!result.isError, textContent(result));
     const text = stripAnsi(textContent(result));
     assert.ok(text.includes("notes.md"), "fcontent should mention the matched file");
-    assert.ok(!result.structuredContent, "rendered tools should not return structuredContent");
+    assert.ok(result.structuredContent, "rendered tools should return structuredContent alongside pretty text");
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
@@ -114,7 +114,7 @@ test("fmap MCP returns pretty-rendered content", async () => {
     assert.ok(!result.isError, textContent(result));
     const text = stripAnsi(textContent(result));
     assert.ok(text.includes("greet"), "fmap should mention the greet function");
-    assert.ok(!result.structuredContent, "rendered tools should not return structuredContent");
+    assert.ok(result.structuredContent, "rendered tools should return structuredContent alongside pretty text");
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
@@ -131,7 +131,7 @@ test("fread MCP returns pretty-rendered content", async () => {
     assert.ok(!result.isError, textContent(result));
     const text = stripAnsi(textContent(result));
     assert.ok(text.includes("def greet"), "fread should contain the function definition");
-    assert.ok(!result.structuredContent, "rendered tools should not return structuredContent");
+    assert.ok(result.structuredContent, "rendered tools should return structuredContent alongside pretty text");
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
@@ -250,7 +250,7 @@ test("fedit and fwrite MCP return pretty-rendered content", async () => {
     assert.ok(!editResult.isError, textContent(editResult));
     const editText = textContent(editResult);
     assert.ok(editText.length > 0, "fedit should return non-empty content");
-    assert.ok(!editResult.structuredContent, "rendered tools should not return structuredContent");
+    assert.ok(editResult.structuredContent, "rendered tools should return structuredContent alongside pretty text");
 
     const writeResult = await callTool("fwrite", {
       path: join(fixture, "generated.txt"),
@@ -261,7 +261,7 @@ test("fedit and fwrite MCP return pretty-rendered content", async () => {
     assert.ok(!writeResult.isError, textContent(writeResult));
     const writeText = textContent(writeResult);
     assert.ok(writeText.length > 0, "fwrite should return non-empty content");
-    assert.ok(!writeResult.structuredContent, "rendered tools should not return structuredContent");
+    assert.ok(writeResult.structuredContent, "rendered tools should return structuredContent alongside pretty text");
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
