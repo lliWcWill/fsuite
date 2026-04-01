@@ -192,6 +192,47 @@ test("fprobe MCP decode_escapes decodes escape sequences", async () => {
   }
 });
 
+test("fprobe patch mode with decode_escapes \\uNNNN escape sequences", async () => {
+  const fixture = makeFixture();
+  try {
+    // Create a binary fixture with literal "HELLO" (5 bytes)
+    const patchFile = join(fixture, "patch-escape.bin");
+    writeFileSync(patchFile, Buffer.from("HELLO"));
+
+    // Test 1: Patch with \\uNNNN escapes that decode to same length as target
+    // Target: "HELLO" (5 bytes)
+    // Replacement: "\\u0048\\u0045\\u004c\\u004c\\u004f" → decodes to "HELLO" (5 bytes)
+    // Same length, so patch should succeed
+    const resultUnicode = await callTool("fprobe", {
+      action: "patch",
+      file: patchFile,
+      target: "HELLO",
+      replacement: "\\u0048\\u0045\\u004c\\u004c\\u004f",
+      decode_escapes: true,
+    });
+
+    assert.ok(!resultUnicode.isError, `patch with \\uNNNN should not error: ${textContent(resultUnicode)}`);
+    assert.ok(resultUnicode.structuredContent?.patched === 1, "should report 1 successful patch for \\uNNNN escapes");
+
+    // Test 2: Patch with mismatched byte lengths should fail
+    // Target: "XX" (2 bytes)
+    // Replacement: "\\x41" → decodes to "A" (1 byte)
+    // Different lengths, so patch should fail with length mismatch error
+    const resultMismatch = await callTool("fprobe", {
+      action: "patch",
+      file: patchFile,
+      target: "XX",
+      replacement: "\\x41",
+      decode_escapes: true,
+    });
+
+    assert.ok(resultMismatch.isError || textContent(resultMismatch).toLowerCase().includes("length"), 
+      `patch with mismatched lengths should fail or report error: ${textContent(resultMismatch)}`);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
 test("fedit and fwrite MCP return pretty-rendered content", async () => {
   const fixture = makeFixture();
   try {
