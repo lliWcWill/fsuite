@@ -1,6 +1,6 @@
 {
   "name": "fsuite-mcp",
-  "version": "2.3.0",
+  "version": "3.1.0",
   "description": "MCP adapter for fsuite CLI tools",
   "main": "index.js",
   "scripts": {
