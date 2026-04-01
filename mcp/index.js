@@ -703,8 +703,9 @@ function renderFprobeResult(jsonStr) {
     const d = JSON.parse(jsonStr);
     // Handle array results (strings mode returns array of match objects)
     const items = Array.isArray(d) ? d : d.items || d.matches || d.results;
-if (items && Array.isArray(items)) {
-  const filter = (d && typeof d === 'object' && !Array.isArray(d)) ? d.filter : undefined;
+  if (items && Array.isArray(items)) {
+    let out = theme.meta(`fprobe strings | ${items.length} matches`) + "\n";
+    const filter = (d && typeof d === 'object' && !Array.isArray(d)) ? d.filter : undefined;
       items.forEach(item => {
         const offset = item.offset !== undefined ? item.offset : item.start;
         const hex = offset !== undefined ? `0x${offset.toString(16).padStart(4, "0")}` : "    ";
