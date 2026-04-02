@@ -29,11 +29,12 @@ function makeFixture() {
   return dir;
 }
 
-async function withClient(run) {
+async function withClient(run, env = {}) {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ["./index.js"],
     cwd: mcpDir,
+    env,
     stderr: "pipe",
   });
   const client = new Client({
@@ -62,6 +63,10 @@ async function withClient(run) {
 
 async function callTool(name, args) {
   return withClient((client) => client.callTool({ name, arguments: args }));
+}
+
+async function callToolWithEnv(name, args, env) {
+  return withClient((client) => client.callTool({ name, arguments: args }), env);
 }
 
 // ─── Tools WITH renderers return pretty ANSI in content[text] ───
@@ -397,6 +402,46 @@ test("fcase MCP preserves JSON envelopes for JSON-capable actions", async () => 
   // fcase init returns single case view — renderer produces pretty ANSI with slug
   const caseText = stripAnsi(textContent(result));
   assert.ok(caseText.includes(slug), "fcase init output should contain the case slug");
+});
+
+test("fcase MCP list renders deleted cases", async () => {
+  const caseDir = mkdtempSync(join(tmpdir(), "fsuite-mcp-fcase-"));
+  const env = { FCASE_DIR: caseDir };
+  const slug = `mcp-fcase-deleted-${Date.now()}`;
+  try {
+    const initResult = await callToolWithEnv("fcase", {
+      action: "init",
+      slug,
+      goal: "Verify deleted cases remain visible in rendered list output",
+    }, env);
+    assert.ok(!initResult.isError, textContent(initResult));
+
+    const deleteResult = await callToolWithEnv("fcase", {
+      action: "delete",
+      slug,
+      reason: "test cleanup",
+      confirm_delete: "DELETE",
+    }, env);
+    assert.ok(!deleteResult.isError, textContent(deleteResult));
+
+    const deletedList = await callToolWithEnv("fcase", {
+      action: "list",
+      statuses: "deleted",
+    }, env);
+    assert.ok(!deletedList.isError, textContent(deletedList));
+    const deletedText = stripAnsi(textContent(deletedList));
+    assert.ok(deletedText.includes(slug), `deleted list should render deleted case row, got: ${deletedText}`);
+
+    const allList = await callToolWithEnv("fcase", {
+      action: "list",
+      statuses: "all",
+    }, env);
+    assert.ok(!allList.isError, textContent(allList));
+    const allText = stripAnsi(textContent(allList));
+    assert.ok(allText.includes(slug), `all-status list should render deleted case row, got: ${allText}`);
+  } finally {
+    rmSync(caseDir, { recursive: true, force: true });
+  }
 });
 
 test("freplay MCP is available and preserves JSON list output", async () => {

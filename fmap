@@ -589,6 +589,7 @@ extract_symbols() {
         "function:^[[:space:]]*(export[[:space:]]+)?(default[[:space:]]+)?(async[[:space:]]+)?function[[:space:]]"
         "function:^[[:space:]]*(export[[:space:]]+)?(const|let|var)[[:space:]]+[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]*=[[:space:]]*(async[[:space:]]*)?\("
         "function:^[[:space:]]*(export[[:space:]]+)?(const|let|var)[[:space:]]+[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]*=[[:space:]]*(async[[:space:]]*)?\([^)]*\)[[:space:]]*=>"
+        "function:^[[:space:]]+((static|async)[[:space:]]+)+[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]*\("
         "class:^[[:space:]]*(export[[:space:]]+)?(default[[:space:]]+)?class[[:space:]]"
         "import:^[[:space:]]*import[[:space:]]"
         "import:^[[:space:]]*const[[:space:]]+.*=[[:space:]]*require\("
@@ -603,6 +604,8 @@ extract_symbols() {
         "function:^[[:space:]]*(export[[:space:]]+)?(default[[:space:]]+)?(async[[:space:]]+)?function[[:space:]]"
         "function:^[[:space:]]*(export[[:space:]]+)?(const|let|var)[[:space:]]+[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]*=[[:space:]]*(async[[:space:]]*)?\("
         "function:^[[:space:]]*(export[[:space:]]+)?(const|let|var)[[:space:]]+[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]*=[[:space:]]*(async[[:space:]]*)?\([^)]*\)[[:space:]]*=>"
+        "function:^[[:space:]]+((override|static|abstract|protected|private|public|readonly|async)[[:space:]]+)+[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]*\("
+        "function:^[[:space:]]+((override|static|abstract|protected|private|public|readonly|async)[[:space:]]+)+[_a-zA-Z][_a-zA-Z0-9]*[[:space:]]*[=:]"
         "class:^[[:space:]]*(export[[:space:]]+)?(default[[:space:]]+)?(abstract[[:space:]]+)?class[[:space:]]"
         "import:^[[:space:]]*import[[:space:]]"
         "type:^[[:space:]]*(export[[:space:]]+)?interface[[:space:]]"
@@ -999,6 +1002,11 @@ extract_symbol_name() {
         return 0
       fi
       if [[ "$trimmed" =~ (^|[[:space:]])(const|let|var)[[:space:]]+([_[:alpha:]][_[:alnum:]]*)[[:space:]]*= ]]; then
+        printf '%s\n' "${BASH_REMATCH[3]}"
+        return 0
+      fi
+      # TS/JS class property with modifiers: "private readonly handler ="
+      if [[ "$trimmed" =~ ^((override|static|abstract|protected|private|public|readonly|async)[[:space:]]+)+([_[:alpha:]][_[:alnum:]]*)[[:space:]]*[=:] ]]; then
         printf '%s\n' "${BASH_REMATCH[3]}"
         return 0
       fi

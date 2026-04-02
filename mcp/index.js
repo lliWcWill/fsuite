@@ -187,6 +187,7 @@ const TOOL_PALETTE = {
   fcontent: 27, fsearch: 27, fs: 27,            // royal blue — search
   fmap: 129, fcase: 129,                        // dark violet — structure/knowledge
   fprobe: 196, fmetrics: 196,                   // pure red — diagnostic/recon
+  fbash: 220,                                    // gold — shell execution
 };
 function coloredTitle(name) {
   const c = TOOL_PALETTE[name];
@@ -764,6 +765,68 @@ function renderFprobeResult(jsonStr, ctx = {}) {
   }
 }
 
+// ─── fbash pretty renderer ──────────────────────────────────────
+function renderFbashResult(jsonStr) {
+  const d = maybeParseJson(jsonStr);
+  if (!d || d.tool !== "fbash") return null;
+
+  const lines = [];
+
+  // Header: class badge + exit code + duration
+  const classBadge = {
+    build: fg(166, 226, 46),
+    test: fg(102, 217, 239),
+    git: fg(190, 132, 255),
+    install: fg(253, 151, 31),
+    service: fg(220, 90, 90),
+    query: fg(200, 200, 200),
+    search: fg(102, 217, 239),
+  };
+  const cc = classBadge[d.command_class] || fg(200, 200, 200);
+  const exitColor = d.exit_code === 0 ? fg(80, 200, 80) : fg(220, 90, 90);
+  lines.push(
+    `${cc}${BOLD}${d.command_class}${RESET} ` +
+    `${exitColor}exit=${d.exit_code}${RESET} ` +
+    `${DIM}${d.duration_ms}ms${RESET} ` +
+    `${DIM}cwd=${RESET}${shortPath(d.cwd)}`
+  );
+
+  // Truncation warning
+  if (d.truncated) {
+    lines.push(
+      `${fg(230, 219, 116)}  truncated: ${d.stdout_lines} of ${d.lines_total} lines ` +
+      `(${d.truncation_reason})${RESET}`
+    );
+  }
+
+  // Routing suggestion
+  if (d.routing_suggestion && d.routing_suggestion.tool) {
+    lines.push(
+      `${fg(190, 132, 255)}  hint:${RESET} use ${fg(102, 217, 239)}${d.routing_suggestion.tool}${RESET} ` +
+      `${DIM}— ${d.routing_suggestion.reason}${RESET}`
+    );
+  }
+
+  lines.push("");
+
+  // Output body
+  if (d.stdout) {
+    lines.push(d.stdout);
+  }
+  if (d.stderr) {
+    lines.push(`${fg(220, 90, 90)}--- stderr ---${RESET}`);
+    lines.push(d.stderr);
+  }
+
+  // next_hint
+  if (d.next_hint) {
+    lines.push("");
+    lines.push(`${fg(190, 132, 255)}${BOLD}next ->${RESET} ${d.next_hint}`);
+  }
+
+  return lines.join("\n");
+}
+
 // Tool → renderer mapping
 const RENDERERS = {
   fedit: renderFeditResult,
@@ -776,6 +839,7 @@ const RENDERERS = {
   fsearch: renderFsearchResult,
   fcase: renderFcaseResult,
   fprobe: renderFprobeResult,
+  fbash: renderFbashResult,
 };
 
 function maybeParseJson(raw) {
@@ -875,7 +939,18 @@ async function cli(tool, args, renderAs, renderContext) {
     if (parsed !== undefined) result.structuredContent = parsed;
     return result;
   } catch (err) {
-    return { content: [{ type: "text", text: `Error running ${tool}: ${err.stderr || err.stdout || err.message}` }], isError: true };
+    let errorText = err.stderr || err.stdout || err.message;
+    try {
+      const parsed = JSON.parse(errorText);
+      if (parsed.errors?.length) {
+        errorText = parsed.errors.map(e => e.error_detail || e.error || e).join("; ");
+      } else if (parsed.error_detail) {
+        errorText = parsed.error_detail;
+      } else if (parsed.error) {
+        errorText = parsed.error;
+      }
+    } catch { /* not JSON, use raw text */ }
+    return { content: [{ type: "text", text: `Error running ${tool}: ${errorText}` }], isError: true };
   }
 }
 
@@ -930,7 +1005,8 @@ server.registerTool(
       "Budgeted file reading with symbol resolution. Use symbol to read exactly one function/class " +
       "by name — no guessing line ranges. Use around for context around a pattern match.",
     inputSchema: z.object({
-      path: z.string().describe("File path (or directory when using symbol)"),
+      path: z.string().optional().describe("File path (or directory when using symbol). Ignored when paths is provided."),
+      paths: z.array(z.string()).optional().describe("Array of file paths to try in order. Returns content from first existing path."),
       symbol: z.string().optional().describe("Read exactly one symbol (function, class, etc.) by name"),
       lines: z.string().optional().describe("Line range, e.g. '120:220'"),
       around: z.string().optional().describe("Show context around first literal pattern match"),
@@ -942,8 +1018,15 @@ server.registerTool(
       max_lines: z.number().optional().describe("Cap total lines emitted (default 200)"),
     }),
   },
-  async ({ path, symbol, lines, around, around_line, before, after, head, tail, max_lines }) => {
-    const args = [path];
+  async ({ path, paths, symbol, lines, around, around_line, before, after, head, tail, max_lines }) => {
+    const args = [];
+    if (paths && paths.length > 0) {
+      args.push("--paths", paths.join(","));
+    } else if (path) {
+      args.push(path);
+    } else {
+      return { content: [{ type: "text", text: "fread: error: Either path or paths is required" }], isError: true };
+    }
     if (symbol) args.push("--symbol", symbol);
     if (lines) args.push("-r", lines);
     if (around) args.push("--around", around);
@@ -1050,9 +1133,10 @@ server.registerTool(
       lines: z.string().optional().describe("Replace line range directly, e.g. '71:73'. Fastest mode — no text matching needed. Use line numbers from fread."),
       apply: z.boolean().default(true).describe("Apply changes (default: true). Set false for dry-run preview."),
       expect: z.string().optional().describe("Precondition — text that must exist in file for edit to proceed"),
+      no_validate: z.boolean().optional().describe("Skip structural validation (escape hatch for JSONC, test fixtures)"),
     }),
   },
-  async ({ path, replace, with_text, function_name, after, before, lines, apply, expect }) => {
+  async ({ path, replace, with_text, function_name, after, before, lines, apply, expect, no_validate }) => {
     const args = [path];
     if (function_name) args.push("--function", function_name);
     if (lines) {
@@ -1066,6 +1150,7 @@ server.registerTool(
     }
     if (apply) args.push("--apply");
     if (expect) args.push("--expect", expect);
+    if (no_validate) args.push("--no-validate");
     args.push("-o", "json");
     return cli("fedit", args);
   }
@@ -1469,6 +1554,65 @@ server.registerTool(
     if (output) args.push("-o", output);
     if (path) args.push(path);
     return cli("fls", args);
+  }
+);
+
+// ─── fbash ──────────────────────────────────────────────────────
+server.registerTool(
+  "fbash",
+  {
+    title: coloredTitle("fbash"),
+    description:
+      "Token-budgeted shell execution with session state. Runs any bash command with " +
+      "output capping, command classification, and fsuite smart routing. Tracks CWD across " +
+      "calls. Use for builds, tests, git, installs — anything that isn't file reading/editing " +
+      "(use fread/fedit for those). Returns next_hint when an fsuite tool would be better.",
+    inputSchema: z.object({
+      command: z.string().describe("Bash command to execute"),
+      max_lines: z.number().int().positive().optional()
+        .describe("Cap output lines (default: 200)"),
+      max_bytes: z.number().int().positive().optional()
+        .describe("Cap output bytes (default: 51200)"),
+      json: z.boolean().optional()
+        .describe("Parse output as JSON and return structured"),
+      cwd: z.string().optional()
+        .describe("Working directory (overrides session CWD, persists after execution)"),
+      timeout: z.number().int().positive().optional()
+        .describe("Timeout in seconds (auto-tuned by command class if omitted)"),
+      env: z.record(z.string()).optional()
+        .describe("Environment variable overrides"),
+      filter: z.string().optional()
+        .describe("Regex filter for output lines"),
+      quiet: z.boolean().optional()
+        .describe("Suppress output, return only exit code + metadata"),
+      tag: z.string().optional()
+        .describe("Label for fcase event logging"),
+      background: z.boolean().optional()
+        .describe("Run in background, return job_id"),
+      tail: z.boolean().optional()
+        .describe("Keep tail instead of head when truncating"),
+    }),
+  },
+  async (params) => {
+    const args = [];
+    args.push("--command", params.command);
+    if (params.max_lines !== undefined) args.push("--max-lines", String(params.max_lines));
+    if (params.max_bytes !== undefined) args.push("--max-bytes", String(params.max_bytes));
+    if (params.json) args.push("--json");
+    if (params.cwd) args.push("--cwd", params.cwd);
+    if (params.timeout !== undefined) args.push("--timeout", String(params.timeout));
+    if (params.env) {
+      for (const [k, v] of Object.entries(params.env)) {
+        args.push("--env", `${k}=${v}`);
+      }
+    }
+    if (params.filter) args.push("--filter", params.filter);
+    if (params.quiet) args.push("--quiet");
+    if (params.tag) args.push("--tag", params.tag);
+    if (params.background) args.push("--background");
+    if (params.tail) args.push("--tail");
+    args.push("-o", "json");
+    return cli("fbash", args);
   }
 );
 
