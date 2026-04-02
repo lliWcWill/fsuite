@@ -19,6 +19,27 @@ pass() { echo -e "\033[0;32m✓\033[0m $1"; (( PASS_COUNT++ )) || true; }
 fail() { echo -e "\033[0;31m✗\033[0m $1"; [[ -n "${2:-}" ]] && echo "  Details: $2"; (( FAIL_COUNT++ )) || true; }
 skip() { echo -e "\033[0;33m⊘\033[0m $1 (skipped)"; (( SKIP_COUNT++ )) || true; }
 
+poll_background_job() {
+  local job_id="$1"
+  local poll_out=""
+  local status=""
+  local attempt
+  for attempt in {1..40}; do
+    if ! poll_out=$("$FBASH" --command "__fbash_poll $job_id" -o json 2>/dev/null); then
+      sleep 0.1
+      continue
+    fi
+    status=$(echo "$poll_out" | jq -r '.metadata.background_status // empty')
+    if [[ "$status" == "running" ]]; then
+      sleep 0.1
+      continue
+    fi
+    printf '%s\n' "$poll_out"
+    return 0
+  done
+  return 1
+}
+
 setup() {
   TMPDIR_BASE=$(mktemp -d)
   export FBASH_SESSION_DIR="$TMPDIR_BASE/session"
@@ -139,36 +160,47 @@ echo ""
 echo "== Bug 4: Background Respects --env =="
 
 # Test 4a: --env is applied in background mode
-bg_out=$("$FBASH" --command 'echo $FBASH_TEST_VAR' --env 'FBASH_TEST_VAR=rabbit_fix_4' --background -o json 2>/dev/null)
+bg_out=""
+if ! bg_out=$("$FBASH" --command 'echo $FBASH_TEST_VAR' --env 'FBASH_TEST_VAR=rabbit_fix_4' --background -o json 2>/dev/null); then
+  fail "bug4_bg_env: background job start command failed"
+  bg_out=""
+fi
 job_id=$(echo "$bg_out" | jq -r '.metadata.background_job_id // empty')
 
 if [[ -n "$job_id" ]]; then
-  # Wait for job to complete
-  sleep 2
-  poll_out=$("$FBASH" --command "__fbash_poll $job_id" -o json 2>/dev/null)
-  bg_stdout=$(echo "$poll_out" | jq -r '.stdout // empty')
-  if echo "$bg_stdout" | grep -q "rabbit_fix_4"; then
-    pass "bug4_bg_env: background job received FBASH_TEST_VAR=rabbit_fix_4"
+  if poll_out=$(poll_background_job "$job_id"); then
+    bg_stdout=$(echo "$poll_out" | jq -r '.stdout // empty')
+    if echo "$bg_stdout" | grep -q "rabbit_fix_4"; then
+      pass "bug4_bg_env: background job received FBASH_TEST_VAR=rabbit_fix_4"
+    else
+      fail "bug4_bg_env: env var not propagated to background" "stdout=$bg_stdout"
+    fi
   else
-    fail "bug4_bg_env: env var not propagated to background" "stdout=$bg_stdout"
+    fail "bug4_bg_env: polling timed out" "job_id=$job_id"
   fi
 else
   fail "bug4_bg_env: background job didn't start" "response=$bg_out"
 fi
 
 # Test 4b: __fbash_poll preserves the polled job exit code at top level
-bg_out=$("$FBASH" --command 'exit 9' --background -o json 2>/dev/null)
+bg_out=""
+if ! bg_out=$("$FBASH" --command 'exit 9' --background -o json 2>/dev/null); then
+  fail "bug4_poll_exit_code: background job start command failed"
+  bg_out=""
+fi
 job_id=$(echo "$bg_out" | jq -r '.metadata.background_job_id // empty')
 
 if [[ -n "$job_id" ]]; then
-  sleep 2
-  poll_out=$("$FBASH" --command "__fbash_poll $job_id" -o json 2>/dev/null)
-  poll_exit_code=$(echo "$poll_out" | jq -r '.exit_code')
-  poll_stdout=$(echo "$poll_out" | jq -r '.stdout // empty')
-  if [[ "$poll_exit_code" == "9" ]] && [[ "$poll_stdout" != *'"exit_code":9'* ]]; then
-    pass "bug4_poll_exit_code: polled exit_code surfaced at top level"
+  if poll_out=$(poll_background_job "$job_id"); then
+    poll_exit_code=$(echo "$poll_out" | jq -r '.exit_code')
+    poll_stdout=$(echo "$poll_out" | jq -r '.stdout // empty')
+    if [[ "$poll_exit_code" == "9" ]] && [[ "$poll_stdout" != *'"exit_code":9'* ]]; then
+      pass "bug4_poll_exit_code: polled exit_code surfaced at top level"
+    else
+      fail "bug4_poll_exit_code: expected top-level exit_code=9 from __fbash_poll" "exit_code=$poll_exit_code stdout=$poll_stdout response=$poll_out"
+    fi
   else
-    fail "bug4_poll_exit_code: expected top-level exit_code=9 from __fbash_poll" "exit_code=$poll_exit_code stdout=$poll_stdout response=$poll_out"
+    fail "bug4_poll_exit_code: polling timed out" "job_id=$job_id"
   fi
 else
   fail "bug4_poll_exit_code: background job didn't start" "response=$bg_out"
@@ -200,11 +232,45 @@ else
 fi
 
 # Test 5c: All directories = error
-err_out=$("$FREAD" --paths "/tmp,/var,/usr" -o json 2>&1 || true)
-if echo "$err_out" | grep -qi "none found\|no.*exist\|not.*found\|error\|No file found"; then
-  pass "bug5_all_dirs_error: all directories correctly produces error"
+err_out=""
+err_rc=0
+err_out=$("$FREAD" --paths "/tmp,/var,/usr" -o json 2>&1) || err_rc=$?
+err_errors=$(printf '%s' "$err_out" | jq -r '.errors | length' 2>/dev/null || echo 0)
+err_code=$(printf '%s' "$err_out" | jq -r '.errors[0].error_code // empty' 2>/dev/null)
+if (( err_rc != 0 )) && [[ "$err_errors" =~ ^[0-9]+$ ]] && (( err_errors > 0 )) && [[ -n "$err_code" ]]; then
+  pass "bug5_all_dirs_error: all directories correctly returns structured errors"
 else
-  fail "bug5_all_dirs_error: expected error for all-directory paths" "Got: $(echo "$err_out" | head -1)"
+  fail "bug5_all_dirs_error: expected structured error for all-directory paths" "rc=$err_rc errors=$err_errors error_code=$err_code out=$err_out"
+fi
+
+# Test 5d: Symbol mode accepts file candidates in --paths
+symbol_tmp=$(mktemp -d)
+cat > "$symbol_tmp/symbol.ts" <<'EOF'
+function foo() {
+  return 42;
+}
+EOF
+symbol_out=$("$FREAD" --paths "$symbol_tmp/symbol.ts" --symbol foo -o json 2>/dev/null || true)
+symbol_name=$(printf '%s' "$symbol_out" | jq -r '.symbol_resolution.symbol // empty')
+symbol_path=$(printf '%s' "$symbol_out" | jq -r '.symbol_resolution.path // empty')
+if [[ "$symbol_name" == "foo" ]] && [[ "$symbol_path" == "$symbol_tmp/symbol.ts" ]]; then
+  pass "bug5_symbol_file_paths: symbol mode resolves file candidates from --paths"
+else
+  fail "bug5_symbol_file_paths: expected file candidate to resolve symbol" "out=$symbol_out"
+fi
+rm -rf "$symbol_tmp"
+
+# Test 5e: No-match short-circuits without extra dispatch errors
+no_match_out=""
+no_match_rc=0
+no_match_out=$("$FREAD" --paths "/definitely/missing-one,/definitely/missing-two" --symbol whatever -o json 2>&1) || no_match_rc=$?
+no_match_errors=$(printf '%s' "$no_match_out" | jq -r '.errors | length' 2>/dev/null || echo 0)
+no_match_code=$(printf '%s' "$no_match_out" | jq -r '.errors[0].error_code // empty' 2>/dev/null)
+second_code=$(printf '%s' "$no_match_out" | jq -r '.errors[1].error_code // empty' 2>/dev/null)
+if (( no_match_rc != 0 )) && [[ "$no_match_errors" == "1" ]] && [[ "$no_match_code" == "no_match" ]] && [[ -z "$second_code" ]]; then
+  pass "bug5_no_match_short_circuit: unresolved --paths stops before symbol dispatch"
+else
+  fail "bug5_no_match_short_circuit: expected only no_match error" "rc=$no_match_rc out=$no_match_out"
 fi
 
 echo ""

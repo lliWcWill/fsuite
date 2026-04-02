@@ -194,16 +194,44 @@ count_file_lines() {
 }
 
 normalize_abs_path() {
-  local p="$1"
-  if abs="$(realpath -e "$p" 2>/dev/null)"; then
-    printf '%s' "$abs"
-    return 0
+local p="$1"
+if abs="$(realpath -e "$p" 2>/dev/null)"; then
+printf '%s' "$abs"
+return 0
   fi
   if abs="$(cd "$(dirname "$p")" 2>/dev/null && printf '%s/%s' "$(pwd)" "$(basename "$p")")"; then
     printf '%s' "$abs"
     return 0
+fi
+printf '%s' "$p"
+}
+
+split_multi_paths() {
+local input="$1"
+local token="" char next_char
+local i input_len
+_MULTI_PATH_ARR=()
+input_len=${#input}
+
+for ((i=0; i<input_len; i++)); do
+  char="${input:i:1}"
+  if [[ "$char" == '\' ]] && (( i + 1 < input_len )); then
+    next_char="${input:i+1:1}"
+    if [[ "$next_char" == "," ]]; then
+      token+=","
+      ((i++))
+      continue
+    fi
   fi
-  printf '%s' "$p"
+  if [[ "$char" == "," ]]; then
+    _MULTI_PATH_ARR+=("$token")
+    token=""
+    continue
+  fi
+  token+="$char"
+done
+
+_MULTI_PATH_ARR+=("$token")
 }
 
 detect_language() {
@@ -1410,14 +1438,18 @@ TARGET_PATH="${POSITIONAL[0]:-}"
 # -------------------------
 # Multi-path fallback resolution
 # -------------------------
+MULTI_PATH_NO_MATCH=0
 if [[ -n "$MULTI_PATHS" ]]; then
   # --paths takes priority over positional path
   if [[ -n "$TARGET_PATH" ]]; then
     add_warning "Both positional path and --paths provided; --paths takes priority"
   fi
-  IFS=',' read -ra _MULTI_PATH_ARR <<< "$MULTI_PATHS"
+  TARGET_PATH=""
+  RESOLVED_PATH=""
+  split_multi_paths "$MULTI_PATHS"
   MULTI_PATH_TOTAL=${#_MULTI_PATH_ARR[@]}
   _mp_found=0
+  MULTI_PATH_NO_MATCH=0
   _mp_tried=()
   for _mp in "${_MULTI_PATH_ARR[@]}"; do
     # Trim whitespace and expand ~
@@ -1425,10 +1457,9 @@ if [[ -n "$MULTI_PATHS" ]]; then
     _mp="${_mp%"${_mp##*[![:space:]]}"}"
     _mp="${_mp/#\~/$HOME}"
     _mp_tried+=("$_mp")
-    # For symbol mode, directories are valid (directory-scope resolution)
-    # For file reads, only regular files should match
+    # Symbol mode accepts either a directory scope or an exact file candidate.
     if [[ -n "${SYMBOL_NAME:-}" ]]; then
-      [[ -d "$_mp" ]] || continue
+      [[ -d "$_mp" || -f "$_mp" ]] || continue
     else
       [[ -f "$_mp" ]] || continue
     fi
@@ -1440,6 +1471,9 @@ if [[ -n "$MULTI_PATHS" ]]; then
   if (( _mp_found == 0 )); then
     # No match found — record error for JSON renderer, don't call die
     add_error "<<multipath>>" "no_match" "No file found in paths candidates: ${_mp_tried[*]}"
+    TARGET_PATH=""
+    RESOLVED_PATH=""
+    MULTI_PATH_NO_MATCH=1
   fi
   unset _mp_found _mp_tried _mp _MULTI_PATH_ARR
 fi
@@ -1455,9 +1489,20 @@ if (( FROM_STDIN == 1 )); then
     die "File selectors and positional path are not valid with --from-stdin"
   fi
 else
-  if [[ -z "$TARGET_PATH" ]] && (( ERR_COUNT == 0 )); then
-    die "Missing file argument. Try: fread --help"
-  fi
+if (( MULTI_PATH_NO_MATCH == 1 )); then
+compute_next_hint
+if [[ "$OUTPUT" == "json" ]]; then
+render_json
+elif [[ "$OUTPUT" == "paths" ]]; then
+render_paths
+else
+render_pretty
+fi
+exit 1
+fi
+if [[ -z "$TARGET_PATH" ]] && (( ERR_COUNT == 0 )); then
+die "Missing file argument. Try: fread --help"
+fi
 fi
 
 # -------------------------

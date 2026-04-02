@@ -839,7 +839,7 @@ function renderFbashResult(jsonStr) {
     search: fg(102, 217, 239),
   };
   const cc = classBadge[d.command_class] || fg(200, 200, 200);
-  const exitColor = d.exit_code === 0 ? fg(80, 200, 80) : fg(220, 90, 90);
+  const exitColor = d.exit_code == null ? DIM : d.exit_code === 0 ? fg(80, 200, 80) : fg(220, 90, 90);
   lines.push(
     `${cc}${BOLD}${d.command_class}${RESET} ` +
     `${exitColor}exit=${d.exit_code}${RESET} ` +
@@ -1126,7 +1126,7 @@ server.registerTool(
   async ({ path, paths, symbol, lines, around, around_line, before, after, head, tail, max_lines }) => {
     const args = [];
     if (paths && paths.length > 0) {
-      args.push("--paths", paths.join(","));
+      args.push("--paths", paths.map((p) => p.replace(/,/g, "\\,")).join(","));
     } else if (path) {
       args.push(path);
     } else {

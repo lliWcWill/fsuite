@@ -99,6 +99,8 @@ EXEC_EXIT_CODE=0
 EXEC_DURATION_MS=0
 EXEC_NEW_CWD=""
 EXEC_TIMED_OUT=0
+RENDER_BG_JOB_ID=""
+RENDER_BG_STATUS=""
 
 # Routing globals (set by compute_routing_suggestion)
 ROUTING_TOOL=""
@@ -106,6 +108,13 @@ ROUTING_REASON=""
 ROUTING_ARGS="{}"
 
 # ── Helpers ──────────────────────────────────────────────────────
+
+cleanup_exec_files() {
+  [[ -n "${EXEC_STDOUT_FILE:-}" ]] && rm -f "$EXEC_STDOUT_FILE" 2>/dev/null || true
+  [[ -n "${EXEC_STDERR_FILE:-}" ]] && rm -f "$EXEC_STDERR_FILE" 2>/dev/null || true
+  EXEC_STDOUT_FILE=""
+  EXEC_STDERR_FILE=""
+}
 
 die() { echo "fbash: error: $*" >&2; exit 1; }
 has() { command -v "$1" >/dev/null 2>&1; }
@@ -625,16 +634,20 @@ poll_background_job() {
     local cmd_class_poll
     cmd_class_poll=$(jq -r '.class // "general"' "$meta_file" 2>/dev/null || echo "general")
 
-    if [[ "$OUTPUT" == "json" ]]; then
-      render_json \
-        "__fbash_poll $job_id" "internal" \
-        "$stdout_content" "$stderr_content" \
-        "$exit_code" "$duration_ms" \
-        "${RESOLVED_CWD:-$PWD}" "${RESOLVED_CWD:-$PWD}" \
-        "$BUDGET_TRUNCATED" "$BUDGET_TRUNCATION_REASON" \
-        "$BUDGET_TOTAL_LINES" "$BUDGET_TOTAL_BYTES" \
-        0
-    else
+if [[ "$OUTPUT" == "json" ]]; then
+RENDER_BG_JOB_ID="$job_id"
+RENDER_BG_STATUS="completed"
+render_json \
+"__fbash_poll $job_id" "internal" \
+"$stdout_content" "$stderr_content" \
+"$exit_code" "$duration_ms" \
+"${RESOLVED_CWD:-$PWD}" "${RESOLVED_CWD:-$PWD}" \
+"$BUDGET_TRUNCATED" "$BUDGET_TRUNCATION_REASON" \
+"$BUDGET_TOTAL_LINES" "$BUDGET_TOTAL_BYTES" \
+0
+RENDER_BG_JOB_ID=""
+RENDER_BG_STATUS=""
+else
       echo "fbash: job $job_id complete (exit=$exit_code, ${duration_ms}ms)"
       if (( ! QUIET )) && [[ -n "$stdout_content" ]]; then
         echo "---"
@@ -723,8 +736,12 @@ execute_command() {
   local resolved_timeout="$3"
 
   local stdout_file stderr_file pwd_file
-  stdout_file=$(mktemp)
-  stderr_file=$(mktemp)
+  stdout_file="${EXEC_STDOUT_FILE:-}"
+  stderr_file="${EXEC_STDERR_FILE:-}"
+  [[ -n "$stdout_file" ]] || stdout_file=$(mktemp)
+  [[ -n "$stderr_file" ]] || stderr_file=$(mktemp)
+  : > "$stdout_file"
+  : > "$stderr_file"
   pwd_file=$(mktemp)
 
   local start_ms exit_code=0
@@ -1029,13 +1046,22 @@ done
     exit_code_json="$exit_code"
   fi
 
-  local next_hint_json="null"
-  if [[ -n "$next_hint" ]]; then
-    next_hint_json="\"$(printf '%s' "$next_hint" | json_escape_str)\""
-  fi
+local next_hint_json="null"
+if [[ -n "$next_hint" ]]; then
+next_hint_json="\"$(printf '%s' "$next_hint" | json_escape_str)\""
+fi
 
-  # Quiet mode: empty stdout/stderr
-  local out_stdout="$stdout_content"
+local bg_job_id_json="null"
+local bg_meta_extra=""
+if [[ -n "${RENDER_BG_JOB_ID:-}" ]]; then
+bg_job_id_json="\"$(printf '%s' "$RENDER_BG_JOB_ID" | json_escape_str)\""
+fi
+if [[ -n "${RENDER_BG_STATUS:-}" ]]; then
+bg_meta_extra+=",\"background_status\":\"$(printf '%s' "$RENDER_BG_STATUS" | json_escape_str)\""
+fi
+
+# Quiet mode: empty stdout/stderr
+local out_stdout="$stdout_content"
   local out_stderr="$stderr_content"
   if (( QUIET )); then
     out_stdout=""
@@ -1046,10 +1072,10 @@ done
     tok_est=0
   fi
 
-  printf '{"tool":"fbash","version":"%s","command":"%s","command_class":"%s","exit_code":%s,"cwd":"%s","cwd_changed":%s,"duration_ms":%d,"stdout":"%s","stderr":"%s","stdout_lines":%d,"stderr_lines":%d,"truncated":%s,"truncation_reason":%s,"lines_total":%d,"bytes_total":%d,"token_estimate":%d,"next_hint":%s,"routing_suggestion":%s,"metadata":{"files_modified":[],"background_job_id":null},"warnings":[%s],"errors":%s}\n' \
-    "$VERSION" \
-    "$(printf '%s' "$cmd" | json_escape_str)" \
-    "$class" \
+printf '{"tool":"fbash","version":"%s","command":"%s","command_class":"%s","exit_code":%s,"cwd":"%s","cwd_changed":%s,"duration_ms":%d,"stdout":"%s","stderr":"%s","stdout_lines":%d,"stderr_lines":%d,"truncated":%s,"truncation_reason":%s,"lines_total":%d,"bytes_total":%d,"token_estimate":%d,"next_hint":%s,"routing_suggestion":%s,"metadata":{"files_modified":[],"background_job_id":%s%s},"warnings":[%s],"errors":%s}\n' \
+"$VERSION" \
+"$(printf '%s' "$cmd" | json_escape_str)" \
+"$class" \
     "$exit_code_json" \
     "$(printf '%s' "$new_cwd" | json_escape_str)" \
     "$cwd_changed" \
@@ -1061,12 +1087,14 @@ done
     "$truncated" \
     "$(if [[ -n "$truncation_reason" ]]; then printf '"%s"' "$truncation_reason"; else printf 'null'; fi)" \
     "$total_lines" \
-    "$total_bytes" \
-    "$tok_est" \
-    "$next_hint_json" \
-    "$routing_json" \
-    "$warn_joined" \
-    "$errors_json"
+"$total_bytes" \
+"$tok_est" \
+"$next_hint_json" \
+"$routing_json" \
+"$bg_job_id_json" \
+"$bg_meta_extra" \
+"$warn_joined" \
+"$errors_json"
 }
 
 # ── Pretty Rendering ─────────────────────────────────────────────
@@ -1214,7 +1242,7 @@ _fsuite_record_telemetry() {
     echo "$_telem_line" >> "$telem_dir/telemetry.jsonl"
   } 200>"$telem_dir/.telemetry.lock" 2>/dev/null || true
 }
-trap '_fsuite_record_telemetry' EXIT
+trap 'cleanup_exec_files; _fsuite_record_telemetry' EXIT
 
 # ── Parse Arguments ──────────────────────────────────────────────
 
@@ -1388,7 +1416,7 @@ if (( ! IS_INTERNAL )); then
   if (( BACKGROUND )); then
     JOB_ID=$(start_background_job "$COMMAND" "$RESOLVED_CWD")
     if [[ "$OUTPUT" == "json" ]]; then
-      printf '{"tool":"fbash","version":"%s","command":"%s","command_class":"%s","exit_code":null,"cwd":"%s","cwd_changed":false,"duration_ms":0,"stdout":"","stderr":"","stdout_lines":0,"stderr_lines":0,"truncated":false,"truncation_reason":null,"lines_total":0,"bytes_total":0,"token_estimate":0,"next_hint":"fbash --command '"'"'__fbash_poll %s'"'"'","routing_suggestion":null,"metadata":{"files_modified":[],"background_job_id":"%s"},"warnings":[],"errors":[]}\n' \
+printf '{"tool":"fbash","version":"%s","command":"%s","command_class":"%s","exit_code":null,"cwd":"%s","cwd_changed":false,"duration_ms":0,"stdout":"","stderr":"","stdout_lines":0,"stderr_lines":0,"truncated":false,"truncation_reason":null,"lines_total":0,"bytes_total":0,"token_estimate":0,"next_hint":"fbash --command '"'"'__fbash_poll %s'"'"'","routing_suggestion":null,"metadata":{"files_modified":[],"background_job_id":"%s","background_status":"running"},"warnings":[],"errors":[]}\n' \
         "$VERSION" \
         "$(printf '%s' "$COMMAND" | json_escape_str)" \
         "$CMD_CLASS" \
@@ -1466,7 +1494,7 @@ else
 fi
 
 # Cleanup temp files
-rm -f "$EXEC_STDOUT_FILE" "$EXEC_STDERR_FILE" 2>/dev/null || true
+cleanup_exec_files
 
 # Propagate non-zero exit from the executed command for telemetry
 _TELEM_EXIT_CODE="$EXEC_EXIT_CODE"

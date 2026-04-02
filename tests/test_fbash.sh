@@ -432,12 +432,62 @@ test_internal_reset() {
     pass "internal_reset: __fbash_reset executed with exit_code=0"
   else
     fail "internal_reset: expected exit_code=0" \
-         "Got exit_code=$exit_code"
+      "Got exit_code=$exit_code"
   fi
 }
 
 # ============================================================================
-# 18. JSON Output Contract
+# 18. Background Metadata & Temp Cleanup
+# ============================================================================
+
+test_background_metadata() {
+  fbash_json --background --command 'sleep 0.2'
+
+  local job_id start_status
+  job_id=$(echo "$FBASH_OUT" | jq -r '.metadata.background_job_id // empty' 2>/dev/null)
+  start_status=$(echo "$FBASH_OUT" | jq -r '.metadata.background_status // empty' 2>/dev/null)
+
+  if [[ -z "$job_id" || "$start_status" != "running" ]]; then
+    fail "background_metadata_start: expected running metadata on background start" \
+      "job_id=${job_id:-<empty>} status=${start_status:-<empty>} out=$FBASH_OUT"
+    return
+  fi
+
+  sleep 0.3
+  fbash_json --command "__fbash_poll $job_id"
+
+  local poll_job_id poll_status poll_exit
+  poll_job_id=$(echo "$FBASH_OUT" | jq -r '.metadata.background_job_id // empty' 2>/dev/null)
+  poll_status=$(echo "$FBASH_OUT" | jq -r '.metadata.background_status // empty' 2>/dev/null)
+  poll_exit=$(jraw exit_code)
+
+  if [[ "$poll_job_id" == "$job_id" && "$poll_status" == "completed" && "$poll_exit" == "0" ]]; then
+    pass "background_metadata_poll: completed poll preserves job metadata"
+  else
+    fail "background_metadata_poll: expected completed poll metadata" \
+      "job_id=$job_id poll_job_id=${poll_job_id:-<empty>} status=${poll_status:-<empty>} exit=${poll_exit:-<empty>} out=$FBASH_OUT"
+  fi
+}
+
+test_exec_temp_cleanup() {
+  local isolated_tmp="${TEST_DIR}/tmp-isolated"
+  rm -rf "$isolated_tmp"
+  mkdir -p "$isolated_tmp"
+
+  TMPDIR="$isolated_tmp" "$FBASH" -o json --command 'printf cleanup_check' >/dev/null 2>&1 || true
+
+  local leftover
+  leftover=$(find "$isolated_tmp" -maxdepth 1 -type f | wc -l | tr -d '[:space:]')
+  if [[ "$leftover" == "0" ]]; then
+    pass "exec_temp_cleanup: command temp files removed from TMPDIR"
+  else
+    fail "exec_temp_cleanup: expected no orphan temp files" \
+      "leftover=$leftover files=$(find "$isolated_tmp" -maxdepth 1 -type f -printf '%f ' 2>/dev/null)"
+  fi
+}
+
+# ============================================================================
+# 19. JSON Output Contract
 # ============================================================================
 
 test_json_output_contract() {
@@ -627,13 +677,15 @@ main() {
   run_test "Routing: grep -> fcontent" test_routing_suggestion_grep
 
   echo ""
-  echo "== Session State & Internal Commands =="
-  run_test "Session state" test_session_state
-  run_test "Internal history" test_internal_history
-  run_test "Internal reset" test_internal_reset
+echo "== Session State & Internal Commands =="
+run_test "Session state" test_session_state
+run_test "Internal history" test_internal_history
+run_test "Internal reset" test_internal_reset
+run_test "Background metadata" test_background_metadata
+run_test "Exec temp cleanup" test_exec_temp_cleanup
 
-  echo ""
-  echo "== JSON Output Contract =="
+echo ""
+echo "== JSON Output Contract =="
   run_test "JSON output contract" test_json_output_contract
 
   echo ""

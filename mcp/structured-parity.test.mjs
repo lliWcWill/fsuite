@@ -462,6 +462,46 @@ test("freplay MCP is available and preserves JSON list output", async () => {
   assert.ok(Array.isArray(result.structuredContent.replays));
 });
 
+test("fread MCP preserves paths entries that contain commas", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "fsuite-mcp-comma-"));
+  const missingPath = join(dir, "missing.py");
+  const commaPath = join(dir, "with,comma.py");
+  writeFileSync(commaPath, "print('comma-path-ok')\n", "utf8");
+
+  try {
+    const result = await callTool("fread", {
+      paths: [missingPath, commaPath],
+      head: 1,
+    });
+    const plain = stripAnsi(textContent(result));
+
+    assert.ok(!result.isError, plain);
+    assert.ok(
+      plain.includes("comma-path-ok"),
+      `fread MCP should read the file selected from a comma-containing paths entry, got: ${plain}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("fbash pretty output does not color exit=null as an error", async () => {
+  const result = await callTool("fbash", {
+    command: "sleep 0.2",
+    background: true,
+  });
+
+  const raw = textContent(result);
+  const plain = stripAnsi(raw);
+
+  assert.ok(!result.isError, plain);
+  assert.ok(plain.includes("exit=null"), `expected exit=null in pretty output, got: ${plain}`);
+  assert.ok(
+    !raw.includes("\x1b[38;2;220;90;90mexit=null"),
+    `exit=null should not be rendered in red, got: ${JSON.stringify(raw)}`,
+  );
+});
+
 // ─── colorPath: filename highlighting in renderer output ───
 
 test("fread pretty output includes colored filename from path", async () => {

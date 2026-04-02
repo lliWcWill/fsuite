@@ -89,8 +89,60 @@ has_tomllib() {
   has_python3 && python3 -c 'import tomllib' 2>/dev/null
 }
 
+has_tomli() {
+  has_python3 && python3 -c 'import tomli' 2>/dev/null
+}
+
 has_xml() {
   has_python3 && python3 -c 'import xml.etree.ElementTree' 2>/dev/null
+}
+
+json_top_level_field() {
+  local payload="$1"
+  local field="$2"
+  if has_jq; then
+    printf '%s' "$payload" | jq -r ".${field} // empty" 2>/dev/null
+  elif has_python3; then
+    printf '%s' "$payload" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+value = data.get(sys.argv[1], "")
+print("" if value is None else value)
+' "$field" 2>/dev/null
+  fi
+}
+
+json_array_length() {
+  local payload="$1"
+  local field="$2"
+  if has_jq; then
+    printf '%s' "$payload" | jq -r "(.${field} // []) | length" 2>/dev/null
+  elif has_python3; then
+    printf '%s' "$payload" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+value = data.get(sys.argv[1], [])
+print(len(value if isinstance(value, list) else []))
+' "$field" 2>/dev/null
+  fi
+}
+
+json_array_contains_substring() {
+  local payload="$1"
+  local field="$2"
+  local needle="$3"
+  if has_jq; then
+    printf '%s' "$payload" | jq -r --arg needle "$needle" \
+      "((.${field} // []) | any(.[]; contains(\$needle)))" 2>/dev/null
+  elif has_python3; then
+    printf '%s' "$payload" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+items = data.get(sys.argv[1], [])
+needle = sys.argv[2]
+print("true" if any(needle in str(item) for item in items) else "false")
+' "$field" "$needle" 2>/dev/null
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -173,7 +225,7 @@ EOF
     --lines 4:4 --with '' --apply 2>/dev/null) || rc=$?
 
   # Error detail should carry the validator's line/column message.
-  error_detail=$(echo "$output" | jq -r ".error_detail // empty" 2>/dev/null)
+  error_detail=$(json_top_level_field "$output" error_detail)
   if (( rc != 0 )) && [[ -n "$error_detail" ]] && [[ "$error_detail" =~ line ]] && [[ "$error_detail" =~ column ]]; then
     pass "JSON error output includes line/column detail"
   else
@@ -237,6 +289,11 @@ EOF
 # ---------------------------------------------------------------------------
 
 test_yaml_valid_edit() {
+  if ! has_pyyaml; then
+    skip "YAML valid edit test (PyYAML not available)"
+    return 0
+  fi
+
   local f="${TEST_DIR}/valid.yaml"
   cat > "$f" <<'EOF'
 name: alice
@@ -293,6 +350,11 @@ EOF
 # ---------------------------------------------------------------------------
 
 test_toml_valid_edit() {
+  if ! has_tomllib && ! has_tomli; then
+    skip "TOML valid edit test (tomllib/tomli not available)"
+    return 0
+  fi
+
   local f="${TEST_DIR}/valid.toml"
   cat > "$f" <<'EOF'
 [package]
@@ -319,8 +381,8 @@ EOF
 # ---------------------------------------------------------------------------
 
 test_toml_invalid_edit() {
-  if ! has_tomllib; then
-    skip "TOML invalid edit test (tomllib not available — Python < 3.11 or missing)"
+  if ! has_tomllib && ! has_tomli; then
+    skip "TOML invalid edit test (tomllib/tomli not available)"
     return 0
   fi
 
@@ -405,6 +467,11 @@ EOF
 # ---------------------------------------------------------------------------
 
 test_file_growth_warning() {
+  if ! has_jq && ! has_python3; then
+    skip "File growth warning JSON check (no jq or python3)"
+    return 0
+  fi
+
   local f="${TEST_DIR}/growth.json"
   cat > "$f" <<'EOF'
 {
@@ -426,22 +493,35 @@ EOF
   output=$(FSUITE_TELEMETRY=0 "${FEDIT}" -o json "$f" \
     --lines 2:2 --with "$big_value" --apply 2>&1) || rc=$?
 
-  # The edit should succeed (warning, not abort) if the replacement is valid JSON
-  # Check for growth warning in output
-  if [[ "$output" == *"growth"* || "$output" == *"warning"* || "$output" == *"size"* ]]; then
-    if (( rc == 0 )); then
-      pass "File growth warning issued but edit not aborted"
-    else
-      # Growth warning with rejection is also acceptable if the resulting JSON is invalid
-      pass "File growth warning detected in output"
-    fi
+  local warnings_len warnings_hit
+  warnings_len=$(json_array_length "$output" warnings)
+  warnings_hit=$(json_array_contains_substring "$output" warnings "File grew from")
+
+  if (( rc == 0 )) && [[ "$warnings_len" =~ ^[0-9]+$ ]] && (( warnings_len > 0 )) && [[ "$warnings_hit" == "true" ]]; then
+    pass "File growth warning issued in JSON output without aborting edit"
   else
-    # Growth warning feature may not be implemented yet — check if edit at least succeeded
-    if (( rc == 0 )); then
-      fail "File growth warning should appear when replacing 1 line with 100" "rc=$rc (no warning in output)"
-    else
-      fail "File growth warning test inconclusive" "rc=$rc output=$output"
-    fi
+    fail "Expected structured file growth warning in JSON output" "rc=$rc warnings_len=$warnings_len warnings_hit=$warnings_hit output=$output"
+  fi
+}
+
+test_file_growth_warning_pretty_output() {
+  local f="${TEST_DIR}/growth_pretty.json"
+  cat > "$f" <<'EOF'
+{
+  "value": 1
+}
+EOF
+
+  local numbers replacement output rc=0
+  numbers=$(seq -s, 1 250)
+  replacement="  \"value\": [${numbers}]"
+  output=$(FSUITE_TELEMETRY=0 "${FEDIT}" "$f" \
+    --replace '  "value": 1' --with "$replacement" --apply 2>&1) || rc=$?
+
+  if (( rc == 0 )) && [[ "$output" == *"warning:"* ]] && [[ "$output" == *"File grew from"* ]]; then
+    pass "Pretty output surfaces file growth warning"
+  else
+    fail "Expected pretty output to surface file growth warning" "rc=$rc output=$output"
   fi
 }
 
@@ -631,9 +711,10 @@ main() {
   run_test "XML valid edit"                 test_xml_valid_edit
   run_test "XML malformed edit rejected"    test_xml_malformed_edit
 
-  # --- Growth & batch ---
-  run_test "File growth warning"            test_file_growth_warning
-  run_test "Batch validation all-or-nothing" test_batch_validation_abort
+# --- Growth & batch ---
+run_test "File growth warning"            test_file_growth_warning
+run_test "Pretty growth warning"          test_file_growth_warning_pretty_output
+run_test "Batch validation all-or-nothing" test_batch_validation_abort
 
   # --- Flags & safety ---
   run_test "--no-validate bypasses checks"  test_no_validate_flag

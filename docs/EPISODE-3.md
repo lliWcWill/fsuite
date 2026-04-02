@@ -111,7 +111,7 @@ fread(path: "src/ink/ink.tsx", lines: "76:215")
 
 The Ink class constructor and the `scheduleRender` setup. LogUpdate, Terminal, StylePool, CharPool, HyperlinkPool, double-buffered frames, reconciler container, `scheduleRender = throttle(deferredRender, FRAME_INTERVAL_MS)` where `deferredRender = () => queueMicrotask(this.onRender)`.
 
-Five `fmap` calls for architecture. Four `fread` calls for confirmation. Total tool invocations for a complete rendering pipeline map: **nine**.
+Five `fmap` calls for architecture. Four `fread` calls for confirmation: three symbol reads plus one line-range read. Total tool invocations for the complete rendering pipeline map: **10 including `ftree`**.
 
 ---
 
@@ -197,11 +197,11 @@ With fsuite:
 ```
 ftree --snapshot               → Territory. One call. 1,022 entries.
 fmap (5 calls)                 → Skeletons. Every gateway function, named and located.
-fread --symbol (4 calls)       → Surgical reads. Only the functions that matter.
-fread --lines (2 calls)        → The constructor. The scheduler. Exact ranges.
+fread --symbol (3 calls)       → Surgical reads. The key gateway functions only.
+fread --lines (1 call)         → The constructor and scheduler range. Exact lines.
 ```
 
-Eleven calls. Under 4,000 tokens of output. Complete architectural understanding. And every finding filed to `fcase` so the next agent — or the next session — doesn't start from zero.
+Ten calls including `ftree`. Under 4,000 tokens of output. Complete architectural understanding. And every finding filed to `fcase` so the next agent — or the next session — doesn't start from zero.
 
 That's not an efficiency improvement. That's a category change. It's the difference between "I spent my context window reading code" and "I spent my context window *understanding* architecture."
 
