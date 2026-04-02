@@ -74,6 +74,15 @@ const theme = {
   symbol:  (s) => `${fg(102, 217, 239)}${s}${RESET}`,
 };
 
+// Highlight the filename in a path — directory stays dim, filename gets color
+function colorPath(fullPath) {
+  if (!fullPath) return "";
+  const p = shortPath(fullPath);
+  const slash = p.lastIndexOf("/");
+  if (slash === -1) return theme.path(p);
+  return `${DIM}${p.slice(0, slash + 1)}${UNDIM}${theme.path(p.slice(slash + 1))}`;
+}
+
 // Map hljs CSS class → ANSI color
 const HLJS_CLASS_TO_ANSI = {
   "hljs-keyword":    fg(249, 38, 114),
@@ -315,7 +324,7 @@ function renderFeditResult(jsonStr) {
     else if (d.lines_start) ctx.push(`L${d.lines_start}:${d.lines_end || ""}`);
     if (ctx.length) parts.push(theme.meta("| " + ctx.join(" | ")));
 
-    let out = parts.join(" ") + "\n";
+    let out = colorPath(d.path) + " " + parts.join(" ") + "\n";
     if (d.error_code) {
       out += theme.error(`Error: ${d.error_code}`) + ` \u2014 ${d.error_detail}\n`;
       return out;
@@ -332,6 +341,14 @@ function renderFeditResult(jsonStr) {
         out += colorizeDiff(tail.join("\n"), d.path) + "\n";
       } else {
         out += colorizeDiff(d.diff, d.path) + "\n";
+      }
+    }
+
+    // Warnings
+    if (d.warnings && Array.isArray(d.warnings) && d.warnings.length > 0) {
+      out += "\n";
+      for (const warning of d.warnings) {
+        out += theme.warn(`⚠ Warning: ${warning}`) + "\n";
       }
     }
 
@@ -354,7 +371,8 @@ function renderFreadResult(jsonStr) {
       metaParts.push(`L${d.chunks[0].start_line}:${d.chunks[0].end_line}`);
     }
     if (d.truncated) metaParts.push(theme.warn("truncated"));
-    let out = theme.meta(metaParts.join(" | ")) + "\n";
+    const filePath = d.symbol_resolution?.path || d.files?.[0]?.path || d.path || "";
+    let out = colorPath(filePath) + " " + theme.meta(metaParts.join(" | ")) + "\n";
 
     for (const w of (d.warnings || [])) {
       out += `   ${theme.warn("\u26a0 " + w)}\n`;
@@ -676,6 +694,7 @@ function renderFcaseResult(jsonStr) {
     const resolved = cases.filter(c => c.status === "resolved");
     const open = cases.filter(c => c.status === "open");
     const archived = cases.filter(c => c.status === "archived");
+    const deleted = cases.filter(c => c.status === "deleted");
 
     // Priority sort: critical > high > medium > low > normal
     const priOrder = { critical: 0, high: 1, medium: 2, low: 3, normal: 4 };
@@ -686,16 +705,18 @@ function renderFcaseResult(jsonStr) {
     if (resolved.length) parts.push(`${resolved.length} resolved`);
     if (open.length) parts.push(`${open.length} open`);
     if (archived.length) parts.push(`${archived.length} archived`);
+    if (deleted.length) parts.push(`${deleted.length} deleted`);
     let out = theme.meta(parts.join(" | ")) + "\n";
 
     const renderCase = (c) => {
       const icon = c.status === "resolved" ? `${fg(80,200,80)}\u2713${RESET}`
                  : c.status === "archived" ? `${DIM}\u25CB${RESET}`
+                 : c.status === "deleted" ? `${fg(255,80,80)}\u2717${RESET}`
                  : `${fg(255,200,50)}\u25CF${RESET}`;
       const pri = c.priority === "critical" ? `${fg(255,80,80)}crit${RESET}   `
                 : c.priority === "high"     ? `${fg(255,80,80)}high${RESET}   `
                 : "       ";
-      const slug = c.slug.length > 24 ? c.slug.slice(0, 24) : c.slug.padEnd(24);
+      const slug = c.slug.length > 24 ? c.slug : c.slug.padEnd(24);
       const goal = c.resolution_summary || c.goal || "";
       const goalTrim = goal.length > 50 ? goal.slice(0, 47) + "..." : goal;
       return `  ${icon} ${BOLD}#${String(c.id).padStart(2)}${RESET} ${slug} ${pri}${DIM}\u2014 ${goalTrim}${UNDIM}`;
@@ -719,6 +740,13 @@ function renderFcaseResult(jsonStr) {
       out += `${DIM}${BOLD} ARCHIVED (${archived.length})${RESET}\n`;
       archived.slice(0, 3).forEach(c => { out += renderCase(c) + "\n"; });
       if (archived.length > 3) out += `${DIM}  ... +${archived.length - 3} more${UNDIM}\n`;
+    }
+
+    if (deleted.length) {
+      deleted.sort(sortByPri);
+      out += `${fg(255,80,80)}${BOLD} DELETED (${deleted.length})${RESET}\n`;
+      deleted.slice(0, MAX_PER_GROUP).forEach(c => { out += renderCase(c) + "\n"; });
+      if (deleted.length > MAX_PER_GROUP) out += `${DIM}  ... +${deleted.length - MAX_PER_GROUP} more${UNDIM}\n`;
     }
 
     return out;
@@ -816,7 +844,7 @@ function renderFbashResult(jsonStr) {
     `${cc}${BOLD}${d.command_class}${RESET} ` +
     `${exitColor}exit=${d.exit_code}${RESET} ` +
     `${DIM}${d.duration_ms}ms${RESET} ` +
-    `${DIM}cwd=${RESET}${shortPath(d.cwd)}`
+      `${DIM}cwd=${RESET}${colorPath(d.cwd)}`
   );
 
   // Truncation warning
@@ -846,10 +874,36 @@ function renderFbashResult(jsonStr) {
     lines.push(d.stderr);
   }
 
+  // Warnings
+  if (d.warnings && Array.isArray(d.warnings) && d.warnings.length > 0) {
+    lines.push("");
+    for (const warning of d.warnings) {
+      lines.push(`${fg(230, 219, 116)}${BOLD}warning:${RESET} ${warning}`);
+    }
+  }
+
+  // Errors
+  if (d.errors && Array.isArray(d.errors) && d.errors.length > 0) {
+    lines.push("");
+    for (const error of d.errors) {
+      lines.push(`${fg(220, 90, 90)}${BOLD}error:${RESET} ${error}`);
+    }
+  }
+
+  // Metadata (background job ID)
+  if (d.metadata?.background_job_id) {
+    lines.push("");
+    lines.push(`${fg(117, 113, 94)}background_job_id: ${d.metadata.background_job_id}${RESET}`);
+  }
+
   // next_hint
   if (d.next_hint) {
     lines.push("");
-    lines.push(`${fg(190, 132, 255)}${BOLD}next ->${RESET} ${d.next_hint}`);
+    let hintText = d.next_hint;
+    if (typeof d.next_hint === "object") {
+      hintText = JSON.stringify(d.next_hint, null, 2);
+    }
+    lines.push(`${fg(190, 132, 255)}${BOLD}next ->${RESET} ${hintText}`);
   }
 
   return lines.join("\n");
@@ -967,17 +1021,40 @@ async function cli(tool, args, renderAs, renderContext) {
     if (parsed !== undefined) result.structuredContent = parsed;
     return result;
   } catch (err) {
-    let errorText = err.stderr || err.stdout || err.message;
-    try {
-      const parsed = JSON.parse(errorText);
-      if (parsed.errors?.length) {
-        errorText = parsed.errors.map(e => e.error_detail || e.error || e).join("; ");
-      } else if (parsed.error_detail) {
-        errorText = parsed.error_detail;
-      } else if (parsed.error) {
-        errorText = parsed.error;
-      }
-    } catch { /* not JSON, use raw text */ }
+    // Try to parse JSON from stdout first, then stderr, then fall back to plain text
+    let errorText = err.message;
+    let parsed = undefined;
+
+    if (err.stdout) {
+      try {
+        parsed = JSON.parse(err.stdout);
+        if (parsed.errors?.length) {
+          errorText = parsed.errors.map(e => e.error_detail || e.error || e).join("; ");
+        } else if (parsed.error_detail) {
+          errorText = parsed.error_detail;
+        } else if (parsed.error) {
+          errorText = parsed.error;
+        }
+      } catch { /* not JSON in stdout, try stderr */ }
+    }
+
+    if (!parsed && err.stderr) {
+      try {
+        parsed = JSON.parse(err.stderr);
+        if (parsed.errors?.length) {
+          errorText = parsed.errors.map(e => e.error_detail || e.error || e).join("; ");
+        } else if (parsed.error_detail) {
+          errorText = parsed.error_detail;
+        } else if (parsed.error) {
+          errorText = parsed.error;
+        }
+      } catch { /* not JSON in stderr, use plain text */ }
+    }
+
+    if (!parsed) {
+      errorText = err.stderr || err.stdout || err.message;
+    }
+
     return { content: [{ type: "text", text: `Error running ${tool}: ${errorText}` }], isError: true };
   }
 }

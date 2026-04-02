@@ -461,3 +461,45 @@ test("freplay MCP is available and preserves JSON list output", async () => {
   assert.ok(!result.isError, textContent(result));
   assert.ok(Array.isArray(result.structuredContent.replays));
 });
+
+// ─── colorPath: filename highlighting in renderer output ───
+
+test("fread pretty output includes colored filename from path", async () => {
+  const fixture = makeFixture();
+  try {
+    const result = await callTool("fread", {
+      path: join(fixture, "src", "sample.py"),
+      head: 5,
+    });
+
+    assert.ok(!result.isError, textContent(result));
+    const raw = textContent(result);
+    const plain = stripAnsi(raw);
+    // The filename "sample.py" should appear in stripped output
+    assert.ok(plain.includes("sample.py"), `fread output should include filename, got: ${plain.slice(0, 200)}`);
+    // Verify ANSI is present (colorPath uses theme.path which adds escape codes)
+    assert.ok(raw !== plain, "fread output should contain ANSI color codes");
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("fedit pretty output includes colored filename from path", async () => {
+  const fixture = makeFixture();
+  try {
+    const result = await callTool("fedit", {
+      path: join(fixture, "src", "sample.py"),
+        replace: "return f\"hello {name}\"",
+        with_text: "return f\"hi {name}\"",
+      apply: false,
+    });
+
+    assert.ok(!result.isError, textContent(result));
+    const raw = textContent(result);
+    const plain = stripAnsi(raw);
+    assert.ok(plain.includes("sample.py"), `fedit output should include filename, got: ${plain.slice(0, 200)}`);
+    assert.ok(raw !== plain, "fedit output should contain ANSI color codes");
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});

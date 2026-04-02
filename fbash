@@ -62,9 +62,11 @@ _TELEM_FLAGS=""
 _TELEM_PATH_HINT=""
 
 # ── Globals ──────────────────────────────────────────────────────
-SESSION_DIR="$HOME/.fsuite/fbash"
+SESSION_DIR="${FBASH_SESSION_DIR:-$HOME/.fsuite/fbash}"
 SESSION_FILE="$SESSION_DIR/session.json"
 JOBS_DIR="$SESSION_DIR/jobs"
+SKIP_SESSION_SAVE=0
+FBASH_RAW_OUTPUT=0
 
 COMMAND=""
 MAX_LINES=200
@@ -200,6 +202,8 @@ load_session() {
 }
 
 save_session() {
+  (( SKIP_SESSION_SAVE )) && return 0
+
   local new_cwd="$1"
   local cmd="$2"
   local class="$3"
@@ -453,6 +457,7 @@ dispatch_internal() {
       fi
       ;;
     __fbash_reset*)
+      SKIP_SESSION_SAVE=1
       rm -f "$SESSION_FILE" "${SESSION_FILE}.lock" 2>/dev/null || true
       echo '{"status":"reset"}' > "$EXEC_STDOUT_FILE"
       ;;
@@ -460,6 +465,7 @@ dispatch_internal() {
       local job_id="${cmd#__fbash_poll }"
       job_id="${job_id#"${job_id%%[![:space:]]*}"}"  # trim leading whitespace
       job_id="${job_id%"${job_id##*[![:space:]]}"}"  # trim trailing whitespace
+      FBASH_RAW_OUTPUT=1
       poll_background_job "$job_id" > "$EXEC_STDOUT_FILE" 2>"$EXEC_STDERR_FILE" || EXEC_EXIT_CODE=$?
       ;;
     __fbash_jobs*)
@@ -716,9 +722,10 @@ execute_command() {
   local resolved_cwd="$2"
   local resolved_timeout="$3"
 
-  local stdout_file stderr_file
+  local stdout_file stderr_file pwd_file
   stdout_file=$(mktemp)
   stderr_file=$(mktemp)
+  pwd_file=$(mktemp)
 
   local start_ms exit_code=0
   start_ms=$(now_ms)
@@ -737,21 +744,20 @@ execute_command() {
   done
 
   # Execute with timeout
-  local quoted_cwd
+  local quoted_cwd quoted_pwd_file shell_script
   quoted_cwd=$(printf '%q' "$resolved_cwd")
+  quoted_pwd_file=$(printf '%q' "$pwd_file")
+  shell_script="
+${env_prefix}
+cd ${quoted_cwd} 2>/dev/null || true
+trap 'pwd -P > ${quoted_pwd_file}' EXIT
+${cmd}
+"
 
   if has timeout; then
-    timeout "${resolved_timeout}s" bash -c "
-      ${env_prefix}
-      cd ${quoted_cwd} 2>/dev/null || true
-      ${cmd}
-    " > "$stdout_file" 2> "$stderr_file" || exit_code=$?
+    timeout "${resolved_timeout}s" bash -c "$shell_script" > "$stdout_file" 2> "$stderr_file" || exit_code=$?
   else
-    bash -c "
-      ${env_prefix}
-      cd ${quoted_cwd} 2>/dev/null || true
-      ${cmd}
-    " > "$stdout_file" 2> "$stderr_file" || exit_code=$?
+    bash -c "$shell_script" > "$stdout_file" 2> "$stderr_file" || exit_code=$?
   fi
 
   # Handle timeout exit code (124 for GNU timeout)
@@ -765,26 +771,15 @@ execute_command() {
   duration_ms=$(( end_ms - start_ms ))
   (( duration_ms < 0 )) && duration_ms=0
 
-  # Track CWD changes — parse cd target without re-executing the entire command
   local new_cwd="$resolved_cwd"
-  if [[ "$cmd" =~ cd[[:space:]]+([^;&|]+) ]]; then
-    local cd_target="${BASH_REMATCH[1]}"
-    cd_target="${cd_target%% *}"  # trim trailing args
-    cd_target="${cd_target//\"/}"  # strip quotes
-    cd_target="${cd_target//\'/}"
-    if [[ "$cd_target" == /* ]]; then
-      # Absolute path
-      [[ -d "$cd_target" ]] && new_cwd="$cd_target"
-    elif [[ "$cd_target" == "~"* ]]; then
-      # Home path expansion
-      local expanded="${cd_target/#\~/$HOME}"
-      [[ -d "$expanded" ]] && new_cwd="$expanded"
-    else
-      # Relative path
-      local resolved="${resolved_cwd}/${cd_target}"
-      [[ -d "$resolved" ]] && new_cwd="$(cd "$resolved" 2>/dev/null && pwd)"
+  if [[ -s "$pwd_file" ]]; then
+    local tracked_cwd
+    tracked_cwd=$(<"$pwd_file")
+    if [[ "$tracked_cwd" == /* ]]; then
+      new_cwd="$tracked_cwd"
     fi
   fi
+  rm -f "$pwd_file" 2>/dev/null || true
 
   # Store results in globals
   EXEC_STDOUT_FILE="$stdout_file"
@@ -1449,7 +1444,10 @@ fi
 _TELEM_PATH_HINT="$EXEC_NEW_CWD"
 
 # Render output
-if [[ "$OUTPUT" == "json" ]]; then
+if (( FBASH_RAW_OUTPUT )); then
+  # Output is already in proper format, write as-is
+  cat "$EXEC_STDOUT_FILE"
+elif [[ "$OUTPUT" == "json" ]]; then
   render_json \
     "$COMMAND" "$CMD_CLASS" \
     "$STDOUT_BUDGETED" "$STDERR_BUDGETED" \

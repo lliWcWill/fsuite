@@ -31,7 +31,7 @@ The drones were about to look in the mirror.
 
 ## The Target
 
-brane-code. Claude Code's open-source TypeScript, checked out locally at `~/Desktop/Projects/brane-code`. Two thousand five hundred lines of `main.tsx`. A custom fork of Ink — not the npm package, a full 1,722-line rendering engine at `src/ink/ink.tsx` with its own reconciler, its own Yoga layout integration, its own double-buffered frame pipeline. A React component tree six context providers deep. A keyboard input pipeline that goes from raw stdin bytes through a custom parser, through a batch processor, through an event dispatcher, through React state, through a reconciler commit, through a throttled microtask, through a Yoga layout pass, through a screen buffer diff, through an optimizer, and finally out to stdout.
+brane-code. Claude Code's open-source TypeScript, checked out locally at `<repo-root>/brane-code`. Two thousand five hundred lines of `main.tsx`. A custom fork of Ink — not the npm package, a full 1,722-line rendering engine at `src/ink/ink.tsx` with its own reconciler, its own Yoga layout integration, its own double-buffered frame pipeline. A React component tree six context providers deep. A keyboard input pipeline that goes from raw stdin bytes through a custom parser, through a batch processor, through an event dispatcher, through React state, through a reconciler commit, through a throttled microtask, through a Yoga layout pass, through a screen buffer diff, through an optimizer, and finally out to stdout.
 
 And somewhere in that pipeline, the interactive REPL was broken. The cursor blinked. Text was invisible. Keystrokes never reached the API. The rendering gateway between "user types" and "terminal paints" had a gap, and nobody knew where.
 
@@ -44,6 +44,8 @@ The agent had never seen this codebase before.
 Here's what didn't happen. The agent didn't spawn an Explore subagent. It didn't open files at random. It didn't grep for "render" and drown in 400 matches. It didn't read `main.tsx` top to bottom and burn 15,000 tokens discovering that the first 580 lines are imports.
 
 Here's what happened.
+
+**Tool-call example:**
 
 ```
 ftree(path: "src", depth: 2, snapshot: true)
@@ -109,7 +111,7 @@ fread(path: "src/ink/ink.tsx", lines: "76:215")
 
 The Ink class constructor and the `scheduleRender` setup. LogUpdate, Terminal, StylePool, CharPool, HyperlinkPool, double-buffered frames, reconciler container, `scheduleRender = throttle(deferredRender, FRAME_INTERVAL_MS)` where `deferredRender = () => queueMicrotask(this.onRender)`.
 
-Four `fmap` calls for architecture. Six `fread` calls for confirmation. Total tool invocations for a complete rendering pipeline map: **ten**.
+Five `fmap` calls for architecture. Four `fread` calls for confirmation. Total tool invocations for a complete rendering pipeline map: **nine**.
 
 ---
 
@@ -226,8 +228,8 @@ Target:            brane-code (Claude Code open source)
 Codebase size:     ~50,000 lines TypeScript
 Key files mapped:  5 (cli.tsx, main.tsx, ink.tsx, root.ts, App.tsx)
 Total fmap calls:  5
-Total fread calls: 6
-Total tool calls:  ~11 (excl. ftree, fcase, fprobe for binary check)
+Total fread calls: 4
+Total tool calls:  9 (excl. ftree, fcase, fprobe for binary check)
 Tokens consumed:   ~4,000 (tool output only)
 Time to full map:  <10 minutes
 Pipeline stages:   7 (entry → commander → context → root → ink → setup → render)

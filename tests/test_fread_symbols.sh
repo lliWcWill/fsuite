@@ -76,10 +76,10 @@ echo "=== fmap: TypeScript modifier detection ==="
 fmap_json="$("$FMAP" -o json "$TMPDIR/modifiers.tsx" 2>/dev/null)"
 sym_count="$(echo "$fmap_json" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len([s for s in d['files'][0]['symbols'] if s['type']=='function']))")"
 
-if (( sym_count >= 7 )); then
-  pass "fmap detects all 7 modifier-prefixed function symbols (found $sym_count)"
+if (( sym_count == 7 )); then
+  pass "fmap detects exactly 7 modifier-prefixed function symbols (found $sym_count)"
 else
-  fail "fmap should detect 7 modifier-prefixed function symbols, found $sym_count"
+  fail "fmap should detect exactly 7 modifier-prefixed function symbols, found $sym_count"
 fi
 
 echo ""

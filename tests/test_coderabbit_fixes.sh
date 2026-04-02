@@ -100,8 +100,17 @@ cwd_out=$("$FBASH" --command 'cd /tmp' -o json 2>/dev/null | jq -r '.cwd')
 if [[ "$cwd_out" == "/tmp" ]]; then
   pass "bug2_cwd_tracked: cd /tmp tracked correctly"
 else
-  # CWD tracking via regex is best-effort; as long as no double-exec
-  pass "bug2_cwd_tracked: cd executed without double-run (cwd=$cwd_out)"
+  fail "bug2_cwd_tracked: CWD tracking should update to /tmp" "got: $cwd_out"
+fi
+
+# Test 2c: Quoted paths with spaces are tracked after cd
+SPACE_DIR="$TMPDIR_BASE/dir with spaces"
+mkdir -p "$SPACE_DIR"
+cwd_out=$("$FBASH" --command "cd \"$SPACE_DIR\"" -o json 2>/dev/null | jq -r '.cwd')
+if [[ "$cwd_out" == "$SPACE_DIR" ]]; then
+  pass "bug2_cwd_tracked_spaces: quoted cd path tracked correctly"
+else
+  fail "bug2_cwd_tracked_spaces: CWD tracking should preserve quoted paths with spaces" "expected: $SPACE_DIR got: $cwd_out"
 fi
 
 echo ""

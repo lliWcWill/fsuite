@@ -1428,7 +1428,7 @@ if [[ -n "$MULTI_PATHS" ]]; then
     # For symbol mode, directories are valid (directory-scope resolution)
     # For file reads, only regular files should match
     if [[ -n "${SYMBOL_NAME:-}" ]]; then
-      [[ -e "$_mp" ]] || continue
+      [[ -d "$_mp" ]] || continue
     else
       [[ -f "$_mp" ]] || continue
     fi
@@ -1438,7 +1438,8 @@ if [[ -n "$MULTI_PATHS" ]]; then
     break
   done
   if (( _mp_found == 0 )); then
-    die "No file found in paths candidates: ${_mp_tried[*]}"
+    # No match found — record error for JSON renderer, don't call die
+    add_error "<<multipath>>" "no_match" "No file found in paths candidates: ${_mp_tried[*]}"
   fi
   unset _mp_found _mp_tried _mp _MULTI_PATH_ARR
 fi
@@ -1454,7 +1455,9 @@ if (( FROM_STDIN == 1 )); then
     die "File selectors and positional path are not valid with --from-stdin"
   fi
 else
-  [[ -n "$TARGET_PATH" ]] || die "Missing file argument. Try: fread --help"
+  if [[ -z "$TARGET_PATH" ]] && (( ERR_COUNT == 0 )); then
+    die "Missing file argument. Try: fread --help"
+  fi
 fi
 
 # -------------------------

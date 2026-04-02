@@ -172,11 +172,12 @@ EOF
   output=$(FSUITE_TELEMETRY=0 "${FEDIT}" -o json "$f" \
     --lines 4:4 --with '' --apply 2>/dev/null) || rc=$?
 
-  # Error output should contain location info (line or column)
-  if (( rc != 0 )) && [[ "$output" == *"line"* || "$output" == *"column"* || "$output" == *"location"* ]]; then
+  # Error detail should carry the validator's line/column message.
+  error_detail=$(echo "$output" | jq -r ".error_detail // empty" 2>/dev/null)
+  if (( rc != 0 )) && [[ -n "$error_detail" ]] && [[ "$error_detail" =~ line ]] && [[ "$error_detail" =~ column ]]; then
     pass "JSON error output includes line/column detail"
   else
-    fail "JSON error output should include line/column info" "rc=$rc output=$output"
+    fail "JSON error output should include line/column info" "rc=$rc output=$output error_detail=$error_detail"
   fi
 }
 
