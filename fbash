@@ -83,7 +83,7 @@ SESSION_CWD=""
 SESSION_CASE_SLUG=""
 
 declare -a ENV_OVERRIDES=()
-
+declare -a WARNINGS=()
 # Budget globals (set by budget_output)
 BUDGET_TOTAL_LINES=0
 BUDGET_TOTAL_BYTES=0
@@ -983,8 +983,11 @@ fi
   fi
   if detect_sensitive_tokens "$stdout_content" 2>/dev/null; then
     warn_items+=("\"Output may contain sensitive tokens\"")
-  fi
-
+fi
+# Include any global WARNINGS accumulated during execution
+for gw in "${WARNINGS[@]+"${WARNINGS[@]}"}"; do
+  warn_items+=("\"$(printf '%s' "$gw" | sed 's/"/\\"/g')\"")
+done
   local warn_joined=""
   local i=0
   for w in "${warn_items[@]}"; do
@@ -1328,8 +1331,10 @@ esac
 
 [[ -n "$COMMAND" ]] || die "No command specified. Use --command '<cmd>' or pass as positional arg."
 
-# Note: --json flag is reserved for future enhancements and has no effect.
-# Use --output json to get JSON-formatted output.
+# --json flag: reserved for future structured output parsing
+if (( JSON_MODE )); then
+  WARNINGS+=("--json flag is reserved for future use; output format unchanged. Use -o json for JSON envelope.")
+fi
 
 # ── Main ─────────────────────────────────────────────────────────
 
