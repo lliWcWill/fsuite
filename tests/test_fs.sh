@@ -324,6 +324,11 @@ result=$(run_engine '{"query": ".toolrc", "path": "/tmp"}')
 assert_json_field ".toolrc → file intent" "$result" "resolved_intent" "file"
 assert_json_field ".toolrc → high confidence" "$result" "route_confidence" "high"
 
+# Parent path token (..) should not be misclassified as a hidden filename
+result=$(run_engine '{"query": "..", "path": "/tmp"}')
+assert_json_field ".. remains content" "$result" "resolved_intent" "content"
+assert_json_field ".. remains low confidence" "$result" "route_confidence" "low"
+
 # Scope field present when scope is provided
 result=$(run_engine '{"query": "test", "path": "/tmp", "scope": "*.py"}')
 has_scope=$(echo "$result" | python3 -c "

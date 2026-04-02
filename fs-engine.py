@@ -97,7 +97,7 @@ def classify_intent(query, explicit_intent=None):
         return ("file", "high", f"known filename: {q}")
 
     # 5. Hidden filename (.toolrc, .npmrc, .env.local)
-    if re.match(r'^\.[\w.-]+$', q):
+    if q not in {".", ".."} and re.match(r'^\.[\w.-]+$', q):
         return ("file", "high", f"hidden filename: {q}")
 
     # 6. Filename-shaped: word.ext (e.g. config.yaml, utils.py)
