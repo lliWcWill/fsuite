@@ -216,8 +216,9 @@ function shortPath(fullPath) {
 function colorizeDiff(diff, filePath) {
   if (!diff) return "";
   // MCP runs as stdio subprocess — stdout.columns is undefined (piped).
-  // Try stderr (may still be a TTY), env var, or fall back to generous default.
-  const cols = process.stderr.columns || parseInt(process.env.COLUMNS, 10) || 160;
+  // Try stderr (may still be a TTY), env var, or fall back conservatively.
+  // 120 is safer than 160 — avoids Ink text wrapping that breaks backgrounds.
+  const cols = process.stderr.columns || parseInt(process.env.COLUMNS, 10) || 120;
   const lang = detectLang(filePath || "");
 
   let oldLine = 0, newLine = 0;
