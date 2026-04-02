@@ -18,6 +18,18 @@ import re
 import argparse
 
 
+def resolve_bytes(text_value=None, hex_value=None, field_name="value"):
+    """Resolve either a UTF-8 text arg or a hidden hex arg into raw bytes."""
+    if hex_value is not None:
+        try:
+            return bytes.fromhex(hex_value)
+        except ValueError as exc:
+            raise ValueError(f"{field_name}_hex is not valid hex") from exc
+    if text_value is None:
+        return None
+    return text_value.encode("utf-8", errors="replace")
+
+
 def extract_strings(data, min_length=6):
     """Extract printable ASCII strings of at least min_length from raw bytes."""
     pattern = re.compile(rb'[\x20-\x7e]{%d,}' % min_length)
@@ -63,13 +75,14 @@ def filter_strings(strings, needle, ignore_case=False, context=200):
     return results
 
 
-def scan_pattern(data, pattern, context=300, ignore_case=False):
+def scan_pattern(data, pattern=None, context=300, ignore_case=False, pattern_hex=None):
     """Find all occurrences of a literal byte pattern with surrounding context."""
+    pattern_bytes = resolve_bytes(pattern, pattern_hex, "pattern")
     if ignore_case:
         flags = re.IGNORECASE
-        pat = re.compile(re.escape(pattern.encode("utf-8", errors="replace")), flags)
+        pat = re.compile(re.escape(pattern_bytes), flags)
     else:
-        pat = re.compile(re.escape(pattern.encode("utf-8", errors="replace")))
+        pat = re.compile(re.escape(pattern_bytes))
 
     results = []
     for m in pat.finditer(data):
@@ -88,10 +101,10 @@ def scan_pattern(data, pattern, context=300, ignore_case=False):
     return results
 
 
-def patch_binary(file_path, target_str, replacement_str, dry_run=False):
+def patch_binary(file_path, target_str=None, replacement_str=None, dry_run=False, target_hex=None, replacement_hex=None):
     """Find and replace a byte pattern in a binary file. Same-length enforced."""
-    target = target_str.encode("utf-8", errors="replace")
-    replacement = replacement_str.encode("utf-8", errors="replace")
+    target = resolve_bytes(target_str, target_hex, "target")
+    replacement = resolve_bytes(replacement_str, replacement_hex, "replacement")
     write_path = os.path.realpath(file_path)
 
     if len(target) == 0:
@@ -206,7 +219,8 @@ def main():
     # scan
     p_scan = sub.add_parser("scan")
     p_scan.add_argument("file")
-    p_scan.add_argument("--pattern", required=True)
+    p_scan.add_argument("--pattern")
+    p_scan.add_argument("--pattern-hex", help=argparse.SUPPRESS)
     p_scan.add_argument("--context", type=int, default=300)
     p_scan.add_argument("--ignore-case", action="store_true")
 
@@ -227,8 +241,10 @@ def main():
     # patch
     p_patch = sub.add_parser("patch")
     p_patch.add_argument("file")
-    p_patch.add_argument("--target", required=True, help="Literal text to find in binary")
-    p_patch.add_argument("--replacement", required=True, help="Replacement text (padded with spaces if shorter)")
+    p_patch.add_argument("--target", help="Literal text to find in binary")
+    p_patch.add_argument("--target-hex", help=argparse.SUPPRESS)
+    p_patch.add_argument("--replacement", help="Replacement text (padded with spaces if shorter)")
+    p_patch.add_argument("--replacement-hex", help=argparse.SUPPRESS)
     p_patch.add_argument("--dry-run", action="store_true", help="Show what would be patched without writing")
 
     args = parser.parse_args()
@@ -244,7 +260,20 @@ def main():
 
     # patch handles its own file I/O (needs write access)
     if args.command == "patch":
-        result = patch_binary(file_path, args.target, args.replacement, args.dry_run)
+        if args.target is None and args.target_hex is None:
+            json.dump({"error": "patch requires --target", "patched": 0}, sys.stdout)
+            sys.exit(1)
+        if args.replacement is None and args.replacement_hex is None:
+            json.dump({"error": "patch requires --replacement", "patched": 0}, sys.stdout)
+            sys.exit(1)
+        result = patch_binary(
+            file_path,
+            args.target,
+            args.replacement,
+            args.dry_run,
+            target_hex=args.target_hex,
+            replacement_hex=args.replacement_hex,
+        )
         json.dump(result, sys.stdout)
         sys.exit(0 if result["patched"] > 0 else 1)
 
@@ -268,7 +297,10 @@ def main():
                 json.dump(results, sys.stdout)
 
             elif args.command == "scan":
-                results = scan_pattern(data, args.pattern, args.context, args.ignore_case)
+                if args.pattern is None and args.pattern_hex is None:
+                    json.dump({"error": "scan requires --pattern"}, sys.stdout)
+                    sys.exit(1)
+                results = scan_pattern(data, args.pattern, args.context, args.ignore_case, pattern_hex=args.pattern_hex)
                 json.dump(results, sys.stdout)
 
             elif args.command == "window":

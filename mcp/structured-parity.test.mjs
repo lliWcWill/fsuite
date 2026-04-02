@@ -157,6 +157,29 @@ test("fprobe MCP returns pretty-rendered strings output", async () => {
   }
 });
 
+test("fprobe MCP patch dry-run renderer reports dry-run counts", async () => {
+  const fixture = makeFixture();
+  try {
+    const patchFile = join(fixture, "patch-dry-run.bin");
+    writeFileSync(patchFile, Buffer.from("hello world hello world", "utf-8"));
+
+    const result = await callTool("fprobe", {
+      action: "patch",
+      file: patchFile,
+      target: "hello",
+      replacement: "HELLO",
+      dry_run: true,
+    });
+
+    assert.ok(!result.isError, textContent(result));
+    const text = stripAnsi(textContent(result));
+    assert.ok(text.includes("Dry run 2 replacements"), `expected dry-run patch count in renderer, got: ${text}`);
+    assert.equal(readFileSync(patchFile, "utf-8"), "hello world hello world", "dry-run should not modify the file");
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
 test("fprobe MCP decode_escapes decodes escape sequences", async () => {
   const fixture = makeFixture();
   try {
@@ -189,6 +212,49 @@ test("fprobe MCP decode_escapes decodes escape sequences", async () => {
     assert.ok(!resultDecoded.isError, textContent(resultDecoded));
     const decText = stripAnsi(textContent(resultDecoded));
     assert.ok(decText.includes("0 matches"), "should NOT find ESC byte (0x1b) in literal \\x1b text");
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("fprobe MCP scan renderer labels scan results correctly", async () => {
+  const fixture = makeFixture();
+  try {
+    const scanFile = join(fixture, "scan.bin");
+    writeFileSync(scanFile, Buffer.from("prefix_agent_suffix_agent", "utf-8"));
+
+    const result = await callTool("fprobe", {
+      action: "scan",
+      file: scanFile,
+      pattern: "agent",
+    });
+
+    assert.ok(!result.isError, textContent(result));
+    const text = stripAnsi(textContent(result));
+    assert.ok(text.includes("fprobe scan | 2 matches"), `expected scan header, got: ${text}`);
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("fprobe MCP decode_escapes patches high bytes as raw bytes", async () => {
+  const fixture = makeFixture();
+  try {
+    const patchFile = join(fixture, "patch-high-byte.bin");
+    writeFileSync(patchFile, Buffer.from([0x41, 0x80, 0x42]));
+
+    const result = await callTool("fprobe", {
+      action: "patch",
+      file: patchFile,
+      target: "\\x80",
+      replacement: "\\u0081",
+      decode_escapes: true,
+    });
+
+    assert.ok(!result.isError, `high-byte patch should not error: ${textContent(result)}`);
+    const text = stripAnsi(textContent(result));
+    assert.ok(text.includes("Patched 1 replacement"), `expected patched count in renderer, got: ${text}`);
+    assert.deepEqual([...readFileSync(patchFile)], [0x41, 0x81, 0x42], "decoded escapes should patch raw bytes, not UTF-8 code points");
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }

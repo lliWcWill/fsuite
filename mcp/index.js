@@ -702,11 +702,18 @@ function renderFcaseResult(jsonStr) {
 function renderFprobeResult(jsonStr) {
   try {
     const d = JSON.parse(jsonStr);
-    // Handle array results (strings mode returns array of match objects)
+    // Handle array results from strings and scan modes.
     const items = Array.isArray(d) ? d : d.items || d.matches || d.results;
-  if (items && Array.isArray(items)) {
-    let out = theme.meta(`fprobe strings | ${items.length} matches`) + "\n";
-    const filter = (d && typeof d === 'object' && !Array.isArray(d)) ? d.filter : undefined;
+    if (items && Array.isArray(items)) {
+      const firstItem = items[0];
+      const isScanResult = !!firstItem &&
+        typeof firstItem === "object" &&
+        (firstItem.match_length !== undefined ||
+          firstItem.context_start !== undefined ||
+          firstItem.context_end !== undefined);
+      const mode = isScanResult ? "scan" : "strings";
+      let out = theme.meta(`fprobe ${mode} | ${items.length} matches`) + "\n";
+      const filter = (d && typeof d === "object" && !Array.isArray(d)) ? d.filter : undefined;
       items.forEach(item => {
         const offset = item.offset !== undefined ? item.offset : item.start;
         const hex = offset !== undefined ? `0x${offset.toString(16).padStart(4, "0")}` : "    ";
@@ -737,8 +744,10 @@ function renderFprobeResult(jsonStr) {
 
     // Patch mode result
     if (d.patched !== undefined || d.dry_run !== undefined) {
-      const status = d.patched ? `${fg(80,200,80)}Patched${RESET}` : d.dry_run ? `${fg(255,200,50)}Dry run${RESET}` : `${fg(255,80,80)}Failed${RESET}`;
-      let out = `${status} ${d.replacements || 0} replacements`;
+      const patchedCount = Number.isInteger(d.patched) ? d.patched : 0;
+      const noun = patchedCount === 1 ? "replacement" : "replacements";
+      const status = d.dry_run ? `${fg(255,200,50)}Dry run${RESET}` : patchedCount > 0 ? `${fg(80,200,80)}Patched${RESET}` : `${fg(255,80,80)}Failed${RESET}`;
+      let out = `${status} ${patchedCount} ${noun}`;
       if (d.file) out += ` in ${d.file}`;
       out += "\n";
       return out;
@@ -1238,23 +1247,44 @@ server.registerTool(
 
   // ─── fprobe ─────────────────────────────────────────────────────
 
-// LLM text interfaces can't emit raw control chars — \x1b arrives as literal
-// 6-char string "\\x1b". Decode \xNN and \uNNNN for fprobe binary params only.
-// Note: This only handles BMP codepoints; surrogate pairs will produce broken output (intentional for binary patching).
-function unescapeBytes(s) {
-  if (!s) return s;
-  return s
-    .replace(/\\x([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
-    .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
-}
-function decodeFprobeParam(name, s) {
-  const decoded = unescapeBytes(s);
-  if (decoded && decoded.includes('\0')) {
-    throw new Error(name + ' contains \\x00 which cannot be passed via argv');
+  // LLM text interfaces can't emit raw control chars, so decode byte escapes
+  // into a Buffer and pass them to the engine via hidden hex argv flags.
+  function decodeFprobeParam(name, s) {
+    if (s === undefined || s === null) return Buffer.alloc(0);
+    const parts = [];
+    let lastIndex = 0;
+    const escapePattern = /\\x([0-9a-fA-F]{2})|\\u([0-9a-fA-F]{4})/g;
+    let match;
+
+    while ((match = escapePattern.exec(s)) !== null) {
+      if (match.index > lastIndex) {
+        parts.push(Buffer.from(s.slice(lastIndex, match.index), "utf8"));
+      }
+
+      if (match[1]) {
+        parts.push(Buffer.from([parseInt(match[1], 16)]));
+      } else {
+        const value = parseInt(match[2], 16);
+        if (value > 0xff) {
+          throw new Error(`${name} contains \\u${match[2]} which exceeds one raw byte; use \\xNN for byte values`);
+        }
+        parts.push(Buffer.from([value]));
+      }
+
+      lastIndex = escapePattern.lastIndex;
+    }
+
+    if (lastIndex < s.length) {
+      parts.push(Buffer.from(s.slice(lastIndex), "utf8"));
+    }
+
+    const decoded = Buffer.concat(parts);
+    if (decoded.includes(0x00)) {
+      throw new Error(name + ' contains \\x00 which cannot be passed via argv');
+    }
+    return decoded;
   }
-  return decoded;
-}
-server.registerTool("fprobe", {
+  server.registerTool("fprobe", {
       description:
         "Binary reconnaissance and surgical patching. Scan for patterns, read byte windows, " +
         "extract strings, and patch binaries with same-length replacements. Works on compiled " +
@@ -1286,19 +1316,27 @@ server.registerTool("fprobe", {
       if (action === "patch" && (!target || !replacement)) {
         return { content: [{ type: "text", text: "fprobe patch requires --target and --replacement" }], isError: true };
 }
-      const esc = decode_escapes ? (name, s) => decodeFprobeParam(name, s) : (_name, s) => s;
-      const args = [action, file];
-      if (action === "strings" && filter) args.push("--filter", filter);
-      if (action === "scan" && pattern) args.push("--pattern", esc("pattern", pattern));
-if (context !== undefined) args.push("--context", String(context));
-      if (offset !== undefined) args.push("--offset", String(offset));
-      if (before !== undefined) args.push("--before", String(before));
-      if (after !== undefined) args.push("--after", String(after));
-      if (decode) args.push("--decode", decode);
-      if (ignore_case) args.push("--ignore-case");
-      if (action === "patch" && target) args.push("--target", esc("target", target));
-      if (action === "patch" && replacement) args.push("--replacement", esc("replacement", replacement));
-      if (action === "patch" && dry_run) args.push("--dry-run");
+    const args = [action, file];
+    if (action === "strings" && filter) args.push("--filter", filter);
+    if (action === "scan" && pattern) {
+      if (decode_escapes) args.push("--pattern-hex", decodeFprobeParam("pattern", pattern).toString("hex"));
+      else args.push("--pattern", pattern);
+    }
+    if (context !== undefined) args.push("--context", String(context));
+    if (offset !== undefined) args.push("--offset", String(offset));
+    if (before !== undefined) args.push("--before", String(before));
+    if (after !== undefined) args.push("--after", String(after));
+    if (decode) args.push("--decode", decode);
+    if (ignore_case) args.push("--ignore-case");
+    if (action === "patch" && target) {
+      if (decode_escapes) args.push("--target-hex", decodeFprobeParam("target", target).toString("hex"));
+      else args.push("--target", target);
+    }
+    if (action === "patch" && replacement) {
+      if (decode_escapes) args.push("--replacement-hex", decodeFprobeParam("replacement", replacement).toString("hex"));
+      else args.push("--replacement", replacement);
+    }
+    if (action === "patch" && dry_run) args.push("--dry-run");
       args.push("-o", "json");
       return cli("fprobe", args);
     }
