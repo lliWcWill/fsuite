@@ -699,18 +699,18 @@ function renderFcaseResult(jsonStr) {
 }
 
 // ─── fprobe pretty renderer ──────────────────────────────────────
-function renderFprobeResult(jsonStr) {
+function renderFprobeResult(jsonStr, ctx = {}) {
   try {
     const d = JSON.parse(jsonStr);
     // Handle array results from strings and scan modes.
     const items = Array.isArray(d) ? d : d.items || d.matches || d.results;
     if (items && Array.isArray(items)) {
       const firstItem = items[0];
-      const isScanResult = !!firstItem &&
+      const isScanResult = ctx.action === "scan" || (!!firstItem &&
         typeof firstItem === "object" &&
         (firstItem.match_length !== undefined ||
           firstItem.context_start !== undefined ||
-          firstItem.context_end !== undefined);
+          firstItem.context_end !== undefined));
       const mode = isScanResult ? "scan" : "strings";
       let out = theme.meta(`fprobe ${mode} | ${items.length} matches`) + "\n";
       const filter = (d && typeof d === "object" && !Array.isArray(d)) ? d.filter : undefined;
@@ -850,7 +850,7 @@ function slimStructuredContent(obj) {
 
 
 // ─── Helper: run CLI tool, pretty-render if possible ─────────────
-async function cli(tool, args, renderAs) {
+async function cli(tool, args, renderAs, renderContext) {
   try {
     const { stdout, stderr } = await run(resolveTool(tool), args, EXEC_OPTS);
     const raw = stdout || stderr || "(no output)";
@@ -861,7 +861,7 @@ async function cli(tool, args, renderAs) {
         // structuredContent exists, so rendered tools must return content[text] only.
       const renderer = RENDERERS[renderAs || tool];
       if (renderer) {
-        const pretty = renderer(raw);
+        const pretty = renderer(raw, renderContext);
         if (pretty) {
             // When renderer produces pretty ANSI, return content[text] only.
             // Claude Code's "early return blender" discards content[text]
@@ -1247,8 +1247,8 @@ server.registerTool(
 
   // ─── fprobe ─────────────────────────────────────────────────────
 
-  // LLM text interfaces can't emit raw control chars, so decode byte escapes
-  // into a Buffer and pass them to the engine via hidden hex argv flags.
+  // Decode byte escapes into a Buffer and pass them to the engine via hidden
+  // hex argv flags so raw bytes survive the JS -> argv boundary unchanged.
   function decodeFprobeParam(name, s) {
     if (s === undefined || s === null) return undefined;
     const parts = [];
@@ -1277,12 +1277,7 @@ server.registerTool(
     if (lastIndex < s.length) {
       parts.push(Buffer.from(s.slice(lastIndex), "utf8"));
     }
-
-    const decoded = Buffer.concat(parts);
-    if (decoded.includes(0x00)) {
-      throw new Error(name + ' contains \\x00 which cannot be passed via argv');
-    }
-    return decoded;
+    return Buffer.concat(parts);
   }
   server.registerTool("fprobe", {
       description:
@@ -1350,7 +1345,7 @@ server.registerTool(
     }
     if (action === "patch" && dry_run) args.push("--dry-run");
       args.push("-o", "json");
-      return cli("fprobe", args);
+      return cli("fprobe", args, undefined, { action });
     }
   );
 

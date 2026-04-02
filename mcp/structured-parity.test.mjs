@@ -232,6 +232,16 @@ test("fprobe MCP scan renderer labels scan results correctly", async () => {
     assert.ok(!result.isError, textContent(result));
     const text = stripAnsi(textContent(result));
     assert.ok(text.includes("fprobe scan | 2 matches"), `expected scan header, got: ${text}`);
+
+    const emptyResult = await callTool("fprobe", {
+      action: "scan",
+      file: scanFile,
+      pattern: "missing",
+    });
+
+    assert.ok(!emptyResult.isError, textContent(emptyResult));
+    const emptyText = stripAnsi(textContent(emptyResult));
+    assert.ok(emptyText.includes("fprobe scan | 0 matches"), `expected empty scan header, got: ${emptyText}`);
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
@@ -287,21 +297,21 @@ test("fprobe patch mode with decode_escapes — control byte survives MCP path",
     const patched = readFileSync(patchFile);
     assert.ok(patched.includes(0x1b), "patched file should contain ESC byte (0x1b)");
 
-    // Test 2: NUL byte guard — \\x00 in decoded replacement must be rejected
-    // decodeFprobeParam catches NUL before execFile (Node rejects NUL in argv)
-    const padFile = join(fixture, "nul-test.bin");
-    writeFileSync(padFile, Buffer.from("ZZZZZ_filler"));
+    // Test 2: Raw NUL bytes should survive the hex transport too.
+    const nulFile = join(fixture, "nul-test.bin");
+    writeFileSync(nulFile, Buffer.from([0x5a, 0x00, 0x5a]));
     const nulResult = await callTool("fprobe", {
       action: "patch",
-      file: padFile,
-      target: "ZZZZZ",
-      replacement: "A\\x00B\\x00C",
+      file: nulFile,
+      target: "\\x00",
+      replacement: "\\x01",
       decode_escapes: true,
     });
 
-    assert.ok(nulResult.isError, "patch with \\x00 in decoded replacement should be rejected by NUL guard");
-    assert.ok(textContent(nulResult).includes("\x00") || textContent(nulResult).toLowerCase().includes("nul") || textContent(nulResult).toLowerCase().includes("argv"),
-      `error should mention NUL/argv issue: ${textContent(nulResult)}`);
+    assert.ok(!nulResult.isError, `patch with raw NUL should succeed via hex transport: ${textContent(nulResult)}`);
+    const nulText = stripAnsi(textContent(nulResult));
+    assert.ok(nulText.includes("Patched 1 replacement"), `expected patched count for NUL byte patch, got: ${nulText}`);
+    assert.deepEqual([...readFileSync(nulFile)], [0x5a, 0x01, 0x5a], "decoded NUL should patch as raw byte, not be rejected");
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
