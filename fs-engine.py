@@ -575,8 +575,12 @@ def orchestrate(request):
                 hits = nav_hits[:max_candidates]
             else:
                 search_query = scope if scope else query
+                # --config-only is a file/nav narrowing knob. Content/symbol
+                # flows still use fsearch as a broad candidate pre-pass when
+                # scope is present, so do not silently restrict them to config roots.
+                prepass_config_only = config_only if resolved_intent == "file" else False
                 file_list, timed_out = run_fsearch(
-                    search_query, path, config_only=config_only, timeout=timeout
+                    search_query, path, config_only=prepass_config_only, timeout=timeout
                 )
                 file_list = file_list[:max_candidates]
                 candidate_count = len(file_list)

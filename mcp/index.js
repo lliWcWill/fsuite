@@ -810,9 +810,9 @@ function slimStructuredContent(obj) {
 
   // Keys to remove from nested objects only (keep top-level duration_ms)
   const NESTED_STRIP = new Set([
-    "tool", "version", "mode", "backend",
+    "version",
     "budget_seconds", "budget_used_seconds", "budget_budget",
-    "recon_depth", "ignored", "duration_ms",
+    "recon_depth", "ignored",
     "size_human",
   ]);
 

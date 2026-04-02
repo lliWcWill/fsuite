@@ -738,6 +738,51 @@ else
   echo -e "${RED}✗${NC} 7.14 config-only should include top-level hidden files"
 fi
 
+# 7.15 — config-only should not narrow scoped content pre-pass
+TESTS_RUN=$((TESTS_RUN + 1))
+content_scope_check=$(python3 - "$ENGINE" 2>/dev/null <<'PY'
+import importlib.util
+import json
+import sys
+
+engine_path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("fs_engine_test", engine_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+captured = {}
+
+def fake_run_fsearch(query, path, config_only=False, timeout=None):
+    captured["query"] = query
+    captured["config_only"] = config_only
+    return ["candidate.py"], False
+
+def fake_run_fcontent(query, path, file_list, timeout=None):
+    return ([{"file": file_list[0], "line": 1, "text": "needle"}], False)
+
+mod.run_fsearch = fake_run_fsearch
+mod.run_fcontent = fake_run_fcontent
+mod.run_fmap = lambda files, timeout=None: ({}, False)
+
+mod.orchestrate({
+    "query": "needle",
+    "scope": "*.py",
+    "path": "/tmp",
+    "intent": "content",
+    "config_only": True,
+})
+
+print(captured.get("query") == "*.py" and captured.get("config_only") is False)
+PY
+)
+if [[ "$content_scope_check" == "True" ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} 7.15 config-only does not narrow scoped content pre-pass"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} 7.15 config-only should not narrow scoped content pre-pass"
+fi
+
 
 # 8 — compact mode
 # 8.1 — compact nav produces relative paths and no next_hint

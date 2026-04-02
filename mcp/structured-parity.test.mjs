@@ -358,6 +358,33 @@ test("fmetrics MCP preserves stats JSON as structured content", async () => {
   assert.ok(Array.isArray(result.structuredContent.tools), "fmetrics stats should have tools array");
 });
 
+test("fmetrics MCP preserves nested per-run fields in history", async () => {
+  const fixture = makeFixture();
+  try {
+    const seedResult = await callTool("fcontent", {
+      query: "agent",
+      path: fixture,
+      max_matches: 5,
+    });
+    assert.ok(!seedResult.isError, textContent(seedResult));
+
+    const result = await callTool("fmetrics", {
+      action: "history",
+      limit: 5,
+    });
+
+    assert.ok(!result.isError, textContent(result));
+    assert.ok(Array.isArray(result.structuredContent.runs), "fmetrics history should expose runs");
+    assert.ok(result.structuredContent.runs.length > 0, "fmetrics history should contain at least one run");
+    const run = result.structuredContent.runs[0];
+    assert.equal(typeof run.tool, "string", "history run should preserve tool");
+    assert.equal(typeof run.backend, "string", "history run should preserve backend");
+    assert.equal(typeof run.duration_ms, "number", "history run should preserve duration_ms");
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
 test("fcase MCP preserves JSON envelopes for JSON-capable actions", async () => {
   const slug = `mcp-fcase-json-${Date.now()}`;
   const result = await callTool("fcase", {
