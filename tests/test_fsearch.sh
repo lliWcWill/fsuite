@@ -386,6 +386,17 @@ test_config_only_surfaces_top_level_hidden_dirs_in_nav_mode() {
   fi
 }
 
+test_config_only_searches_nested_config_subtrees() {
+  local output nested_root
+  nested_root="${TEST_DIR}/.config/opencode"
+  output=$("${FSEARCH}" --config-only --output paths "opencode.json" "${nested_root}" 2>&1)
+  if [[ "$output" == *"${nested_root}/opencode.json"* ]]; then
+    pass "--config-only searches nested config subtrees"
+  else
+    fail "--config-only should search recursively from nested config subtree roots" "Output: $output"
+  fi
+}
+
 test_tilde_path_expansion() {
   local home_dir
   home_dir="$(mktemp -d "${HOME}/fsuite-fsearch-home.XXXXXX")"
@@ -1145,6 +1156,7 @@ main() {
   run_test "--config-only limits to config roots" test_config_only_limits_to_config_roots
   run_test "--config-only includes top-level hidden files" test_config_only_includes_top_level_hidden_files
   run_test "--config-only nav surfaces hidden dirs" test_config_only_surfaces_top_level_hidden_dirs_in_nav_mode
+  run_test "--config-only searches nested config subtrees" test_config_only_searches_nested_config_subtrees
   run_test "Default ignore filters low-signal dir roots" test_default_ignore_filters_low_signal_dir_roots
   run_test "--no-default-ignore restores low-signal dir roots" test_no_default_ignore_restores_low_signal_dir_roots
   run_test "--type dir returns directory hits" test_type_dir_finds_directory
