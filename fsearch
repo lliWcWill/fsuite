@@ -636,7 +636,6 @@ run_config_find() {
         find "$CONFIG_TOP_LEVEL_ROOT"
         -mindepth 1 -maxdepth 1
         "${type_args[@]}"
-        -name '.*'
         ! -name '.'
         ! -name '..'
         ! -name '.config'
@@ -644,9 +643,9 @@ run_config_find() {
       )
 
       if [[ "$match_mode" == "name" ]]; then
-        "${hidden_cmd[@]}" -name "$query" -print 2>/dev/null
+        "${hidden_cmd[@]}" -name ".$query" -print 2>/dev/null
       else
-        "${hidden_cmd[@]}" -print 2>/dev/null
+        "${hidden_cmd[@]}" -name '.*' -print 2>/dev/null
       fi
     fi
   } | normalize_result_paths_stream \

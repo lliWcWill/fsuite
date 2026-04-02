@@ -300,7 +300,7 @@ test("fprobe patch mode with decode_escapes — control byte survives MCP path",
     });
 
     assert.ok(nulResult.isError, "patch with \\x00 in decoded replacement should be rejected by NUL guard");
-    assert.ok(textContent(nulResult).includes("\\x00") || textContent(nulResult).toLowerCase().includes("nul") || textContent(nulResult).toLowerCase().includes("argv"),
+    assert.ok(textContent(nulResult).includes("\x00") || textContent(nulResult).toLowerCase().includes("nul") || textContent(nulResult).toLowerCase().includes("argv"),
       `error should mention NUL/argv issue: ${textContent(nulResult)}`);
   } finally {
     rmSync(fixture, { recursive: true, force: true });

@@ -78,6 +78,8 @@ def filter_strings(strings, needle, ignore_case=False, context=200):
 def scan_pattern(data, pattern=None, context=300, ignore_case=False, pattern_hex=None):
     """Find all occurrences of a literal byte pattern with surrounding context."""
     pattern_bytes = resolve_bytes(pattern, pattern_hex, "pattern")
+    if pattern_bytes is None:
+        raise ValueError("scan_pattern requires at least one of pattern or pattern_hex")
     if ignore_case:
         flags = re.IGNORECASE
         pat = re.compile(re.escape(pattern_bytes), flags)

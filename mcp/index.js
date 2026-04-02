@@ -1250,7 +1250,7 @@ server.registerTool(
   // LLM text interfaces can't emit raw control chars, so decode byte escapes
   // into a Buffer and pass them to the engine via hidden hex argv flags.
   function decodeFprobeParam(name, s) {
-    if (s === undefined || s === null) return Buffer.alloc(0);
+    if (s === undefined || s === null) return undefined;
     const parts = [];
     let lastIndex = 0;
     const escapePattern = /\\x([0-9a-fA-F]{2})|\\u([0-9a-fA-F]{4})/g;
@@ -1319,8 +1319,12 @@ server.registerTool(
     const args = [action, file];
     if (action === "strings" && filter) args.push("--filter", filter);
     if (action === "scan" && pattern) {
-      if (decode_escapes) args.push("--pattern-hex", decodeFprobeParam("pattern", pattern).toString("hex"));
-      else args.push("--pattern", pattern);
+      if (decode_escapes) {
+        const buf = decodeFprobeParam("pattern", pattern);
+        if (buf) args.push("--pattern-hex", buf.toString("hex"));
+      } else {
+        args.push("--pattern", pattern);
+      }
     }
     if (context !== undefined) args.push("--context", String(context));
     if (offset !== undefined) args.push("--offset", String(offset));
@@ -1329,12 +1333,20 @@ server.registerTool(
     if (decode) args.push("--decode", decode);
     if (ignore_case) args.push("--ignore-case");
     if (action === "patch" && target) {
-      if (decode_escapes) args.push("--target-hex", decodeFprobeParam("target", target).toString("hex"));
-      else args.push("--target", target);
+      if (decode_escapes) {
+        const buf = decodeFprobeParam("target", target);
+        if (buf) args.push("--target-hex", buf.toString("hex"));
+      } else {
+        args.push("--target", target);
+      }
     }
     if (action === "patch" && replacement) {
-      if (decode_escapes) args.push("--replacement-hex", decodeFprobeParam("replacement", replacement).toString("hex"));
-      else args.push("--replacement", replacement);
+      if (decode_escapes) {
+        const buf = decodeFprobeParam("replacement", replacement);
+        if (buf) args.push("--replacement-hex", buf.toString("hex"));
+      } else {
+        args.push("--replacement", replacement);
+      }
     }
     if (action === "patch" && dry_run) args.push("--dry-run");
       args.push("-o", "json");

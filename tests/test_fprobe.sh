@@ -398,57 +398,61 @@ test_patch_backup_once() {
   local target backup_file rc1=0 rc2=0
   target="${TEST_DIR}/patch-backup-once.bin"
   backup_file="${target}.bak"
-  
+
   # Create original file
   printf 'AAAA_original_AAAA' > "$target"
-  
+
   # First patch: original -> replaced (should create .bak)
   output=$("${FPROBE}" patch "$target" --target "original" --replacement "replaced" -o json 2>&1) || rc1=$?
   if [[ $rc1 -ne 0 ]]; then
     fail "patch backup-once: first patch failed" "rc=$rc1, output: $output"
     return
   fi
-  
+
   # Verify .bak contains original content
   if [[ ! -f "$backup_file" ]]; then
     fail "patch backup-once: .bak not created on first patch"
     return
   fi
-  
-  local backup_content1=$(cat "$backup_file")
+
+  local backup_content1
+  backup_content1=$(cat "$backup_file")
   if [[ "$backup_content1" != "AAAA_original_AAAA" ]]; then
     fail "patch backup-once: .bak doesn't contain original" "Expected 'AAAA_original_AAAA', got '$backup_content1'"
     return
   fi
-  
+
   # Verify live file was modified
-  local live_after_first=$(cat "$target")
+  local live_after_first
+  live_after_first=$(cat "$target")
   if [[ "$live_after_first" != "AAAA_replaced_AAAA" ]]; then
     fail "patch backup-once: live file not updated after first patch" "Expected 'AAAA_replaced_AAAA', got '$live_after_first'"
     return
   fi
-  
+
   # Second patch: replaced -> modified (should NOT overwrite .bak)
   output=$("${FPROBE}" patch "$target" --target "replaced" --replacement "modified" -o json 2>&1) || rc2=$?
   if [[ $rc2 -ne 0 ]]; then
     fail "patch backup-once: second patch failed" "rc=$rc2, output: $output"
     return
   fi
-  
+
   # Verify .bak STILL contains original content (not the intermediate replaced state)
-  local backup_content2=$(cat "$backup_file")
+  local backup_content2
+  backup_content2=$(cat "$backup_file")
   if [[ "$backup_content2" != "AAAA_original_AAAA" ]]; then
     fail "patch backup-once: .bak was overwritten on second patch" "Expected 'AAAA_original_AAAA', got '$backup_content2'"
     return
   fi
-  
+
   # Verify live file contains final modified state
-  local live_final=$(cat "$target")
+  local live_final
+  live_final=$(cat "$target")
   if [[ "$live_final" != "AAAA_modified_AAAA" ]]; then
     fail "patch backup-once: live file not updated after second patch" "Expected 'AAAA_modified_AAAA', got '$live_final'"
     return
   fi
-  
+
   pass "patch creates .bak only once and preserves original"
 }
 
