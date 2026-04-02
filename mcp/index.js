@@ -369,8 +369,22 @@ function renderFreadResult(jsonStr) {
 
     const lang = detectLang(d.symbol_resolution?.path || d.files?.[0]?.path || "");
 
+    // Cap pretty output at 18 lines — user can Ctrl+O to see full output
+    const MAX_PRETTY_LINES = 18;
+    let lineCount = 0;
+    let totalLines = 0;
+    for (const chunk of (d.chunks || [])) {
+      totalLines += chunk.content?.length || 0;
+    }
+
     for (const chunk of (d.chunks || [])) {
       for (const rawLine of chunk.content) {
+        if (lineCount >= MAX_PRETTY_LINES) {
+          const remaining = totalLines - MAX_PRETTY_LINES;
+          out += theme.meta(`  ... ${remaining} more lines (${totalLines} total)`) + "\n";
+          lineCount = -1; // sentinel to break outer loop
+          break;
+        }
         const m = rawLine.match(/^(\d+)(\s{2,})(.*)/);
         if (m) {
           const ln = `${DIM} ${m[1].padStart(4)} ${UNDIM}`;
@@ -379,7 +393,9 @@ function renderFreadResult(jsonStr) {
         } else {
           out += rawLine + "\n";
         }
+        lineCount++;
       }
+      if (lineCount === -1) break;
     }
 
     if (d.next_hint) out += theme.meta(`next: ${d.next_hint}`) + "\n";
