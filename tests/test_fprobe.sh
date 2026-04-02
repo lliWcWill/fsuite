@@ -269,6 +269,19 @@ test_scan_reports_offset() {
   fi
 }
 
+test_scan_requires_pattern_even_on_empty_file() {
+  local empty_file output rc=0
+  empty_file="${TEST_DIR}/scan-empty.bin"
+  : > "$empty_file"
+
+  output=$("${FPROBE}" scan "$empty_file" 2>&1) || rc=$?
+  if [[ $rc -ne 0 ]] && [[ "$output" == *"scan requires --pattern"* ]]; then
+    pass "scan validates missing pattern before empty-file fast path"
+  else
+    fail "scan should reject missing pattern on empty files" "rc=$rc output=$output"
+  fi
+}
+
 # ============================================================================
 # window subcommand
 # ============================================================================
@@ -514,28 +527,29 @@ run_test 13 test_scan_ignore_case
 run_test 14 test_scan_no_match
 run_test 15 test_scan_json_output
 run_test 16 test_scan_reports_offset
+run_test 17 test_scan_requires_pattern_even_on_empty_file
 
 echo ""
 echo "── window ──"
-run_test 17 test_window_basic
-run_test 18 test_window_before_and_after
-run_test 19 test_window_hex_decode
-run_test 20 test_window_printable_decode
-run_test 21 test_window_json_output
-run_test 22 test_window_out_of_bounds
-run_test 23 test_window_zero_length
+run_test 18 test_window_basic
+run_test 19 test_window_before_and_after
+run_test 20 test_window_hex_decode
+run_test 21 test_window_printable_decode
+run_test 22 test_window_json_output
+run_test 23 test_window_out_of_bounds
+run_test 24 test_window_zero_length
 
 echo ""
 echo "── patch ──"
-run_test 24 test_patch_dry_run
-run_test 25 test_patch_symlink_preserves_link
-run_test 26 test_patch_rejects_empty_target
-run_test 27 test_patch_backup_once
+run_test 25 test_patch_dry_run
+run_test 26 test_patch_symlink_preserves_link
+run_test 27 test_patch_rejects_empty_target
+run_test 28 test_patch_backup_once
 
 echo ""
 echo "── Cross-cutting ──"
-run_test 28 test_plain_text_file
-run_test 29 test_strings_on_text_file
+run_test 29 test_plain_text_file
+run_test 30 test_strings_on_text_file
 
 echo ""
 echo "═══════════════════════════════════════════"

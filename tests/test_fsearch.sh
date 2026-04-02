@@ -397,6 +397,22 @@ test_config_only_searches_nested_config_subtrees() {
   fi
 }
 
+test_config_only_dedupes_hidden_hits_in_nested_roots() {
+  local nested_root hidden_dir output count
+  nested_root="${TEST_DIR}/.config/opencode"
+  hidden_dir="${nested_root}/.agent"
+  mkdir -p "${hidden_dir}"
+
+  output=$("${FSEARCH}" --config-only --type dir --output json ".agent" "${nested_root}" 2>&1)
+  count=$(printf "%s" "$output" | python3 -c 'import json, sys; data = json.load(sys.stdin); print(data["results"].count(data["results"][0]) if data.get("results") else 0)' 2>/dev/null || echo 0)
+
+  if [[ "$output" == *"\"total_found\":1"* ]] && [[ "$count" == "1" ]]; then
+    pass "--config-only dedupes hidden hits in nested roots"
+  else
+    fail "--config-only should not emit duplicate hidden hits from nested roots" "Output: $output"
+  fi
+}
+
 test_tilde_path_expansion() {
   local home_dir
   home_dir="$(mktemp -d "${HOME}/fsuite-fsearch-home.XXXXXX")"
@@ -1157,6 +1173,7 @@ main() {
   run_test "--config-only includes top-level hidden files" test_config_only_includes_top_level_hidden_files
   run_test "--config-only nav surfaces hidden dirs" test_config_only_surfaces_top_level_hidden_dirs_in_nav_mode
   run_test "--config-only searches nested config subtrees" test_config_only_searches_nested_config_subtrees
+  run_test "--config-only dedupes nested hidden hits" test_config_only_dedupes_hidden_hits_in_nested_roots
   run_test "Default ignore filters low-signal dir roots" test_default_ignore_filters_low_signal_dir_roots
   run_test "--no-default-ignore restores low-signal dir roots" test_no_default_ignore_restores_low_signal_dir_roots
   run_test "--type dir returns directory hits" test_type_dir_finds_directory

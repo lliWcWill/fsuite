@@ -200,7 +200,10 @@ build_config_roots() {
 
   if [[ "/${base#/}/" == *"/.config/"* || "/${base#/}/" == *"/.local/"* ]]; then
     CONFIG_RECURSIVE_ROOTS+=("$base")
-    CONFIG_TOP_LEVEL_ROOT="$base"
+    # When the search base is already inside a config subtree, the recursive
+    # walk covers hidden children too. Re-running the top-level hidden pass on
+    # the same root duplicates hits like ".foo".
+    CONFIG_TOP_LEVEL_ROOT=""
     return 0
   fi
 

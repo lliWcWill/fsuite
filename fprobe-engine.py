@@ -260,6 +260,11 @@ def main():
         json.dump({"error": f"file not found: {file_path}"}, sys.stdout)
         sys.exit(1)
 
+    if args.command == "scan":
+        if args.pattern is None and args.pattern_hex is None:
+            json.dump({"error": "scan requires --pattern"}, sys.stdout)
+            sys.exit(1)
+
     # patch handles its own file I/O (needs write access)
     if args.command == "patch":
         if args.target is None and args.target_hex is None:
@@ -299,9 +304,6 @@ def main():
                 json.dump(results, sys.stdout)
 
             elif args.command == "scan":
-                if args.pattern is None and args.pattern_hex is None:
-                    json.dump({"error": "scan requires --pattern"}, sys.stdout)
-                    sys.exit(1)
                 results = scan_pattern(data, args.pattern, args.context, args.ignore_case, pattern_hex=args.pattern_hex)
                 json.dump(results, sys.stdout)
 
