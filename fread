@@ -1425,12 +1425,17 @@ if [[ -n "$MULTI_PATHS" ]]; then
     _mp="${_mp%"${_mp##*[![:space:]]}"}"
     _mp="${_mp/#\~/$HOME}"
     _mp_tried+=("$_mp")
-    if [[ -e "$_mp" ]]; then
-      TARGET_PATH="$_mp"
-      RESOLVED_PATH="$_mp"
-      _mp_found=1
-      break
+    # For symbol mode, directories are valid (directory-scope resolution)
+    # For file reads, only regular files should match
+    if [[ -n "${SYMBOL_NAME:-}" ]]; then
+      [[ -e "$_mp" ]] || continue
+    else
+      [[ -f "$_mp" ]] || continue
     fi
+    TARGET_PATH="$_mp"
+    RESOLVED_PATH="$_mp"
+    _mp_found=1
+    break
   done
   if (( _mp_found == 0 )); then
     die "No file found in paths candidates: ${_mp_tried[*]}"

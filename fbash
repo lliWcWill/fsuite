@@ -526,10 +526,28 @@ start_background_job() {
       > "$JOBS_DIR/${job_id}.meta"
   fi
 
-  # Spawn background process
+  # Build environment prefix (respecting ENV_OVERRIDES)
+  local env_prefix=""
+  for override in "${ENV_OVERRIDES[@]}"; do
+    local env_key="${override%%=*}"
+    local env_val="${override#*=}"
+    if [[ -z "$env_val" ]]; then
+      env_prefix+="unset ${env_key}; "
+    else
+      env_prefix+="export $(printf '%q' "$override"); "
+    fi
+  done
+
+  # Build timeout command if available (respecting TIMEOUT)
+  local timeout_cmd=""
+  if [[ -n "${TIMEOUT:-}" ]] && has timeout; then
+    timeout_cmd="timeout ${TIMEOUT}s "
+  fi
+
+  # Spawn background process with env and timeout support
   (
     cd "$resolved_cwd" 2>/dev/null || true
-    bash -c "$cmd" > "$JOBS_DIR/${job_id}.out" 2> "$JOBS_DIR/${job_id}.err"
+    ${timeout_cmd}bash -c "${env_prefix}${cmd}" > "$JOBS_DIR/${job_id}.out" 2> "$JOBS_DIR/${job_id}.err"
     echo $? > "$JOBS_DIR/${job_id}.rc"
   ) &
   echo $! > "$JOBS_DIR/${job_id}.pid"
@@ -747,15 +765,25 @@ execute_command() {
   duration_ms=$(( end_ms - start_ms ))
   (( duration_ms < 0 )) && duration_ms=0
 
-  # Track CWD changes — only re-run for cd commands to avoid double-execution
+  # Track CWD changes — parse cd target without re-executing the entire command
   local new_cwd="$resolved_cwd"
-  if [[ "$cmd" =~ ^[[:space:]]*cd[[:space:]] ]] || [[ "$cmd" =~ \;[[:space:]]*cd[[:space:]] ]] || [[ "$cmd" =~ \&\&[[:space:]]*cd[[:space:]] ]]; then
-    new_cwd=$(bash -c "
-      ${env_prefix}
-      cd ${quoted_cwd} 2>/dev/null || true
-      ${cmd} >/dev/null 2>&1 || true
-      pwd
-    " 2>/dev/null || echo "$resolved_cwd")
+  if [[ "$cmd" =~ cd[[:space:]]+([^;&|]+) ]]; then
+    local cd_target="${BASH_REMATCH[1]}"
+    cd_target="${cd_target%% *}"  # trim trailing args
+    cd_target="${cd_target//\"/}"  # strip quotes
+    cd_target="${cd_target//\'/}"
+    if [[ "$cd_target" == /* ]]; then
+      # Absolute path
+      [[ -d "$cd_target" ]] && new_cwd="$cd_target"
+    elif [[ "$cd_target" == "~"* ]]; then
+      # Home path expansion
+      local expanded="${cd_target/#\~/$HOME}"
+      [[ -d "$expanded" ]] && new_cwd="$expanded"
+    else
+      # Relative path
+      local resolved="${resolved_cwd}/${cd_target}"
+      [[ -d "$resolved" ]] && new_cwd="$(cd "$resolved" 2>/dev/null && pwd)"
+    fi
   fi
 
   # Store results in globals
@@ -1139,7 +1167,7 @@ render_pretty() {
 # ── Telemetry ────────────────────────────────────────────────────
 
 _fsuite_record_telemetry() {
-  _TELEM_EXIT_CODE=$?
+  [[ "${_TELEM_EXIT_CODE:-}" =~ ^[0-9]+$ ]] || _TELEM_EXIT_CODE=$?
   (( _FSUITE_TELEM >= 1 )) || return 0
   [[ "$_TELEM_START_MS" != "0" ]] || return 0
   [[ "$_TELEM_START_MS" =~ ^[0-9]+$ ]] || return 0
@@ -1300,6 +1328,9 @@ esac
 
 [[ -n "$COMMAND" ]] || die "No command specified. Use --command '<cmd>' or pass as positional arg."
 
+# Note: --json flag is reserved for future enhancements and has no effect.
+# Use --output json to get JSON-formatted output.
+
 # ── Main ─────────────────────────────────────────────────────────
 
 ensure_session_dir
@@ -1436,3 +1467,5 @@ rm -f "$EXEC_STDOUT_FILE" "$EXEC_STDERR_FILE" 2>/dev/null || true
 
 # Propagate non-zero exit from the executed command for telemetry
 _TELEM_EXIT_CODE="$EXEC_EXIT_CODE"
+
+exit "$EXEC_EXIT_CODE"
