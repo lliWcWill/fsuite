@@ -1607,8 +1607,8 @@ server.registerTool(
         .describe("Working directory (overrides session CWD, persists after execution)"),
       timeout: z.number().int().positive().optional()
         .describe("Timeout in seconds (auto-tuned by command class if omitted)"),
-      env: z.record(z.string()).optional()
-        .describe("Environment variable overrides"),
+      env: z.array(z.string()).optional()
+        .describe("Environment variable overrides as KEY=VALUE strings"),
       filter: z.string().optional()
         .describe("Regex filter for output lines"),
       quiet: z.boolean().optional()
@@ -1630,8 +1630,8 @@ server.registerTool(
     if (params.cwd) args.push("--cwd", params.cwd);
     if (params.timeout !== undefined) args.push("--timeout", String(params.timeout));
     if (params.env) {
-      for (const [k, v] of Object.entries(params.env)) {
-        args.push("--env", `${k}=${v}`);
+      for (const entry of params.env) {
+        args.push("--env", entry);
       }
     }
     if (params.filter) args.push("--filter", params.filter);
