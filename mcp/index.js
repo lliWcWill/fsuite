@@ -74,6 +74,15 @@ const theme = {
   symbol:  (s) => `${fg(102, 217, 239)}${s}${RESET}`,
 };
 
+// Highlight the filename in a path — directory stays dim, filename gets color
+function colorPath(fullPath) {
+  if (!fullPath) return "";
+  const p = shortPath(fullPath);
+  const slash = p.lastIndexOf("/");
+  if (slash === -1) return theme.path(p);
+  return `${DIM}${p.slice(0, slash + 1)}${UNDIM}${theme.path(p.slice(slash + 1))}`;
+}
+
 // Map hljs CSS class → ANSI color
 const HLJS_CLASS_TO_ANSI = {
   "hljs-keyword":    fg(249, 38, 114),
@@ -187,6 +196,7 @@ const TOOL_PALETTE = {
   fcontent: 27, fsearch: 27, fs: 27,            // royal blue — search
   fmap: 129, fcase: 129,                        // dark violet — structure/knowledge
   fprobe: 196, fmetrics: 196,                   // pure red — diagnostic/recon
+  fbash: 220,                                    // gold — shell execution
 };
 function coloredTitle(name) {
   const c = TOOL_PALETTE[name];
@@ -215,8 +225,9 @@ function shortPath(fullPath) {
 function colorizeDiff(diff, filePath) {
   if (!diff) return "";
   // MCP runs as stdio subprocess — stdout.columns is undefined (piped).
-  // Try stderr (may still be a TTY), env var, or fall back to generous default.
-  const cols = process.stderr.columns || parseInt(process.env.COLUMNS, 10) || 160;
+  // Try stderr (may still be a TTY), env var, or fall back conservatively.
+  // 120 is safer than 160 — avoids Ink text wrapping that breaks backgrounds.
+  const cols = process.stderr.columns || parseInt(process.env.COLUMNS, 10) || 120;
   const lang = detectLang(filePath || "");
 
   let oldLine = 0, newLine = 0;
@@ -293,7 +304,8 @@ function renderFeditResult(jsonStr) {
       }
     }
 
-    // Status-only body — no path line, Claude Code header already shows it
+    // Build clean metadata line like fmap's "27 symbols | typescript"
+    // Shows operation summary: "Applied +2 -2 lines | replace | function_name"
     const parts = [];
     if (d.applied) {
       parts.push(theme.ok("Applied"));
@@ -305,8 +317,14 @@ function renderFeditResult(jsonStr) {
     if (added > 0 || removed > 0) parts.push("lines");
     if (!d.preconditions_ok) parts.push(theme.error("PRECONDITION FAILED"));
 
-    let out = parts.join(" ") + "\n";
+    // Add operation context on same line (mode, anchors used)
+    const ctx = [];
+    if (d.mode && d.mode !== "patch") ctx.push(d.mode);
+    if (d.function_name) ctx.push(`fn:${d.function_name}`);
+    else if (d.lines_start) ctx.push(`L${d.lines_start}:${d.lines_end || ""}`);
+    if (ctx.length) parts.push(theme.meta("| " + ctx.join(" | ")));
 
+    let out = colorPath(d.path) + " " + parts.join(" ") + "\n";
     if (d.error_code) {
       out += theme.error(`Error: ${d.error_code}`) + ` \u2014 ${d.error_detail}\n`;
       return out;
@@ -326,6 +344,14 @@ function renderFeditResult(jsonStr) {
       }
     }
 
+    // Warnings
+    if (d.warnings && Array.isArray(d.warnings) && d.warnings.length > 0) {
+      out += "\n";
+      for (const warning of d.warnings) {
+        out += theme.warn(`⚠ Warning: ${warning}`) + "\n";
+      }
+    }
+
     return out;
   } catch {
     return null;
@@ -337,12 +363,16 @@ function renderFreadResult(jsonStr) {
     const d = JSON.parse(jsonStr);
     if (!d.tool || d.tool !== "fread") return null;
 
-    let meta = `${d.lines_emitted} lines | ~${d.token_estimate} tokens`;
+    // Clean metadata line with dividers: "21 lines | ~274 tokens | L120:140"
+    const metaParts = [`${d.lines_emitted} lines`, `~${d.token_estimate} tokens`];
     if (d.symbol_resolution) {
-      meta += ` | L${d.symbol_resolution.line_start}-${d.symbol_resolution.line_end}`;
+      metaParts.push(`L${d.symbol_resolution.line_start}-${d.symbol_resolution.line_end}`);
+    } else if (d.chunks?.[0]?.start_line) {
+      metaParts.push(`L${d.chunks[0].start_line}:${d.chunks[0].end_line}`);
     }
-    if (d.truncated) meta += ` ${theme.warn("truncated")}`;
-    let out = theme.meta(meta) + "\n";
+    if (d.truncated) metaParts.push(theme.warn("truncated"));
+    const filePath = d.symbol_resolution?.path || d.files?.[0]?.path || d.path || "";
+    let out = colorPath(filePath) + " " + theme.meta(metaParts.join(" | ")) + "\n";
 
     for (const w of (d.warnings || [])) {
       out += `   ${theme.warn("\u26a0 " + w)}\n`;
@@ -358,8 +388,22 @@ function renderFreadResult(jsonStr) {
 
     const lang = detectLang(d.symbol_resolution?.path || d.files?.[0]?.path || "");
 
+    // Cap pretty output at 18 lines — user can Ctrl+O to see full output
+    const MAX_PRETTY_LINES = 18;
+    let lineCount = 0;
+    let totalLines = 0;
+    for (const chunk of (d.chunks || [])) {
+      totalLines += chunk.content?.length || 0;
+    }
+
     for (const chunk of (d.chunks || [])) {
       for (const rawLine of chunk.content) {
+        if (lineCount >= MAX_PRETTY_LINES) {
+          const remaining = totalLines - MAX_PRETTY_LINES;
+          out += theme.meta(`  ... ${remaining} more lines (${totalLines} total)`) + "\n";
+          lineCount = -1; // sentinel to break outer loop
+          break;
+        }
         const m = rawLine.match(/^(\d+)(\s{2,})(.*)/);
         if (m) {
           const ln = `${DIM} ${m[1].padStart(4)} ${UNDIM}`;
@@ -368,7 +412,9 @@ function renderFreadResult(jsonStr) {
         } else {
           out += rawLine + "\n";
         }
+        lineCount++;
       }
+      if (lineCount === -1) break;
     }
 
     if (d.next_hint) out += theme.meta(`next: ${d.next_hint}`) + "\n";
@@ -409,16 +455,17 @@ function renderFmapResult(jsonStr) {
 }
 
 function renderFcontentResult(jsonStr) {
-try {
-  const d = JSON.parse(jsonStr);
-  if (!d.tool || d.tool !== "fcontent") return null;
+  try {
+    const d = JSON.parse(jsonStr);
+    if (!d.tool || d.tool !== "fcontent") return null;
 
-  const query = d.query || "";
+    const query = d.query || "";
 
-  if (d.shown_matches === 0) {
-    return theme.meta("no matches") + "\n";
-  }
-  let out = theme.meta(`${d.total_matched_files} files, ${d.shown_matches} matches`) + "\n";
+    if (d.shown_matches === 0) {
+      return theme.meta("no matches") + "\n";
+    }
+    // Clean summary: just files + matches count (no max_matches noise)
+    let out = theme.meta(`${d.total_matched_files} files, ${d.shown_matches} matches`) + "\n";
 
   for (const m of (d.matches || [])) {
     // Parse "filepath:linenum:content"
@@ -647,6 +694,7 @@ function renderFcaseResult(jsonStr) {
     const resolved = cases.filter(c => c.status === "resolved");
     const open = cases.filter(c => c.status === "open");
     const archived = cases.filter(c => c.status === "archived");
+    const deleted = cases.filter(c => c.status === "deleted");
 
     // Priority sort: critical > high > medium > low > normal
     const priOrder = { critical: 0, high: 1, medium: 2, low: 3, normal: 4 };
@@ -657,16 +705,18 @@ function renderFcaseResult(jsonStr) {
     if (resolved.length) parts.push(`${resolved.length} resolved`);
     if (open.length) parts.push(`${open.length} open`);
     if (archived.length) parts.push(`${archived.length} archived`);
+    if (deleted.length) parts.push(`${deleted.length} deleted`);
     let out = theme.meta(parts.join(" | ")) + "\n";
 
     const renderCase = (c) => {
       const icon = c.status === "resolved" ? `${fg(80,200,80)}\u2713${RESET}`
                  : c.status === "archived" ? `${DIM}\u25CB${RESET}`
+                 : c.status === "deleted" ? `${fg(255,80,80)}\u2717${RESET}`
                  : `${fg(255,200,50)}\u25CF${RESET}`;
       const pri = c.priority === "critical" ? `${fg(255,80,80)}crit${RESET}   `
                 : c.priority === "high"     ? `${fg(255,80,80)}high${RESET}   `
                 : "       ";
-      const slug = c.slug.length > 24 ? c.slug.slice(0, 24) : c.slug.padEnd(24);
+      const slug = c.slug.length > 24 ? c.slug : c.slug.padEnd(24);
       const goal = c.resolution_summary || c.goal || "";
       const goalTrim = goal.length > 50 ? goal.slice(0, 47) + "..." : goal;
       return `  ${icon} ${BOLD}#${String(c.id).padStart(2)}${RESET} ${slug} ${pri}${DIM}\u2014 ${goalTrim}${UNDIM}`;
@@ -690,6 +740,13 @@ function renderFcaseResult(jsonStr) {
       out += `${DIM}${BOLD} ARCHIVED (${archived.length})${RESET}\n`;
       archived.slice(0, 3).forEach(c => { out += renderCase(c) + "\n"; });
       if (archived.length > 3) out += `${DIM}  ... +${archived.length - 3} more${UNDIM}\n`;
+    }
+
+    if (deleted.length) {
+      deleted.sort(sortByPri);
+      out += `${fg(255,80,80)}${BOLD} DELETED (${deleted.length})${RESET}\n`;
+      deleted.slice(0, MAX_PER_GROUP).forEach(c => { out += renderCase(c) + "\n"; });
+      if (deleted.length > MAX_PER_GROUP) out += `${DIM}  ... +${deleted.length - MAX_PER_GROUP} more${UNDIM}\n`;
     }
 
     return out;
@@ -764,6 +821,94 @@ function renderFprobeResult(jsonStr, ctx = {}) {
   }
 }
 
+// ─── fbash pretty renderer ──────────────────────────────────────
+function renderFbashResult(jsonStr) {
+  const d = maybeParseJson(jsonStr);
+  if (!d || d.tool !== "fbash") return null;
+
+  const lines = [];
+
+  // Header: class badge + exit code + duration
+  const classBadge = {
+    build: fg(166, 226, 46),
+    test: fg(102, 217, 239),
+    git: fg(190, 132, 255),
+    install: fg(253, 151, 31),
+    service: fg(220, 90, 90),
+    query: fg(200, 200, 200),
+    search: fg(102, 217, 239),
+  };
+  const cc = classBadge[d.command_class] || fg(200, 200, 200);
+  const exitColor = d.exit_code == null ? DIM : d.exit_code === 0 ? fg(80, 200, 80) : fg(220, 90, 90);
+  lines.push(
+    `${cc}${BOLD}${d.command_class}${RESET} ` +
+    `${exitColor}exit=${d.exit_code}${RESET} ` +
+    `${DIM}${d.duration_ms}ms${RESET} ` +
+      `${DIM}cwd=${RESET}${colorPath(d.cwd)}`
+  );
+
+  // Truncation warning
+  if (d.truncated) {
+    lines.push(
+      `${fg(230, 219, 116)}  truncated: ${d.stdout_lines} of ${d.lines_total} lines ` +
+      `(${d.truncation_reason})${RESET}`
+    );
+  }
+
+  // Routing suggestion
+  if (d.routing_suggestion && d.routing_suggestion.tool) {
+    lines.push(
+      `${fg(190, 132, 255)}  hint:${RESET} use ${fg(102, 217, 239)}${d.routing_suggestion.tool}${RESET} ` +
+      `${DIM}— ${d.routing_suggestion.reason}${RESET}`
+    );
+  }
+
+  lines.push("");
+
+  // Output body
+  if (d.stdout) {
+    lines.push(d.stdout);
+  }
+  if (d.stderr) {
+    lines.push(`${fg(220, 90, 90)}--- stderr ---${RESET}`);
+    lines.push(d.stderr);
+  }
+
+  // Warnings
+  if (d.warnings && Array.isArray(d.warnings) && d.warnings.length > 0) {
+    lines.push("");
+    for (const warning of d.warnings) {
+      lines.push(`${fg(230, 219, 116)}${BOLD}warning:${RESET} ${warning}`);
+    }
+  }
+
+  // Errors
+  if (d.errors && Array.isArray(d.errors) && d.errors.length > 0) {
+    lines.push("");
+    for (const error of d.errors) {
+      lines.push(`${fg(220, 90, 90)}${BOLD}error:${RESET} ${error}`);
+    }
+  }
+
+  // Metadata (background job ID)
+  if (d.metadata?.background_job_id) {
+    lines.push("");
+    lines.push(`${fg(117, 113, 94)}background_job_id: ${d.metadata.background_job_id}${RESET}`);
+  }
+
+  // next_hint
+  if (d.next_hint) {
+    lines.push("");
+    let hintText = d.next_hint;
+    if (typeof d.next_hint === "object") {
+      hintText = JSON.stringify(d.next_hint, null, 2);
+    }
+    lines.push(`${fg(190, 132, 255)}${BOLD}next ->${RESET} ${hintText}`);
+  }
+
+  return lines.join("\n");
+}
+
 // Tool → renderer mapping
 const RENDERERS = {
   fedit: renderFeditResult,
@@ -776,6 +921,7 @@ const RENDERERS = {
   fsearch: renderFsearchResult,
   fcase: renderFcaseResult,
   fprobe: renderFprobeResult,
+  fbash: renderFbashResult,
 };
 
 function maybeParseJson(raw) {
@@ -875,7 +1021,41 @@ async function cli(tool, args, renderAs, renderContext) {
     if (parsed !== undefined) result.structuredContent = parsed;
     return result;
   } catch (err) {
-    return { content: [{ type: "text", text: `Error running ${tool}: ${err.stderr || err.stdout || err.message}` }], isError: true };
+    // Try to parse JSON from stdout first, then stderr, then fall back to plain text
+    let errorText = err.message;
+    let parsed = undefined;
+
+    if (err.stdout) {
+      try {
+        parsed = JSON.parse(err.stdout);
+        if (parsed.errors?.length) {
+          errorText = parsed.errors.map(e => e.error_detail || e.error || e).join("; ");
+        } else if (parsed.error_detail) {
+          errorText = parsed.error_detail;
+        } else if (parsed.error) {
+          errorText = parsed.error;
+        }
+      } catch { /* not JSON in stdout, try stderr */ }
+    }
+
+    if (!parsed && err.stderr) {
+      try {
+        parsed = JSON.parse(err.stderr);
+        if (parsed.errors?.length) {
+          errorText = parsed.errors.map(e => e.error_detail || e.error || e).join("; ");
+        } else if (parsed.error_detail) {
+          errorText = parsed.error_detail;
+        } else if (parsed.error) {
+          errorText = parsed.error;
+        }
+      } catch { /* not JSON in stderr, use plain text */ }
+    }
+
+    if (!parsed) {
+      errorText = err.stderr || err.stdout || err.message;
+    }
+
+    return { content: [{ type: "text", text: `Error running ${tool}: ${errorText}` }], isError: true };
   }
 }
 
@@ -930,7 +1110,8 @@ server.registerTool(
       "Budgeted file reading with symbol resolution. Use symbol to read exactly one function/class " +
       "by name — no guessing line ranges. Use around for context around a pattern match.",
     inputSchema: z.object({
-      path: z.string().describe("File path (or directory when using symbol)"),
+      path: z.string().optional().describe("File path (or directory when using symbol). Ignored when paths is provided."),
+      paths: z.array(z.string()).optional().describe("Array of file paths to try in order. Returns content from first existing path."),
       symbol: z.string().optional().describe("Read exactly one symbol (function, class, etc.) by name"),
       lines: z.string().optional().describe("Line range, e.g. '120:220'"),
       around: z.string().optional().describe("Show context around first literal pattern match"),
@@ -942,8 +1123,15 @@ server.registerTool(
       max_lines: z.number().optional().describe("Cap total lines emitted (default 200)"),
     }),
   },
-  async ({ path, symbol, lines, around, around_line, before, after, head, tail, max_lines }) => {
-    const args = [path];
+  async ({ path, paths, symbol, lines, around, around_line, before, after, head, tail, max_lines }) => {
+    const args = [];
+    if (paths && paths.length > 0) {
+      args.push("--paths", paths.map((p) => p.replace(/,/g, "\\,")).join(","));
+    } else if (path) {
+      args.push(path);
+    } else {
+      return { content: [{ type: "text", text: "fread: error: Either path or paths is required" }], isError: true };
+    }
     if (symbol) args.push("--symbol", symbol);
     if (lines) args.push("-r", lines);
     if (around) args.push("--around", around);
@@ -1050,9 +1238,10 @@ server.registerTool(
       lines: z.string().optional().describe("Replace line range directly, e.g. '71:73'. Fastest mode — no text matching needed. Use line numbers from fread."),
       apply: z.boolean().default(true).describe("Apply changes (default: true). Set false for dry-run preview."),
       expect: z.string().optional().describe("Precondition — text that must exist in file for edit to proceed"),
+      no_validate: z.boolean().optional().describe("Skip structural validation (escape hatch for JSONC, test fixtures)"),
     }),
   },
-  async ({ path, replace, with_text, function_name, after, before, lines, apply, expect }) => {
+  async ({ path, replace, with_text, function_name, after, before, lines, apply, expect, no_validate }) => {
     const args = [path];
     if (function_name) args.push("--function", function_name);
     if (lines) {
@@ -1066,6 +1255,7 @@ server.registerTool(
     }
     if (apply) args.push("--apply");
     if (expect) args.push("--expect", expect);
+    if (no_validate) args.push("--no-validate");
     args.push("-o", "json");
     return cli("fedit", args);
   }
@@ -1469,6 +1659,65 @@ server.registerTool(
     if (output) args.push("-o", output);
     if (path) args.push(path);
     return cli("fls", args);
+  }
+);
+
+// ─── fbash ──────────────────────────────────────────────────────
+server.registerTool(
+  "fbash",
+  {
+    title: coloredTitle("fbash"),
+    description:
+      "Token-budgeted shell execution with session state. Runs any bash command with " +
+      "output capping, command classification, and fsuite smart routing. Tracks CWD across " +
+      "calls. Use for builds, tests, git, installs — anything that isn't file reading/editing " +
+      "(use fread/fedit for those). Returns next_hint when an fsuite tool would be better.",
+    inputSchema: z.object({
+      command: z.string().describe("Bash command to execute"),
+      max_lines: z.number().int().positive().optional()
+        .describe("Cap output lines (default: 200)"),
+      max_bytes: z.number().int().positive().optional()
+        .describe("Cap output bytes (default: 51200)"),
+      json: z.boolean().optional()
+        .describe("Parse output as JSON and return structured"),
+      cwd: z.string().optional()
+        .describe("Working directory (overrides session CWD, persists after execution)"),
+      timeout: z.number().int().positive().optional()
+        .describe("Timeout in seconds (auto-tuned by command class if omitted)"),
+      env: z.array(z.string()).optional()
+        .describe("Environment variable overrides as KEY=VALUE strings"),
+      filter: z.string().optional()
+        .describe("Regex filter for output lines"),
+      quiet: z.boolean().optional()
+        .describe("Suppress output, return only exit code + metadata"),
+      tag: z.string().optional()
+        .describe("Label for fcase event logging"),
+      background: z.boolean().optional()
+        .describe("Run in background, return job_id"),
+      tail: z.boolean().optional()
+        .describe("Keep tail instead of head when truncating"),
+    }),
+  },
+  async (params) => {
+    const args = [];
+    args.push("--command", params.command);
+    if (params.max_lines !== undefined) args.push("--max-lines", String(params.max_lines));
+    if (params.max_bytes !== undefined) args.push("--max-bytes", String(params.max_bytes));
+    if (params.json) args.push("--json");
+    if (params.cwd) args.push("--cwd", params.cwd);
+    if (params.timeout !== undefined) args.push("--timeout", String(params.timeout));
+    if (params.env) {
+      for (const entry of params.env) {
+        args.push("--env", entry);
+      }
+    }
+    if (params.filter) args.push("--filter", params.filter);
+    if (params.quiet) args.push("--quiet");
+    if (params.tag) args.push("--tag", params.tag);
+    if (params.background) args.push("--background");
+    if (params.tail) args.push("--tail");
+    args.push("-o", "json");
+    return cli("fbash", args);
   }
 );
 

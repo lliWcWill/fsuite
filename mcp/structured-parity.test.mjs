@@ -29,11 +29,12 @@ function makeFixture() {
   return dir;
 }
 
-async function withClient(run) {
+async function withClient(run, env = {}) {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ["./index.js"],
     cwd: mcpDir,
+    env,
     stderr: "pipe",
   });
   const client = new Client({
@@ -62,6 +63,10 @@ async function withClient(run) {
 
 async function callTool(name, args) {
   return withClient((client) => client.callTool({ name, arguments: args }));
+}
+
+async function callToolWithEnv(name, args, env) {
+  return withClient((client) => client.callTool({ name, arguments: args }), env);
 }
 
 // ─── Tools WITH renderers return pretty ANSI in content[text] ───
@@ -399,6 +404,46 @@ test("fcase MCP preserves JSON envelopes for JSON-capable actions", async () => 
   assert.ok(caseText.includes(slug), "fcase init output should contain the case slug");
 });
 
+test("fcase MCP list renders deleted cases", async () => {
+  const caseDir = mkdtempSync(join(tmpdir(), "fsuite-mcp-fcase-"));
+  const env = { FCASE_DIR: caseDir };
+  const slug = `mcp-fcase-deleted-${Date.now()}`;
+  try {
+    const initResult = await callToolWithEnv("fcase", {
+      action: "init",
+      slug,
+      goal: "Verify deleted cases remain visible in rendered list output",
+    }, env);
+    assert.ok(!initResult.isError, textContent(initResult));
+
+    const deleteResult = await callToolWithEnv("fcase", {
+      action: "delete",
+      slug,
+      reason: "test cleanup",
+      confirm_delete: "DELETE",
+    }, env);
+    assert.ok(!deleteResult.isError, textContent(deleteResult));
+
+    const deletedList = await callToolWithEnv("fcase", {
+      action: "list",
+      statuses: "deleted",
+    }, env);
+    assert.ok(!deletedList.isError, textContent(deletedList));
+    const deletedText = stripAnsi(textContent(deletedList));
+    assert.ok(deletedText.includes(slug), `deleted list should render deleted case row, got: ${deletedText}`);
+
+    const allList = await callToolWithEnv("fcase", {
+      action: "list",
+      statuses: "all",
+    }, env);
+    assert.ok(!allList.isError, textContent(allList));
+    const allText = stripAnsi(textContent(allList));
+    assert.ok(allText.includes(slug), `all-status list should render deleted case row, got: ${allText}`);
+  } finally {
+    rmSync(caseDir, { recursive: true, force: true });
+  }
+});
+
 test("freplay MCP is available and preserves JSON list output", async () => {
   const slug = `mcp-freplay-${Date.now()}`;
   const initResult = await callTool("fcase", {
@@ -415,4 +460,86 @@ test("freplay MCP is available and preserves JSON list output", async () => {
 
   assert.ok(!result.isError, textContent(result));
   assert.ok(Array.isArray(result.structuredContent.replays));
+});
+
+test("fread MCP preserves paths entries that contain commas", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "fsuite-mcp-comma-"));
+  const missingPath = join(dir, "missing.py");
+  const commaPath = join(dir, "with,comma.py");
+  writeFileSync(commaPath, "print('comma-path-ok')\n", "utf8");
+
+  try {
+    const result = await callTool("fread", {
+      paths: [missingPath, commaPath],
+      head: 1,
+    });
+    const plain = stripAnsi(textContent(result));
+
+    assert.ok(!result.isError, plain);
+    assert.ok(
+      plain.includes("comma-path-ok"),
+      `fread MCP should read the file selected from a comma-containing paths entry, got: ${plain}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("fbash pretty output does not color exit=null as an error", async () => {
+  const result = await callTool("fbash", {
+    command: "sleep 0.2",
+    background: true,
+  });
+
+  const raw = textContent(result);
+  const plain = stripAnsi(raw);
+
+  assert.ok(!result.isError, plain);
+  assert.ok(plain.includes("exit=null"), `expected exit=null in pretty output, got: ${plain}`);
+  assert.ok(
+    !raw.includes("\x1b[38;2;220;90;90mexit=null"),
+    `exit=null should not be rendered in red, got: ${JSON.stringify(raw)}`,
+  );
+});
+
+// ─── colorPath: filename highlighting in renderer output ───
+
+test("fread pretty output includes colored filename from path", async () => {
+  const fixture = makeFixture();
+  try {
+    const result = await callTool("fread", {
+      path: join(fixture, "src", "sample.py"),
+      head: 5,
+    });
+
+    assert.ok(!result.isError, textContent(result));
+    const raw = textContent(result);
+    const plain = stripAnsi(raw);
+    // The filename "sample.py" should appear in stripped output
+    assert.ok(plain.includes("sample.py"), `fread output should include filename, got: ${plain.slice(0, 200)}`);
+    // Verify ANSI is present (colorPath uses theme.path which adds escape codes)
+    assert.ok(raw !== plain, "fread output should contain ANSI color codes");
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("fedit pretty output includes colored filename from path", async () => {
+  const fixture = makeFixture();
+  try {
+    const result = await callTool("fedit", {
+      path: join(fixture, "src", "sample.py"),
+        replace: "return f\"hello {name}\"",
+        with_text: "return f\"hi {name}\"",
+      apply: false,
+    });
+
+    assert.ok(!result.isError, textContent(result));
+    const raw = textContent(result);
+    const plain = stripAnsi(raw);
+    assert.ok(plain.includes("sample.py"), `fedit output should include filename, got: ${plain.slice(0, 200)}`);
+    assert.ok(raw !== plain, "fedit output should contain ANSI color codes");
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+  }
 });
