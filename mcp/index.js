@@ -294,7 +294,8 @@ function renderFeditResult(jsonStr) {
       }
     }
 
-    // Status-only body — no path line, Claude Code header already shows it
+    // Build clean metadata line like fmap's "27 symbols | typescript"
+    // Shows operation summary: "Applied +2 -2 lines | replace | function_name"
     const parts = [];
     if (d.applied) {
       parts.push(theme.ok("Applied"));
@@ -306,8 +307,14 @@ function renderFeditResult(jsonStr) {
     if (added > 0 || removed > 0) parts.push("lines");
     if (!d.preconditions_ok) parts.push(theme.error("PRECONDITION FAILED"));
 
-    let out = parts.join(" ") + "\n";
+    // Add operation context on same line (mode, anchors used)
+    const ctx = [];
+    if (d.mode && d.mode !== "patch") ctx.push(d.mode);
+    if (d.function_name) ctx.push(`fn:${d.function_name}`);
+    else if (d.lines_start) ctx.push(`L${d.lines_start}:${d.lines_end || ""}`);
+    if (ctx.length) parts.push(theme.meta("| " + ctx.join(" | ")));
 
+    let out = parts.join(" ") + "\n";
     if (d.error_code) {
       out += theme.error(`Error: ${d.error_code}`) + ` \u2014 ${d.error_detail}\n`;
       return out;
@@ -338,12 +345,15 @@ function renderFreadResult(jsonStr) {
     const d = JSON.parse(jsonStr);
     if (!d.tool || d.tool !== "fread") return null;
 
-    let meta = `${d.lines_emitted} lines | ~${d.token_estimate} tokens`;
+    // Clean metadata line with dividers: "21 lines | ~274 tokens | L120:140"
+    const metaParts = [`${d.lines_emitted} lines`, `~${d.token_estimate} tokens`];
     if (d.symbol_resolution) {
-      meta += ` | L${d.symbol_resolution.line_start}-${d.symbol_resolution.line_end}`;
+      metaParts.push(`L${d.symbol_resolution.line_start}-${d.symbol_resolution.line_end}`);
+    } else if (d.chunks?.[0]?.start_line) {
+      metaParts.push(`L${d.chunks[0].start_line}:${d.chunks[0].end_line}`);
     }
-    if (d.truncated) meta += ` ${theme.warn("truncated")}`;
-    let out = theme.meta(meta) + "\n";
+    if (d.truncated) metaParts.push(theme.warn("truncated"));
+    let out = theme.meta(metaParts.join(" | ")) + "\n";
 
     for (const w of (d.warnings || [])) {
       out += `   ${theme.warn("\u26a0 " + w)}\n`;
@@ -410,16 +420,17 @@ function renderFmapResult(jsonStr) {
 }
 
 function renderFcontentResult(jsonStr) {
-try {
-  const d = JSON.parse(jsonStr);
-  if (!d.tool || d.tool !== "fcontent") return null;
+  try {
+    const d = JSON.parse(jsonStr);
+    if (!d.tool || d.tool !== "fcontent") return null;
 
-  const query = d.query || "";
+    const query = d.query || "";
 
-  if (d.shown_matches === 0) {
-    return theme.meta("no matches") + "\n";
-  }
-  let out = theme.meta(`${d.total_matched_files} files, ${d.shown_matches} matches`) + "\n";
+    if (d.shown_matches === 0) {
+      return theme.meta("no matches") + "\n";
+    }
+    // Clean summary: just files + matches count (no max_matches noise)
+    let out = theme.meta(`${d.total_matched_files} files, ${d.shown_matches} matches`) + "\n";
 
   for (const m of (d.matches || [])) {
     // Parse "filepath:linenum:content"
