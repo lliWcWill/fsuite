@@ -156,6 +156,24 @@ else
   fail "bug4_bg_env: background job didn't start" "response=$bg_out"
 fi
 
+# Test 4b: __fbash_poll preserves the polled job exit code at top level
+bg_out=$("$FBASH" --command 'exit 9' --background -o json 2>/dev/null)
+job_id=$(echo "$bg_out" | jq -r '.metadata.background_job_id // empty')
+
+if [[ -n "$job_id" ]]; then
+  sleep 2
+  poll_out=$("$FBASH" --command "__fbash_poll $job_id" -o json 2>/dev/null)
+  poll_exit_code=$(echo "$poll_out" | jq -r '.exit_code')
+  poll_stdout=$(echo "$poll_out" | jq -r '.stdout // empty')
+  if [[ "$poll_exit_code" == "9" ]] && [[ "$poll_stdout" != *'"exit_code":9'* ]]; then
+    pass "bug4_poll_exit_code: polled exit_code surfaced at top level"
+  else
+    fail "bug4_poll_exit_code: expected top-level exit_code=9 from __fbash_poll" "exit_code=$poll_exit_code stdout=$poll_stdout response=$poll_out"
+  fi
+else
+  fail "bug4_poll_exit_code: background job didn't start" "response=$bg_out"
+fi
+
 echo ""
 
 # ============================================================================
