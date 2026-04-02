@@ -846,16 +846,18 @@ async function cli(tool, args, renderAs) {
     const raw = stdout || stderr || "(no output)";
     const parsed = slimStructuredContent(normalizeStructuredContent(maybeParseJson(raw)));
 
-      // Pretty rendering for humans + structuredContent for agents.
-      // With the safeParse binary patch, Claude Code shows content[text]
-      // to the user and feeds structuredContent to the model.
+        // Pretty ANSI for user display. structuredContent intentionally omitted —
+        // Claude Code's "early return blender" discards content[text] when
+        // structuredContent exists, so rendered tools must return content[text] only.
       const renderer = RENDERERS[renderAs || tool];
       if (renderer) {
         const pretty = renderer(raw);
         if (pretty) {
-          const result = { content: [{ type: "text", text: pretty }] };
-          if (parsed !== undefined) result.structuredContent = parsed;
-          return result;
+            // When renderer produces pretty ANSI, return content[text] only.
+            // Claude Code's "early return blender" discards content[text]
+            // when structuredContent exists — so we must omit it here.
+            const result = { content: [{ type: "text", text: pretty }] };
+            return result;
         }
       }
 

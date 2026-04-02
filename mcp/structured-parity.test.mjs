@@ -80,7 +80,7 @@ test("ftree MCP returns pretty-rendered content", async () => {
     assert.ok(!result.isError, textContent(result));
     const text = textContent(result);
     assert.ok(text.length > 0, "ftree should return non-empty content");
-    assert.ok(result.structuredContent, "rendered tools should return structuredContent alongside pretty text");
+    assert.ok(!result.structuredContent, "rendered tools must NOT return structuredContent (early return blender)");
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
@@ -98,7 +98,7 @@ test("fcontent MCP returns pretty-rendered content", async () => {
     assert.ok(!result.isError, textContent(result));
     const text = stripAnsi(textContent(result));
     assert.ok(text.includes("notes.md"), "fcontent should mention the matched file");
-    assert.ok(result.structuredContent, "rendered tools should return structuredContent alongside pretty text");
+    assert.ok(!result.structuredContent, "rendered tools must NOT return structuredContent (early return blender)");
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
@@ -114,7 +114,7 @@ test("fmap MCP returns pretty-rendered content", async () => {
     assert.ok(!result.isError, textContent(result));
     const text = stripAnsi(textContent(result));
     assert.ok(text.includes("greet"), "fmap should mention the greet function");
-    assert.ok(result.structuredContent, "rendered tools should return structuredContent alongside pretty text");
+    assert.ok(!result.structuredContent, "rendered tools must NOT return structuredContent (early return blender)");
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
@@ -131,15 +131,15 @@ test("fread MCP returns pretty-rendered content", async () => {
     assert.ok(!result.isError, textContent(result));
     const text = stripAnsi(textContent(result));
     assert.ok(text.includes("def greet"), "fread should contain the function definition");
-    assert.ok(result.structuredContent, "rendered tools should return structuredContent alongside pretty text");
+    assert.ok(!result.structuredContent, "rendered tools must NOT return structuredContent (early return blender)");
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
 });
 
-// ─── Tools WITHOUT renderers still return structuredContent ───
+// ─── Rendered tools: fprobe + fcase — pretty ANSI, no structuredContent ───
 
-test("fprobe MCP preserves JSON arrays as structured content", async () => {
+test("fprobe MCP returns pretty-rendered strings output", async () => {
   const fixture = makeFixture();
   try {
     const result = await callTool("fprobe", {
@@ -149,8 +149,9 @@ test("fprobe MCP preserves JSON arrays as structured content", async () => {
     });
 
     assert.ok(!result.isError, textContent(result));
-    assert.ok(Array.isArray(result.structuredContent.items));
-    assert.equal(result.structuredContent.items[0].text, "ELFfakeagent");
+    assert.ok(!result.structuredContent, "rendered tools must NOT return structuredContent (early return blender)");
+    const text = stripAnsi(textContent(result));
+    assert.ok(text.includes("agent"), "fprobe strings output should contain the filter match");
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
@@ -172,8 +173,9 @@ test("fprobe MCP decode_escapes decodes escape sequences", async () => {
     });
 
     assert.ok(!resultLiteral.isError, textContent(resultLiteral));
-    assert.ok(Array.isArray(resultLiteral.structuredContent?.items), "should return items array");
-    assert.equal(resultLiteral.structuredContent.items.length, 2, "should find two literal \\x1b sequences");
+    // Scan renderer produces pretty ANSI — check text content, not structuredContent
+    const litText = stripAnsi(textContent(resultLiteral));
+    assert.ok(litText.includes("2 matches"), "should find two literal \\x1b sequences");
 
     // Test 2: With decode_escapes: true, pattern "\\x1b" decodes to ESC byte (0x1b)
     // The file contains literal "\x1b" not the actual byte, so scan should NOT match
@@ -185,8 +187,8 @@ test("fprobe MCP decode_escapes decodes escape sequences", async () => {
     });
 
     assert.ok(!resultDecoded.isError, textContent(resultDecoded));
-    assert.ok(Array.isArray(resultDecoded.structuredContent?.items), "should return items array");
-    assert.equal(resultDecoded.structuredContent.items.length, 0, "should NOT find ESC byte (0x1b) in literal \\x1b text");
+    const decText = stripAnsi(textContent(resultDecoded));
+    assert.ok(decText.includes("0 matches"), "should NOT find ESC byte (0x1b) in literal \\x1b text");
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
@@ -211,7 +213,9 @@ test("fprobe patch mode with decode_escapes — control byte survives MCP path",
     });
 
     assert.ok(!result.isError, `patch with control byte should not error: ${textContent(result)}`);
-    assert.ok(result.structuredContent?.patched >= 1, "should report at least 1 patch with ESC byte replacement");
+    // Patch renderer produces pretty ANSI — check text for "Patched" or replacement count
+    const patchText = stripAnsi(textContent(result));
+    assert.ok(patchText.includes("replacement") || patchText.includes("Patched"), "should report at least 1 patch with ESC byte replacement");
 
     // Verify the file actually contains the ESC byte (0x1b)
     const patched = readFileSync(patchFile);
@@ -250,7 +254,7 @@ test("fedit and fwrite MCP return pretty-rendered content", async () => {
     assert.ok(!editResult.isError, textContent(editResult));
     const editText = textContent(editResult);
     assert.ok(editText.length > 0, "fedit should return non-empty content");
-    assert.ok(editResult.structuredContent, "rendered tools should return structuredContent alongside pretty text");
+    assert.ok(!editResult.structuredContent, "rendered tools must NOT return structuredContent (early return blender)");
 
     const writeResult = await callTool("fwrite", {
       path: join(fixture, "generated.txt"),
@@ -261,7 +265,7 @@ test("fedit and fwrite MCP return pretty-rendered content", async () => {
     assert.ok(!writeResult.isError, textContent(writeResult));
     const writeText = textContent(writeResult);
     assert.ok(writeText.length > 0, "fwrite should return non-empty content");
-    assert.ok(writeResult.structuredContent, "rendered tools should return structuredContent alongside pretty text");
+    assert.ok(!writeResult.structuredContent, "rendered tools must NOT return structuredContent (early return blender)");
   } finally {
     rmSync(fixture, { recursive: true, force: true });
   }
@@ -287,7 +291,9 @@ test("fcase MCP preserves JSON envelopes for JSON-capable actions", async () => 
   });
 
   assert.ok(!result.isError, textContent(result));
-  assert.equal(result.structuredContent.case.slug, slug);
+  // fcase init returns single case view — renderer produces pretty ANSI with slug
+  const caseText = stripAnsi(textContent(result));
+  assert.ok(caseText.includes(slug), "fcase init output should contain the case slug");
 });
 
 test("freplay MCP is available and preserves JSON list output", async () => {
