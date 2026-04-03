@@ -87,7 +87,7 @@ ANSI_CODE="${COLOR_MAP[$COLOR]:-}"
 [[ -n "$ANSI_CODE" ]] || die "Unknown color: $COLOR (use: ${!COLOR_MAP[*]})"
 
 # Target pattern (the exact bytes to find)
-TARGET='return`${H.name} - ${z} (MCP)`'
+TARGET='return`${H.name} - ${A} (MCP)`'
 
 echo "Binary: $CLAUDE_BINARY"
 echo "Target: $TARGET"
@@ -139,12 +139,12 @@ binary_path = sys.argv[1]
 ansi_code = sys.argv[2].encode().decode('unicode_escape').encode('latin-1')
 color_name = sys.argv[3]
 
-target = b'return`${H.name} - ${z} (MCP)`'
+target = b'return`${H.name} - ${A} (MCP)`'
 target_len = len(target)
 
 # Build patch: return`<ANSI>${z}<RESET>` padded to target_len
 reset = b'\x1b[m'
-patch = b'return`' + ansi_code + b'${z}' + reset + b'`'
+patch = b'return`' + ansi_code + b'${A}' + reset + b'`'
 
 if len(patch) > target_len:
     print(f"ERROR: patch ({len(patch)}B) exceeds target ({target_len}B)", file=sys.stderr)

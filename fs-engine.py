@@ -96,31 +96,35 @@ def classify_intent(query, explicit_intent=None):
     if q in KNOWN_FILENAMES:
         return ("file", "high", f"known filename: {q}")
 
-    # 5. Filename-shaped: word.ext (e.g. config.yaml, utils.py)
+    # 5. Hidden filename (.toolrc, .npmrc, .env.local)
+    if q not in {".", ".."} and re.match(r'^\.[\w.-]+$', q):
+        return ("file", "high", f"hidden filename: {q}")
+
+    # 6. Filename-shaped: word.ext (e.g. config.yaml, utils.py)
     if re.match(r'^[\w.-]+\.\w{1,10}$', q) and not re.match(r'^\.\w+$', q):
         return ("file", "high", f"filename-shaped: {q}")
 
-    # 6. camelCase: starts lowercase, has at least one uppercase letter
+    # 7. camelCase: starts lowercase, has at least one uppercase letter
     if re.match(r'^[a-z][a-zA-Z0-9]*$', q) and re.search(r'[A-Z]', q):
         return ("symbol", "high", "camelCase identifier")
 
-    # 7. PascalCase: starts uppercase, has lowercase, single word
+    # 8. PascalCase: starts uppercase, has lowercase, single word
     if re.match(r'^[A-Z][a-zA-Z0-9]*$', q) and re.search(r'[a-z]', q):
         return ("symbol", "high", "PascalCase identifier")
 
-    # 8. snake_case: lowercase with underscores
+    # 9. snake_case: lowercase with underscores
     if re.match(r'^[a-z][a-z0-9]*(_[a-z0-9]+)+$', q):
         return ("symbol", "high", "snake_case identifier")
 
-    # 9. SCREAMING_CASE: uppercase with underscores (constants)
+    # 10. SCREAMING_CASE: uppercase with underscores (constants)
     if re.match(r'^[A-Z][A-Z0-9]*(_[A-Z0-9]+)+$', q):
         return ("symbol", "medium", "SCREAMING_CASE constant")
 
-    # 10. Multi-word (contains spaces) → content search
+    # 11. Multi-word (contains spaces) → content search
     if ' ' in q:
         return ("content", "high", "multi-word query")
 
-    # 11. Fallback: single lowercase word → content, low confidence
+    # 12. Fallback: single lowercase word → content, low confidence
     return ("content", "low", "ambiguous single word, defaulting to content")
 
 
@@ -194,9 +198,11 @@ def run_tool(name, args, stdin_data=None, timeout=TIMEOUT_SECONDS):
 
 # ── Tool Runners ─────────────────────────────────────────────────────────────
 
-def run_fsearch(query, path, timeout=TIMEOUT_SECONDS):
+def run_fsearch(query, path, config_only=False, timeout=TIMEOUT_SECONDS):
     """Run fsearch -o paths, return list of file paths."""
     args = ["-o", "paths"]
+    if config_only:
+        args.append("--config-only")
     args.append(query)
     args.append(path)
 
@@ -207,7 +213,7 @@ def run_fsearch(query, path, timeout=TIMEOUT_SECONDS):
     return paths, False
 
 
-def run_fsearch_json(query, path, timeout=TIMEOUT_SECONDS):
+def run_fsearch_json(query, path, config_only=False, max_results=None, timeout=TIMEOUT_SECONDS):
     """Run fsearch -o json with nav-oriented defaults."""
     args = [
         "-o", "json",
@@ -215,9 +221,12 @@ def run_fsearch_json(query, path, timeout=TIMEOUT_SECONDS):
         "--match", "both",
         "--mode", "auto",
         "--preview", "5",
-        query,
-        path,
     ]
+    if config_only:
+        args.append("--config-only")
+    if max_results is not None:
+        args.extend(["--max", str(max_results)])
+    args.extend([query, path])
 
     stdout, stderr, rc, timed_out = run_tool("fsearch", args, timeout=timeout)
     if timed_out:
@@ -479,7 +488,7 @@ def generate_next_hint(intent, hits, query, scope=None):
 
     elif intent == "nav":
         if top_hit.get("kind") == "dir":
-            return {"tool": "ftree", "args": {"path": top_file, "depth": 2}}
+            return {"tool": "fls", "args": {"path": top_file, "mode": "tree"}}
         return {"tool": "fread", "args": {"path": top_file}}
 
     elif intent == "content":
@@ -513,6 +522,7 @@ def orchestrate(request):
     path = request.get("path") or "."
     scope = request.get("scope", None)
     explicit_intent = request.get("intent", None)
+    config_only = bool(request.get("config_only", False))
 
     # ── Budget overrides ────────────────────────────────────────────────
     def safe_int(val, default):
@@ -552,7 +562,9 @@ def orchestrate(request):
 
         if tool_name == "fsearch":
             if resolved_intent == "nav":
-                result, timed_out = run_fsearch_json(query, path, timeout=timeout)
+                result, timed_out = run_fsearch_json(
+                    query, path, config_only=config_only, max_results=max_candidates, timeout=timeout
+                )
                 if timed_out:
                     truncated = True
                     break
@@ -563,7 +575,13 @@ def orchestrate(request):
                 hits = nav_hits[:max_candidates]
             else:
                 search_query = scope if scope else query
-                file_list, timed_out = run_fsearch(search_query, path, timeout=timeout)
+                # --config-only is a file/nav narrowing knob. Content/symbol
+                # flows still use fsearch as a broad candidate pre-pass when
+                # scope is present, so do not silently restrict them to config roots.
+                prepass_config_only = config_only if resolved_intent == "file" else False
+                file_list, timed_out = run_fsearch(
+                    search_query, path, config_only=prepass_config_only, timeout=timeout
+                )
                 file_list = file_list[:max_candidates]
                 candidate_count = len(file_list)
                 if timed_out:
@@ -598,8 +616,34 @@ def orchestrate(request):
                 if fmap_result:
                     hits = shape_symbol_hits(hits, fmap_result, query=query)
 
+    # ── Compact mode (nav only) ────────────────────────────────────────
+    compact = request.get("compact", False) and resolved_intent == "nav"
+
     # ── next_hint ────────────────────────────────────────────────────────
-    next_hint = generate_next_hint(resolved_intent, hits, query, scope)
+    next_hint = None if compact else generate_next_hint(resolved_intent, hits, query, scope)
+
+    # ── Compact nav hits: relative paths, no per-hit next_hint ───────────
+    if compact and hits:
+        base = os.path.abspath(path)
+        compact_hits = []
+        for h in hits:
+            ch = {"path": os.path.relpath(h.get("path", ""), base), "kind": h.get("kind", "file")}
+            preview_items = h.get("preview")
+            if isinstance(preview_items, (list, tuple)):
+                compact_preview = []
+                for c in preview_items:
+                    if not isinstance(c, dict):
+                        continue
+                    name = c.get("name")
+                    if not isinstance(name, str) or not name:
+                        continue
+                    kind = c.get("kind")
+                    if not isinstance(kind, str) or not kind:
+                        kind = "file"
+                    compact_preview.append({"name": name, "kind": kind})
+                ch["preview"] = compact_preview
+            compact_hits.append(ch)
+        hits = compact_hits
 
     # ── Build output ─────────────────────────────────────────────────────
     output = {
@@ -622,6 +666,8 @@ def orchestrate(request):
 
     if scope:
         output["scope"] = scope
+    if config_only:
+        output["config_only"] = True
 
     return output
 

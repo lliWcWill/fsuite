@@ -1,3 +1,14 @@
+fsuite (3.1.0-1) unstable; urgency=medium
+
+  * fix(fsearch): handle SIGPIPE from head-limited pipelines on CI
+  * fix(ci): bump actions/checkout to v6, correct YAML indentation
+  * fix(tests): align MCP parity tests with renderer-first output contract
+  * fix(tests): force find backend in truncation contract test
+  * chore(deps): pin dependencies, update @modelcontextprotocol/sdk to v1.29.0
+  * feat(ci): upload test diagnostics artifact on failure
+
+ -- Chess Williams <chess.w.williams@gmail.com>  Mon, 31 Mar 2026 19:00:00 -0500
+
 fsuite (2.3.0-1) unstable; urgency=medium
 
 * New tools: fprobe (binary recon), fs (unified search). fedit --lines mode. MCP dev mode. Pixel-perfect rendering.

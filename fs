@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-VERSION="2.3.0"
+VERSION="3.1.0"
 
 # ── Locate engine ────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
@@ -47,6 +47,8 @@ USAGE
 OPTIONS
   -s, --scope GLOB     Glob filter for file narrowing (e.g. "*.py")
   -i, --intent MODE    Override: auto|file|content|symbol|nav (default: auto)
+  --config-only        Narrow file/nav searches to config-like roots under [path]
+  -c, --compact        Nav-only compact JSON: relative paths, no next_hint
   -o, --output MODE    pretty|json (default: pretty for tty, json for pipe)
   -p, --path PATH      Search root (default: .). Overrides positional [path].
   --max-candidates N   Override candidate file cap (default: 50)
@@ -67,6 +69,8 @@ EXAMPLES
   fs -s "*.ts" McpServer            # symbol search, scoped to .ts files
   fs -i symbol authenticate         # force symbol intent
   fs -i nav docs                    # explicit path navigation
+  fs --config-only opencode.json ~  # fast config-file lookup under HOME
+  fs -i nav -c docs                 # nav-only compact JSON/result shaping
   fs -o json "*.rs" | jq '.hits'    # JSON output for piping
 EOF
 }
@@ -80,6 +84,8 @@ OUTPUT=""
 MAX_CANDIDATES=""
 MAX_ENRICH=""
 TIMEOUT=""
+COMPACT=""
+CONFIG_ONLY=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -87,11 +93,13 @@ while [[ $# -gt 0 ]]; do
     --help|-h)    usage; exit 0 ;;
     -s|--scope)   [[ $# -ge 2 ]] || die "missing value for $1"; SCOPE="$2"; shift 2 ;;
     -i|--intent)  [[ $# -ge 2 ]] || die "missing value for $1"; INTENT="$2"; shift 2 ;;
+    --config-only) CONFIG_ONLY="1"; shift ;;
     -o|--output)  [[ $# -ge 2 ]] || die "missing value for $1"; OUTPUT="$2"; shift 2 ;;
     -p|--path)    [[ $# -ge 2 ]] || die "missing value for $1"; SEARCH_PATH="$2"; shift 2 ;;
     --max-candidates) [[ $# -ge 2 ]] || die "missing value for $1"; MAX_CANDIDATES="$2"; shift 2 ;;
     --max-enrich)     [[ $# -ge 2 ]] || die "missing value for $1"; MAX_ENRICH="$2"; shift 2 ;;
     --timeout)        [[ $# -ge 2 ]] || die "missing value for $1"; TIMEOUT="$2"; shift 2 ;;
+    -c|--compact) COMPACT="1"; shift ;;
     --)           shift; break ;;
     -*)           die "unknown option: $1" ;;
     *)
@@ -160,6 +168,8 @@ intent = sys.argv[4]
 max_candidates = sys.argv[5]
 max_enrich = sys.argv[6]
 timeout = sys.argv[7]
+compact = sys.argv[8]
+config_only = sys.argv[9]
 
 if scope:
     req['scope'] = scope
@@ -171,9 +181,13 @@ if max_enrich:
     req['max_enrich'] = int(max_enrich)
 if timeout:
     req['timeout'] = int(timeout)
+if compact:
+    req['compact'] = True
+if config_only:
+    req['config_only'] = True
 
 print(json.dumps(req))
-" "$QUERY" "$SEARCH_PATH" "$SCOPE" "$INTENT" "$MAX_CANDIDATES" "$MAX_ENRICH" "$TIMEOUT") || die "failed to build JSON request"
+" "$QUERY" "$SEARCH_PATH" "$SCOPE" "$INTENT" "$MAX_CANDIDATES" "$MAX_ENRICH" "$TIMEOUT" "$COMPACT" "$CONFIG_ONLY") || die "failed to build JSON request"
 
 # ── Run engine ───────────────────────────────────────────────────
 STDERR_TMP=$(mktemp)
@@ -212,11 +226,14 @@ budget = data.get('budget', {})
 next_hint = data.get('next_hint', '')
 truncated = data.get('truncated', False)
 scope = data.get('scope', '')
+config_only = data.get('config_only', False)
 
 # Header
 print(f'{CYAN}{BOLD}{intent}{NC} {DIM}({confidence}, {reason}){NC}')
 if scope:
     print(f'{DIM}scope: {scope}{NC}')
+if config_only:
+    print(f'{DIM}preset: config-only{NC}')
 chain = data.get('selected_chain', [])
 print(f'{DIM}chain: {\" → \".join(chain)}{NC}')
 print(f'{DIM}{budget.get(\"candidate_files\", 0)} candidates, {budget.get(\"enriched_files\", 0)} enriched, {budget.get(\"time_ms\", 0)}ms{NC}')

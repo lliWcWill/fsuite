@@ -41,6 +41,10 @@ async function callFs(args) {
   }
 }
 
+function textContent(result) {
+  return result.content?.map((item) => item.text ?? "").join("\n") ?? "";
+}
+
 test("fs MCP auto intent resolves ambiguous multi-word content queries", async () => {
   const result = await callFs({
     query: "navigation handoff",
@@ -49,8 +53,10 @@ test("fs MCP auto intent resolves ambiguous multi-word content queries", async (
   });
 
   assert.ok(!result.isError);
-  assert.equal(result.structuredContent.intent, "auto");
-  assert.equal(result.structuredContent.resolved_intent, "content");
+  // fs returns pretty-rendered ANSI (no structuredContent) — check content text
+  const text = textContent(result);
+  assert.ok(text.includes("content"), "fs should resolve multi-word query to content intent");
+  assert.ok(!result.structuredContent, "fs returns pretty-rendered content, not structuredContent");
 });
 
 test("fs MCP auto intent resolves scoped single-word content queries", async () => {
@@ -62,6 +68,7 @@ test("fs MCP auto intent resolves scoped single-word content queries", async () 
   });
 
   assert.ok(!result.isError);
-  assert.equal(result.structuredContent.intent, "auto");
-  assert.equal(result.structuredContent.resolved_intent, "content");
+  const text = textContent(result);
+  assert.ok(text.includes("content"), "fs should resolve scoped single-word query to content intent");
+  assert.ok(!result.structuredContent, "fs returns pretty-rendered content, not structuredContent");
 });

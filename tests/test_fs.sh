@@ -319,6 +319,16 @@ result=$(run_engine '{"query": "config.yaml", "path": "/tmp"}')
 assert_json_field "config.yaml → file intent" "$result" "resolved_intent" "file"
 assert_json_field "config.yaml → high confidence" "$result" "route_confidence" "high"
 
+# Hidden filename query (.toolrc) → file
+result=$(run_engine '{"query": ".toolrc", "path": "/tmp"}')
+assert_json_field ".toolrc → file intent" "$result" "resolved_intent" "file"
+assert_json_field ".toolrc → high confidence" "$result" "route_confidence" "high"
+
+# Parent path token (..) should not be misclassified as a hidden filename
+result=$(run_engine '{"query": "..", "path": "/tmp"}')
+assert_json_field ".. remains content" "$result" "resolved_intent" "content"
+assert_json_field ".. remains low confidence" "$result" "route_confidence" "low"
+
 # Scope field present when scope is provided
 result=$(run_engine '{"query": "test", "path": "/tmp", "scope": "*.py"}')
 has_scope=$(echo "$result" | python3 -c "
@@ -351,6 +361,22 @@ else
   echo -e "${RED}✗${NC} scope field should be absent when scope not provided"
 fi
 
+# config_only field present when requested
+result=$(run_engine '{"query": "test", "path": "/tmp", "config_only": true}')
+has_config_only=$(echo "$result" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+print('yes' if data.get('config_only') is True else 'no')
+" 2>/dev/null || echo "no")
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "$has_config_only" == "yes" ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} config_only field present when requested"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} config_only field should be present when requested"
+fi
+
 # ============================================================================
 # Section 6: CLI Entrypoint
 # ============================================================================
@@ -368,17 +394,23 @@ assert_json_field "CLI *.py → file" "$result" "resolved_intent" "file"
 result=$("$FS" -o json "renderTool" --scope "*.js" --path /tmp 2>/dev/null || true)
 assert_json_field "CLI --scope passes through" "$result" "resolved_intent" "symbol"
 
+# CLI --config-only flag
+result=$("$FS" -o json "renderTool" --config-only --scope "*.js" --path /tmp 2>/dev/null || true)
+assert_json_field "CLI --config-only passes through" "$result" "config_only" "True"
+
 # CLI --intent override
 result=$("$FS" -o json "authenticate" --intent symbol --path /tmp 2>/dev/null || true)
 assert_json_field "CLI --intent symbol" "$result" "resolved_intent" "symbol"
 
 # CLI --help exits 0
-"$FS" --help >/dev/null 2>&1; help_rc=$?
+help_out=$("$FS" --help 2>/dev/null); help_rc=$?
 assert_eq "CLI --help exits 0" "0" "$help_rc"
+assert_eq "CLI --help documents compact nav mode" "true" "$([[ "$help_out" == *"--compact"* ]] && [[ "$help_out" == *"nav"* ]] && echo true || echo false)"
+assert_eq "CLI --help documents config-only mode" "true" "$([[ "$help_out" == *"--config-only"* ]] && echo true || echo false)"
 
 # CLI --version
 version_out=$("$FS" --version 2>/dev/null)
-assert_eq "CLI --version contains 2.3.0" "true" "$([[ "$version_out" == *"2.3.0"* ]] && echo true || echo false)"
+assert_eq "CLI --version contains 3.1.0" "true" "$([[ "$version_out" == *"3.1.0"* ]] && echo true || echo false)"
 
 # CLI pretty output should not show orphan preview ellipsis without visible children
 STUB_FS_DIR=$(mktemp -d)
@@ -413,10 +445,10 @@ json.dump({
         "time_ms": 1,
     },
     "next_hint": {
-        "tool": "ftree",
+        "tool": "fls",
         "args": {
             "path": "/tmp/docs",
-            "depth": 2,
+            "mode": "tree",
         }
     },
 }, sys.stdout)
@@ -464,6 +496,9 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 
 mkdir -p "$TEST_DIR/src"
 mkdir -p "$TEST_DIR/docs/handoffs"
+mkdir -p "$TEST_DIR/.config/opencode"
+mkdir -p "$TEST_DIR/.local/share"
+mkdir -p "$TEST_DIR/visible"
 
 cat > "$TEST_DIR/src/auth.py" << 'PYEOF'
 def authenticate(token, secret):
@@ -489,6 +524,22 @@ PYEOF
 cat > "$TEST_DIR/src/config.json" << 'JSONEOF'
 {"api_key": "test123", "debug": true}
 JSONEOF
+
+cat > "$TEST_DIR/.config/opencode/opencode.json" << 'JSONEOF'
+{"source": "config"}
+JSONEOF
+
+cat > "$TEST_DIR/.local/share/opencode.json" << 'JSONEOF'
+{"source": "local"}
+JSONEOF
+
+cat > "$TEST_DIR/visible/opencode.json" << 'JSONEOF'
+{"source": "visible"}
+JSONEOF
+
+cat > "$TEST_DIR/.toolrc" << 'TXTEOF'
+top-level hidden config
+TXTEOF
 
 cat > "$TEST_DIR/docs/handoffs/note.md" << 'MDEOF'
 # note
@@ -592,10 +643,12 @@ result=$("$FS" -o json "docs" "$TEST_DIR" 2>/dev/null || true)
 assert_json_field "7.8 bare docs remains content" "$result" "resolved_intent" "content"
 assert_json_field "7.8 bare docs remains low confidence" "$result" "route_confidence" "low"
 
-# 7.9 — nav dir hits recommend ftree
+# 7.9 — nav dir hits recommend fls tree mode
 result=$("$FS" -o json "docs" "$TEST_DIR" --intent nav 2>/dev/null || true)
 next_tool=$(echo "$result" | python3 -c "import sys,json; print((json.load(sys.stdin).get('next_hint') or {}).get('tool', ''))" 2>/dev/null || echo "")
-assert_eq "7.9 nav dir hit suggests ftree" "ftree" "$next_tool"
+next_mode=$(echo "$result" | python3 -c "import sys,json; print(((json.load(sys.stdin).get('next_hint') or {}).get('args') or {}).get('mode', ''))" 2>/dev/null || echo "")
+assert_eq "7.9 nav dir hit suggests fls" "fls" "$next_tool"
+assert_eq "7.9 nav dir hit suggests tree mode" "tree" "$next_mode"
 
 # 7.10 — malformed nav JSON from fsearch surfaces as an error
 result=$(run_engine_with_stubbed_fsearch '{"query":"docs","path":"/tmp","intent":"nav"}' '{not json')
@@ -649,6 +702,167 @@ else
   TESTS_FAILED=$((TESTS_FAILED + 1))
   echo -e "${RED}✗${NC} 7.12 empty nav JSON should return an engine error"
   echo "  actual error: ${engine_error}"
+fi
+
+# 7.13 — config-only file search narrows to config roots
+result=$("$FS" -o json "opencode.json" "$TEST_DIR" --config-only 2>/dev/null || true)
+config_search_check=$(echo "$result" | python3 -c '
+import sys, json
+data = json.load(sys.stdin)
+paths = [h.get("file", "") for h in data.get("hits", [])]
+print(
+    (data.get("config_only") is True) and
+    any("/.config/opencode/opencode.json" in p for p in paths) and
+    any("/.local/share/opencode.json" in p for p in paths) and
+    all("/visible/opencode.json" not in p for p in paths)
+)
+' 2>/dev/null || echo "False")
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "$config_search_check" == "True" ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} 7.13 config-only file search stays within config roots"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} 7.13 config-only file search should stay within config roots"
+fi
+
+# 7.14 — config-only includes top-level hidden files
+result=$("$FS" -o json ".toolrc" "$TEST_DIR" --config-only 2>/dev/null || true)
+hidden_file_check=$(echo "$result" | python3 -c '
+import sys, json
+data = json.load(sys.stdin)
+paths = [h.get("file", "") for h in data.get("hits", [])]
+print(any(p.endswith("/.toolrc") for p in paths))
+' 2>/dev/null || echo "False")
+TESTS_RUN=$((TESTS_RUN + 1))
+if [[ "$hidden_file_check" == "True" ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} 7.14 config-only includes top-level hidden files"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} 7.14 config-only should include top-level hidden files"
+fi
+
+# 7.15 — config-only should not narrow scoped content pre-pass
+TESTS_RUN=$((TESTS_RUN + 1))
+content_scope_check=$(python3 - "$ENGINE" 2>/dev/null <<'PY'
+import importlib.util
+import json
+import sys
+
+engine_path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("fs_engine_test", engine_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+captured = {}
+
+def fake_run_fsearch(query, path, config_only=False, timeout=None):
+    captured["query"] = query
+    captured["config_only"] = config_only
+    return ["candidate.py"], False
+
+def fake_run_fcontent(query, path, file_list, timeout=None):
+    return ([{"file": file_list[0], "line": 1, "text": "needle"}], False)
+
+mod.run_fsearch = fake_run_fsearch
+mod.run_fcontent = fake_run_fcontent
+mod.run_fmap = lambda files, timeout=None: ({}, False)
+
+mod.orchestrate({
+    "query": "needle",
+    "scope": "*.py",
+    "path": "/tmp",
+    "intent": "content",
+    "config_only": True,
+})
+
+print(captured.get("query") == "*.py" and captured.get("config_only") is False)
+PY
+)
+if [[ "$content_scope_check" == "True" ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} 7.15 config-only does not narrow scoped content pre-pass"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} 7.15 config-only should not narrow scoped content pre-pass"
+fi
+
+
+# 8 — compact mode
+# 8.1 — compact nav produces relative paths and no next_hint
+TESTS_RUN=$((TESTS_RUN + 1))
+compact_result=$(echo '{"query":"test","path":"'"$TEST_DIR"'","intent":"nav","compact":true}' | python3 "$ENGINE" 2>/dev/null)
+compact_next=$(echo "$compact_result" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("next_hint"))' 2>/dev/null || echo "FAIL")
+compact_first_path=$(echo "$compact_result" | python3 -c 'import sys,json; h=json.load(sys.stdin)["hits"]; print(h[0]["path"] if h else "EMPTY")' 2>/dev/null || echo "FAIL")
+if [[ "$compact_next" == "None" ]] && [[ "$compact_first_path" != /* ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} 8.1 compact nav: no next_hint, relative paths"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} 8.1 compact nav: next_hint=$compact_next, first_path=$compact_first_path"
+fi
+
+# 8.2 — compact is ignored for content intent (preserves next_hint)
+TESTS_RUN=$((TESTS_RUN + 1))
+content_compact=$(echo '{"query":"authenticate","path":"'"$TEST_DIR"'","intent":"content","compact":true}' | python3 "$ENGINE" 2>/dev/null)
+content_next=$(echo "$content_compact" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("next_hint") is not None)' 2>/dev/null || echo "FAIL")
+if [[ "$content_next" == "True" ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} 8.2 compact ignored for content (next_hint preserved)"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} 8.2 compact should be ignored for content: next_hint present=$content_next"
+fi
+
+# 8.3 — compact is ignored for symbol intent (preserves next_hint and symbol hit shape)
+TESTS_RUN=$((TESTS_RUN + 1))
+symbol_compact=$(echo '{"query":"AuthError","path":"'"$TEST_DIR"'","intent":"symbol","compact":true}' | python3 "$ENGINE" 2>/dev/null)
+symbol_check=$(echo "$symbol_compact" | python3 -c 'import sys,json; d=json.load(sys.stdin); first=d["hits"][0] if d["hits"] else {}; print(d.get("next_hint") is not None and "file" in first and "path" not in first)' 2>/dev/null || echo "FAIL")
+if [[ "$symbol_check" == "True" ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} 8.3 compact ignored for symbol (next_hint + file hits preserved)"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} 8.3 compact should be ignored for symbol: check=$symbol_check"
+fi
+
+# 8.4 — compact nav tolerates malformed preview containers/items
+TESTS_RUN=$((TESTS_RUN + 1))
+preview_check=$(python3 - "$ENGINE" 2>/dev/null <<'PY'
+import importlib.util
+import json
+import sys
+
+engine_path = sys.argv[1]
+spec = importlib.util.spec_from_file_location("fs_engine_test", engine_path)
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+
+mod.run_fsearch_json = lambda query, path, config_only=False, max_results=None, timeout=None: ({}, False)
+mod.shape_nav_hits = lambda result: [
+    {"path": "/tmp/docs", "kind": "dir", "preview": None},
+    {"path": "/tmp/api", "kind": "dir", "preview": ["bad", {"name": "ok"}, {"kind": "dir"}, {"name": "fine", "kind": "dir"}]},
+]
+
+out = mod.orchestrate({"query": "docs", "path": "/tmp", "intent": "nav", "compact": True})
+hits = out["hits"]
+print(
+    ("preview" not in hits[0]) and
+    (hits[1].get("preview") == [{"name": "ok", "kind": "file"}, {"name": "fine", "kind": "dir"}])
+)
+PY
+)
+preview_rc=$?
+if [[ $preview_rc -ne 0 ]]; then
+  preview_check="FAIL"
+fi
+if [[ "$preview_check" == "True" ]]; then
+  TESTS_PASSED=$((TESTS_PASSED + 1))
+  echo -e "${GREEN}✓${NC} 8.4 compact nav tolerates malformed preview data"
+else
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} 8.4 compact nav should skip malformed preview data: check=$preview_check"
 fi
 
 # ============================================================================

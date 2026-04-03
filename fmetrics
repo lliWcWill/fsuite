@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="2.2.0"
+VERSION="3.1.0"
 
 # -------------------------
 # Paths
@@ -543,8 +543,8 @@ CREATE TABLE IF NOT EXISTS combo_next_stats_v1 (
   PRIMARY KEY (project_name, prefix_key, next_tool)
 );
 CREATE INDEX IF NOT EXISTS idx_combo_next_project ON combo_next_stats_v1(project_name);
-PRAGMA journal_mode=WAL;
 SQL
+  sqlite3 "$DB_FILE" "PRAGMA journal_mode=WAL;" >/dev/null 2>&1 || true
 
   # Migrate legacy UNIQUE(timestamp,tool,path_hash) schema to run_id-based dedupe.
   local _has_old_unique

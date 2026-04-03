@@ -30,6 +30,10 @@ setup() {
   mkdir -p "${TEST_DIR}/docs/handoffs"
   mkdir -p "${TEST_DIR}/docs/plans"
   mkdir -p "${TEST_DIR}/docs/node_modules"
+  mkdir -p "${TEST_DIR}/.config/opencode"
+  mkdir -p "${TEST_DIR}/.local/share"
+  mkdir -p "${TEST_DIR}/.ssh"
+  mkdir -p "${TEST_DIR}/visible"
   touch "${TEST_DIR}/file1.log"
   touch "${TEST_DIR}/file2.txt"
   touch "${TEST_DIR}/subdir1/test.log"
@@ -52,6 +56,11 @@ setup() {
   touch "${TEST_DIR}/src/package.json"
   touch "${TEST_DIR}/dist/package.json"
   touch "${TEST_DIR}/node_modules/package.json"
+  touch "${TEST_DIR}/.config/opencode/opencode.json"
+  touch "${TEST_DIR}/.local/share/opencode.json"
+  touch "${TEST_DIR}/.toolrc"
+  touch "${TEST_DIR}/.ssh/config"
+  touch "${TEST_DIR}/visible/opencode.json"
 }
 
 teardown() {
@@ -71,6 +80,49 @@ fail() {
   if [[ -n "${2:-}" ]]; then
     echo "  Details: $2"
   fi
+}
+
+github_command_escape() {
+  local value="${1:-}"
+  value="${value//'%'/'%25'}"
+  value="${value//$'\r'/'%0D'}"
+  value="${value//$'\n'/'%0A'}"
+  printf '%s' "$value"
+}
+
+github_report_failure() {
+  local title="$1"
+  local details="$2"
+
+  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+    printf '::error title=%s::%s\n' \
+      "$(github_command_escape "$title")" \
+      "$(github_command_escape "$details")"
+  fi
+
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    {
+      echo "### $title"
+      echo
+      echo '```text'
+      printf '%s\n' "$details"
+      echo '```'
+      echo
+    } >> "$GITHUB_STEP_SUMMARY"
+  fi
+}
+
+persist_failure_artifacts() {
+  local prefix="$1"
+  local stdout_file="$2"
+  local stderr_file="$3"
+  local artifact_dir="${FSUITE_TEST_ARTIFACT_DIR:-}"
+
+  [[ -n "$artifact_dir" ]] || return 0
+
+  mkdir -p "$artifact_dir"
+  cp "$stdout_file" "$artifact_dir/${prefix}.stdout.txt"
+  cp "$stderr_file" "$artifact_dir/${prefix}.stderr.txt"
 }
 
 run_test() {
@@ -299,6 +351,65 @@ test_no_default_ignore_restores_dependency_trees() {
     pass "--no-default-ignore restores dependency/build tree results"
   else
     fail "--no-default-ignore should include node_modules and dist results" "Output: $output"
+  fi
+}
+
+test_config_only_limits_to_config_roots() {
+  local output
+  output=$("${FSEARCH}" --config-only --output paths "opencode.json" "${TEST_DIR}" 2>&1)
+  if [[ "$output" == *"${TEST_DIR}/.config/opencode/opencode.json"* ]] && \
+     [[ "$output" == *"${TEST_DIR}/.local/share/opencode.json"* ]] && \
+     [[ "$output" != *"${TEST_DIR}/visible/opencode.json"* ]]; then
+    pass "--config-only narrows to config roots and skips visible siblings"
+  else
+    fail "--config-only should search only config-like roots" "Output: $output"
+  fi
+}
+
+test_config_only_includes_top_level_hidden_files() {
+  local output
+  output=$("${FSEARCH}" --config-only --output paths ".toolrc" "${TEST_DIR}" 2>&1)
+  if [[ "$output" == *"${TEST_DIR}/.toolrc"* ]]; then
+    pass "--config-only includes top-level hidden files"
+  else
+    fail "--config-only should include top-level hidden files" "Output: $output"
+  fi
+}
+
+test_config_only_surfaces_top_level_hidden_dirs_in_nav_mode() {
+  local output
+  output=$("${FSEARCH}" --config-only --type dir --mode literal --output paths ".ssh" "${TEST_DIR}" 2>&1)
+  if [[ "$output" == *"${TEST_DIR}/.ssh"* ]]; then
+    pass "--config-only nav mode surfaces top-level hidden dirs"
+  else
+    fail "--config-only should surface top-level hidden dirs in nav mode" "Output: $output"
+  fi
+}
+
+test_config_only_searches_nested_config_subtrees() {
+  local output nested_root
+  nested_root="${TEST_DIR}/.config/opencode"
+  output=$("${FSEARCH}" --config-only --output paths "opencode.json" "${nested_root}" 2>&1)
+  if [[ "$output" == *"${nested_root}/opencode.json"* ]]; then
+    pass "--config-only searches nested config subtrees"
+  else
+    fail "--config-only should search recursively from nested config subtree roots" "Output: $output"
+  fi
+}
+
+test_config_only_dedupes_hidden_hits_in_nested_roots() {
+  local nested_root hidden_dir output count
+  nested_root="${TEST_DIR}/.config/opencode"
+  hidden_dir="${nested_root}/.agent"
+  mkdir -p "${hidden_dir}"
+
+  output=$("${FSEARCH}" --config-only --type dir --output json ".agent" "${nested_root}" 2>&1)
+  count=$(printf "%s" "$output" | python3 -c 'import json, sys; data = json.load(sys.stdin); print(data["results"].count(data["results"][0]) if data.get("results") else 0)' 2>/dev/null || echo 0)
+
+  if [[ "$output" == *"\"total_found\":1"* ]] && [[ "$count" == "1" ]]; then
+    pass "--config-only dedupes hidden hits in nested roots"
+  else
+    fail "--config-only should not emit duplicate hidden hits from nested roots" "Output: $output"
   fi
 }
 
@@ -569,8 +680,10 @@ test_max_limit_with_include_filter_total_count() {
 
   local output
   output=$("${FSEARCH}" --output json --max 10 --include "*/z/*" "*.log" "${scoped}" 2>&1)
-  if [[ "$output" =~ \"total_found\":120 ]] && [[ "$output" =~ \"shown\":10 ]]; then
-    pass "JSON filtered total_found stays accurate with max cap"
+  # total_found is the collected count (MAX+1=11) when truncated, not an
+  # exact recount.  shown should be capped at MAX (10).
+  if [[ "$output" =~ \"total_found\":11 ]] && [[ "$output" =~ \"shown\":10 ]] && [[ "$output" =~ \"count_mode\":\"lower_bound\" ]]; then
+    pass "JSON filtered total_found reports capped count with max cap"
   else
     fail "Filtered max JSON count is incorrect" "Output: $output"
   fi
@@ -774,8 +887,9 @@ next_hint = data.get("next_hint") or {}
 ok = (
     hit.get("kind") == "dir"
     and hit.get("path", "").endswith("docs-\x01control")
-    and next_hint.get("tool") == "ftree"
+    and next_hint.get("tool") == "fls"
     and (next_hint.get("args") or {}).get("path") == hit.get("path")
+    and (next_hint.get("args") or {}).get("mode") == "tree"
 )
 print("yes" if ok else "no")
 ' 2>/dev/null || echo "no")
@@ -889,6 +1003,124 @@ test_default_flag_seeding() {
 }
 
 # ============================================================================
+# Regression: node_modules prune must apply in path/both match mode
+# ============================================================================
+
+test_match_both_excludes_node_modules() {
+  # The bug: run_find in path/both mode ran bare `find` with no prune,
+  # so it traversed all of node_modules.  filter_results_stream hid them
+  # from output, making result-based assertions useless.
+  #
+  # This test uses the FSEARCH_META debug hook to observe how many items
+  # the pipeline actually enumerated BEFORE filtering.  With prune, find
+  # never enters node_modules so items_enumerated stays small.  Without
+  # prune, find enumerates every file in node_modules even though the
+  # filter later removes them.
+  mkdir -p "${TEST_DIR}/node_modules/xyzzy-pkg/lib"
+  for i in $(seq 1 100); do : > "${TEST_DIR}/node_modules/xyzzy-pkg/lib/f${i}.js"; done
+  mkdir -p "${TEST_DIR}/src/xyzzy"
+  touch "${TEST_DIR}/src/xyzzy/real.ts"
+
+  local meta_file
+  meta_file=$(mktemp)
+FSEARCH_META="$meta_file" "${FSEARCH}" -o json --type both --match both --backend find -m 200 xyzzy "${TEST_DIR}" >/dev/null 2>&1
+
+  local enumerated
+  enumerated=$(python3 -c "import sys,json; print(json.load(open('$meta_file'))['items_enumerated'])")
+  rm -f "$meta_file"
+
+  # With prune: find never enters node_modules, so enumerated should be
+  # very small (just the src/xyzzy tree + a few top-level items).
+  # Without prune: find lists 100+ files in node_modules/xyzzy-pkg/lib,
+  # so enumerated would be >100.
+  if (( enumerated < 30 )); then
+    pass "match-both prunes node_modules at find level (enumerated=$enumerated)"
+  else
+    fail "match-both prunes node_modules at find level" "items_enumerated=$enumerated (want <30; find is traversing excluded dirs)"
+  fi
+
+  rm -rf "${TEST_DIR}/node_modules/xyzzy-pkg" "${TEST_DIR}/src/xyzzy"
+}
+
+test_match_both_no_recount_on_truncation() {
+  # The old code ran the full search pipeline TWICE when results > MAX:
+  # once for results (head -n MAX+1), again unbounded for wc -l.
+  # On large trees this doubled runtime.  After the fix, total_found
+  # is the collected count (MAX+1) when truncated, and total_found_exact
+  # is false.  If someone reintroduces the recount, total_found will be
+  # the exact number (60) and/or total_found_exact will be true/missing.
+  local matchdir="${TEST_DIR}/many_matches"
+  mkdir -p "$matchdir"
+  for i in $(seq 1 60); do
+    touch "$matchdir/item_${i}.txt"
+  done
+
+  local output_file error_file parse_file
+  local total count_mode truncated has_more
+  local rc=0 parse_rc=0
+  output_file=$(mktemp)
+  error_file=$(mktemp)
+  parse_file=$(mktemp)
+
+  "${FSEARCH}" -o json --match both --backend find -m 50 item "${matchdir}" >"${output_file}" 2>"${error_file}" || rc=$?
+  if [[ $rc -ne 0 ]] || [[ ! -s "${output_file}" ]]; then
+    local stderr stdout_preview json_bytes details
+    stderr=$(tr '\n' ' ' < "${error_file}" 2>/dev/null || true)
+    stdout_preview=$(head -c 200 "${output_file}" 2>/dev/null || true)
+    json_bytes=$(wc -c < "${output_file}" 2>/dev/null || echo 0)
+    persist_failure_artifacts "fsearch-truncation" "${output_file}" "${error_file}"
+    details="fsearch rc=${rc}, json_bytes=${json_bytes}, stderr=${stderr:-<empty>}, stdout_preview=${stdout_preview:-<empty>}"
+    github_report_failure "Truncated search contract" "$details"
+    rm -f "${output_file}" "${error_file}" "${parse_file}"
+    fail "Truncated search contract" "$details"
+    return
+  fi
+
+  python3 - "${output_file}" >"${parse_file}" <<'PY' || parse_rc=$?
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    data = json.load(fh)
+
+print(data["total_found"])
+print(data.get("count_mode", "MISSING"))
+print(data.get("truncated", "MISSING"))
+print(data.get("has_more", "MISSING"))
+PY
+
+  if [[ $parse_rc -ne 0 ]]; then
+    local stderr stdout_preview details
+    stderr=$(tr '\n' ' ' < "${error_file}" 2>/dev/null || true)
+    stdout_preview=$(head -c 200 "${output_file}" 2>/dev/null || true)
+    persist_failure_artifacts "fsearch-truncation" "${output_file}" "${error_file}"
+    details="json parse failed rc=${parse_rc}, stderr=${stderr:-<empty>}, stdout_preview=${stdout_preview:-<empty>}"
+    github_report_failure "Truncated search contract" "$details"
+    rm -f "${output_file}" "${error_file}" "${parse_file}"
+    fail "Truncated search contract" "$details"
+    return
+  fi
+
+  total=$(sed -n '1p' "${parse_file}")
+  count_mode=$(sed -n '2p' "${parse_file}")
+  truncated=$(sed -n '3p' "${parse_file}")
+  has_more=$(sed -n '4p' "${parse_file}")
+  rm -f "${output_file}" "${error_file}" "${parse_file}"
+
+  local ok=1
+  (( total == 51 )) || ok=0
+  [[ "$count_mode" == "lower_bound" ]] || ok=0
+  [[ "$truncated" == "True" ]] || ok=0
+  [[ "$has_more" == "True" ]] || ok=0
+
+  if (( ok )); then
+    pass "Truncated search: count_mode=lower_bound, truncated=true, has_more=true"
+  else
+    fail "Truncated search contract" "total=$total (want 51), count_mode=$count_mode, truncated=$truncated, has_more=$has_more"
+  fi
+}
+
+# ============================================================================
 # Main Test Runner
 # ============================================================================
 
@@ -937,6 +1169,11 @@ main() {
   run_test "Combined include and exclude" test_include_and_exclude_combined
   run_test "Default ignore filters dependency trees" test_default_ignore_filters_dependency_trees
   run_test "--no-default-ignore restores dependency trees" test_no_default_ignore_restores_dependency_trees
+  run_test "--config-only limits to config roots" test_config_only_limits_to_config_roots
+  run_test "--config-only includes top-level hidden files" test_config_only_includes_top_level_hidden_files
+  run_test "--config-only nav surfaces hidden dirs" test_config_only_surfaces_top_level_hidden_dirs_in_nav_mode
+  run_test "--config-only searches nested config subtrees" test_config_only_searches_nested_config_subtrees
+  run_test "--config-only dedupes nested hidden hits" test_config_only_dedupes_hidden_hits_in_nested_roots
   run_test "Default ignore filters low-signal dir roots" test_default_ignore_filters_low_signal_dir_roots
   run_test "--no-default-ignore restores low-signal dir roots" test_no_default_ignore_restores_low_signal_dir_roots
   run_test "--type dir returns directory hits" test_type_dir_finds_directory
@@ -988,6 +1225,10 @@ main() {
   # Negative tests
   run_test "Invalid max value" test_invalid_max_value
   run_test "Unknown option" test_unknown_option
+
+  # Regression: node_modules prune + no recount on truncation
+  run_test "match-both excludes node_modules path hits" test_match_both_excludes_node_modules
+  run_test "Truncated search reports capped total (no recount)" test_match_both_no_recount_on_truncation
 
   # v1.5.0 features
   run_test "Project-name flag" test_project_name

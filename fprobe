@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-VERSION="2.2.0"
+VERSION="3.1.0"
 
 # ── Locate engine ────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
@@ -48,17 +48,21 @@ USAGE
   fprobe strings <file> [--filter <literal>] [--ignore-case] [-o pretty|json]
   fprobe scan    <file> --pattern <literal> [--context N] [--ignore-case] [-o pretty|json]
   fprobe window  <file> --offset N [--before N] [--after N] [--decode printable|utf8|hex] [-o pretty|json]
+  fprobe patch   <file> --target <text> --replacement <text> [--dry-run]
 
   fprobe --version
   fprobe --help
 
 DESCRIPTION
-  Read-only reconnaissance for opaque files — compiled binaries, SEA bundles,
-  packed assets. Finds markers, inspects byte neighborhoods, extracts strings.
+  Binary reconnaissance and surgical patching for opaque files — compiled
+  binaries, SEA bundles, packed assets.
 
   strings   Extract printable ASCII runs (≥6 chars). --filter narrows to matches.
   scan      Find literal byte patterns. Returns offset + surrounding context.
   window    Read raw bytes at a known offset. Decode as printable, utf8, or hex.
+  patch     Find and replace a literal byte pattern. Same-length enforced (pads
+            with spaces if replacement is shorter). Creates .bak backup on first
+            write. Uses rename for atomic swap (handles "Text file busy").
 
 OUTPUT MODES
   -o pretty   Human-readable (default for terminal)
@@ -69,6 +73,8 @@ EXAMPLES
   fprobe scan claude-binary --pattern "userFacingName" --context 500
   fprobe window claude-binary --offset 112202147 --before 200 --after 3000
   fprobe window claude-binary --offset 0 --after 16 --decode hex
+  fprobe patch claude-binary --target 'if(P&&!P.success)return null' --replacement 'if(0&&!P.success)return null'
+  fprobe patch claude-binary --target 'old text' --replacement 'new text' --dry-run
 EOF
 }
 
@@ -163,6 +169,23 @@ print(w.get('text', ''))
 " || { echo "fprobe: error rendering window output" >&2; return 1; }
 }
 
+pretty_patch() {
+  local json_data="$1"
+  printf '%s\n' "$json_data" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+if 'error' in d and d.get('patched', 0) == 0:
+    print(f'fprobe patch: {d[\"error\"]}')
+    sys.exit(1)
+dry = ' (dry run)' if d.get('dry_run') else ''
+print(f'Patched {d[\"patched\"]} location(s){dry}')
+for off in d.get('offsets', []):
+    print(f'  offset {off}')
+if d.get('backup'):
+    print(f'Backup: {d[\"backup\"]}')
+" || { echo "fprobe: error rendering patch output" >&2; return 1; }
+}
+
 # ── Main dispatch ────────────────────────────────────────────────
 
 # Parse top-level flags
@@ -181,8 +204,8 @@ SUBCMD="$1"
 shift
 
 case "$SUBCMD" in
-  strings|scan|window) ;;
-  *) die "unknown subcommand: $SUBCMD (use strings, scan, or window)" ;;
+  strings|scan|window|patch) ;;
+  *) die "unknown subcommand: $SUBCMD (use strings, scan, window, or patch)" ;;
 esac
 
 # ── Pre-parse -o flag; pass remaining args to engine ─────────────
@@ -204,14 +227,16 @@ done
 detect_output_mode
 
 # ── Run engine ───────────────────────────────────────────────────
+_stdout_tmp=$(mktemp)
 _stderr_tmp=$(mktemp)
-json_output=$(python3 "$ENGINE" "$SUBCMD" ${ENGINE_ARGS[@]+"${ENGINE_ARGS[@]}"} 2>"$_stderr_tmp") || {
-  rc=$?
+trap 'rm -f "$_stdout_tmp" "$_stderr_tmp"' EXIT
+engine_rc=0
+python3 "$ENGINE" "$SUBCMD" ${ENGINE_ARGS[@]+"${ENGINE_ARGS[@]}"} >"$_stdout_tmp" 2>"$_stderr_tmp" || engine_rc=$?
+json_output=$(cat "$_stdout_tmp")
+if [[ $engine_rc -ne 0 && -z "$json_output" ]]; then
   cat "$_stderr_tmp" >&2
-  rm -f "$_stderr_tmp"
-  exit $rc
-}
-rm -f "$_stderr_tmp"
+  exit $engine_rc
+fi
 
 # ── Format output ────────────────────────────────────────────────
 if [[ "$OUTPUT_MODE" == "json" ]]; then
@@ -221,5 +246,10 @@ else
     strings) pretty_strings "$json_output" ;;
     scan)    pretty_scan "$json_output" ;;
     window)  pretty_window "$json_output" ;;
+    patch)   pretty_patch "$json_output" ;;
   esac
+fi
+
+if [[ $engine_rc -ne 0 ]]; then
+  exit $engine_rc
 fi

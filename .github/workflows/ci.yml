@@ -21,10 +21,10 @@ jobs:
     timeout-minutes: 20
     env:
       FSUITE_TELEMETRY: '3'
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+      FSUITE_TEST_ARTIFACT_DIR: ${{ github.workspace }}/test-artifacts
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
 
       - name: Install test dependencies
         run: |
@@ -36,3 +36,11 @@ jobs:
 
       - name: Run fsuite test suite
         run: bash tests/run_all_tests.sh
+
+      - name: Upload test diagnostics
+        if: ${{ always() }}
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: fsuite-test-diagnostics
+          path: test-artifacts
+          if-no-files-found: ignore
