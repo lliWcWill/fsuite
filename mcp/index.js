@@ -156,6 +156,19 @@ function visibleLength(str) {
   return str.replace(/\x1b\[[0-9;]*m/g, "").length;
 }
 
+// Truncate a rendered output string to maxVisible lines.
+// Returns the truncated string with a dim "... N more lines" trailer when capped.
+function truncateOutput(text, maxVisible) {
+  const lines = text.split("\n");
+  // Trailing newline produces an empty last element — don't count it
+  const trailingNewline = lines.length > 0 && lines[lines.length - 1] === "";
+  const contentLines = trailingNewline ? lines.slice(0, -1) : lines;
+  if (contentLines.length <= maxVisible) return text;
+  const hidden = contentLines.length - maxVisible;
+  const visible = contentLines.slice(0, maxVisible);
+  visible.push(`${DIM}  ... ${hidden} more lines${RESET}`);
+  return visible.join("\n") + "\n";
+}
 // Detect language from file path extension
 function detectLang(filePath) {
   if (!filePath) return "";
@@ -391,19 +404,19 @@ function renderFreadResult(jsonStr) {
 
     const lang = detectLang(d.symbol_resolution?.path || d.files?.[0]?.path || "");
 
-    // Cap pretty output at 18 lines — user can Ctrl+O to see full output
-    const MAX_PRETTY_LINES = 18;
-    let lineCount = 0;
-    let totalLines = 0;
-    for (const chunk of (d.chunks || [])) {
-      totalLines += chunk.content?.length || 0;
-    }
+// Cap pretty output at 8 lines — user can Ctrl+O to see full output
+const MAX_PRETTY_LINES = 8;
+let lineCount = 0;
+let totalLines = 0;
+for (const chunk of (d.chunks || [])) {
+totalLines += chunk.content?.length || 0;
+}
 
-    for (const chunk of (d.chunks || [])) {
-      for (const rawLine of chunk.content) {
-        if (lineCount >= MAX_PRETTY_LINES) {
-          const remaining = totalLines - MAX_PRETTY_LINES;
-          out += theme.meta(`  ... ${remaining} more lines (${totalLines} total)`) + "\n";
+for (const chunk of (d.chunks || [])) {
+for (const rawLine of chunk.content) {
+if (lineCount >= MAX_PRETTY_LINES) {
+const remaining = totalLines - MAX_PRETTY_LINES;
+out += `${DIM}  ... ${remaining} more lines${RESET}` + "\n";
           lineCount = -1; // sentinel to break outer loop
           break;
         }
@@ -468,31 +481,42 @@ function renderFcontentResult(jsonStr) {
       return theme.meta("no matches") + "\n";
     }
     // Clean summary: just files + matches count (no max_matches noise)
-    let out = theme.meta(`${d.total_matched_files} files, ${d.shown_matches} matches`) + "\n";
+// Clean summary: just files + matches count (no max_matches noise)
+let out = theme.meta(`${d.total_matched_files} files, ${d.shown_matches} matches`) + "\n";
 
-  for (const m of (d.matches || [])) {
-    // Parse "filepath:linenum:content"
-    const firstColon = m.indexOf(":");
-    const secondColon = firstColon > -1 ? m.indexOf(":", firstColon + 1) : -1;
-    if (secondColon > -1) {
-      const filePath = m.substring(0, firstColon);
-      const lineNum = m.substring(firstColon + 1, secondColon);
-      const content = m.substring(secondColon + 1);
+const MAX_CONTENT_LINES = 20;
+let contentLineCount = 0;
+const totalMatches = (d.matches || []).length;
 
-      // Detect language + syntax highlight
-      const ext = filePath.split(".").pop() || "";
-      const lang = detectLang(ext);
-      let colored = lang ? highlightLine(content, lang) : content;
+for (const m of (d.matches || [])) {
+if (contentLineCount >= MAX_CONTENT_LINES) {
+const remaining = totalMatches - contentLineCount;
+out += `${DIM}  ... ${remaining} more lines${RESET}` + "\n";
+break;
+}
+// Parse "filepath:linenum:content"
+const firstColon = m.indexOf(":");
+const secondColon = firstColon > -1 ? m.indexOf(":", firstColon + 1) : -1;
+if (secondColon > -1) {
+const filePath = m.substring(0, firstColon);
+const lineNum = m.substring(firstColon + 1, secondColon);
+const content = m.substring(secondColon + 1);
 
-      // Bold the queried string inside highlighted output
-      if (query) colored = boldMatchInAnsi(colored, query);
+// Detect language + syntax highlight
+const ext = filePath.split(".").pop() || "";
+const lang = detectLang(ext);
+let colored = lang ? highlightLine(content, lang) : content;
 
-      out += `  ${theme.path(shortPath(filePath) + ":" + lineNum)} ${colored}\n`;
-    } else {
-      out += `  ${m}\n`;
-    }
-  }
-  return out;
+// Bold the queried string inside highlighted output
+if (query) colored = boldMatchInAnsi(colored, query);
+
+out += `  ${theme.path(shortPath(filePath) + ":" + lineNum)} ${colored}\n`;
+} else {
+out += `  ${m}\n`;
+}
+contentLineCount++;
+}
+return out;
 } catch {
   return null;
 }
@@ -868,14 +892,31 @@ function renderFbashResult(jsonStr) {
 
   lines.push("");
 
-  // Output body
-  if (d.stdout) {
-    lines.push(d.stdout);
-  }
-  if (d.stderr) {
-    lines.push(`${fg(220, 90, 90)}--- stderr ---${RESET}`);
-    lines.push(d.stderr);
-  }
+// Output body — truncate to MAX_BASH_LINES visible lines
+const MAX_BASH_LINES = 30;
+if (d.stdout) {
+const stdoutLines = d.stdout.split("\n");
+const stdoutTotal = stdoutLines.length;
+if (stdoutTotal > MAX_BASH_LINES) {
+const hidden = stdoutTotal - MAX_BASH_LINES;
+lines.push(stdoutLines.slice(0, MAX_BASH_LINES).join("\n"));
+lines.push(`${DIM}  ... ${hidden} more lines${RESET}`);
+} else {
+lines.push(d.stdout);
+}
+}
+if (d.stderr) {
+lines.push(`${fg(220, 90, 90)}--- stderr ---${RESET}`);
+const stderrLines = d.stderr.split("\n");
+const stderrTotal = stderrLines.length;
+if (stderrTotal > MAX_BASH_LINES) {
+const hidden = stderrTotal - MAX_BASH_LINES;
+lines.push(stderrLines.slice(0, MAX_BASH_LINES).join("\n"));
+lines.push(`${DIM}  ... ${hidden} more lines${RESET}`);
+} else {
+lines.push(d.stderr);
+}
+}
 
   // Warnings
   if (d.warnings && Array.isArray(d.warnings) && d.warnings.length > 0) {
