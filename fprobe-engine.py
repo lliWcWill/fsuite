@@ -18,6 +18,18 @@ import re
 import argparse
 
 
+def resolve_bytes(text_value=None, hex_value=None, field_name="value"):
+    """Resolve either a UTF-8 text arg or a hidden hex arg into raw bytes."""
+    if hex_value is not None:
+        try:
+            return bytes.fromhex(hex_value)
+        except ValueError as exc:
+            raise ValueError(f"{field_name}_hex is not valid hex") from exc
+    if text_value is None:
+        return None
+    return text_value.encode("utf-8", errors="replace")
+
+
 def extract_strings(data, min_length=6):
     """Extract printable ASCII strings of at least min_length from raw bytes."""
     pattern = re.compile(rb'[\x20-\x7e]{%d,}' % min_length)
@@ -63,13 +75,16 @@ def filter_strings(strings, needle, ignore_case=False, context=200):
     return results
 
 
-def scan_pattern(data, pattern, context=300, ignore_case=False):
+def scan_pattern(data, pattern=None, context=300, ignore_case=False, pattern_hex=None):
     """Find all occurrences of a literal byte pattern with surrounding context."""
+    pattern_bytes = resolve_bytes(pattern, pattern_hex, "pattern")
+    if pattern_bytes is None:
+        raise ValueError("scan_pattern requires at least one of pattern or pattern_hex")
     if ignore_case:
         flags = re.IGNORECASE
-        pat = re.compile(re.escape(pattern.encode("utf-8", errors="replace")), flags)
+        pat = re.compile(re.escape(pattern_bytes), flags)
     else:
-        pat = re.compile(re.escape(pattern.encode("utf-8", errors="replace")))
+        pat = re.compile(re.escape(pattern_bytes))
 
     results = []
     for m in pat.finditer(data):
@@ -86,6 +101,74 @@ def scan_pattern(data, pattern, context=300, ignore_case=False):
             "text": printable,
         })
     return results
+
+
+def patch_binary(file_path, target_str=None, replacement_str=None, dry_run=False, target_hex=None, replacement_hex=None):
+    """Find and replace a byte pattern in a binary file. Same-length enforced."""
+    target = resolve_bytes(target_str, target_hex, "target")
+    replacement = resolve_bytes(replacement_str, replacement_hex, "replacement")
+    write_path = os.path.realpath(file_path)
+
+    if len(target) == 0:
+        return {"error": "target pattern must not be empty", "patched": 0}
+
+    if len(replacement) > len(target):
+        return {"error": f"replacement ({len(replacement)} bytes) exceeds target ({len(target)} bytes)", "patched": 0}
+    # Pad replacement with spaces to match target length
+    if len(replacement) < len(target):
+        replacement = replacement + b" " * (len(target) - len(replacement))
+
+    with open(write_path, "rb") as f:
+        data = bytearray(f.read())
+
+    file_size = len(data)
+    offsets = []
+    pos = 0
+    while True:
+        idx = data.find(target, pos)
+        if idx == -1:
+            break
+        offsets.append(idx)
+        if not dry_run:
+            data[idx:idx + len(target)] = replacement
+        pos = idx + len(target)
+
+    if not offsets:
+        return {
+            "patched": 0,
+            "dry_run": dry_run,
+            "target_size": len(target),
+            "file_size": file_size,
+            "error": "target pattern not found",
+        }
+
+    backup_path = None
+    if not dry_run and offsets:
+        backup_path = write_path + ".bak"
+        if not os.path.exists(backup_path):
+            import shutil
+            shutil.copy2(write_path, backup_path)
+        # Write via temp file + rename to handle "Text file busy"
+        tmp_path = write_path + ".fprobe-tmp"
+        try:
+            with open(tmp_path, "wb") as f:
+                f.write(data)
+            os.chmod(tmp_path, os.stat(write_path).st_mode)
+            os.replace(tmp_path, write_path)
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
+
+    return {
+        "patched": len(offsets),
+        "offsets": offsets,
+        "dry_run": dry_run,
+        "target_size": len(target),
+        "replacement_size": len(replacement),
+        "file_size": file_size,
+        "backup": backup_path,
+    }
 
 
 def read_window(data, offset, before=0, after=200, decode="printable"):
@@ -138,7 +221,8 @@ def main():
     # scan
     p_scan = sub.add_parser("scan")
     p_scan.add_argument("file")
-    p_scan.add_argument("--pattern", required=True)
+    p_scan.add_argument("--pattern")
+    p_scan.add_argument("--pattern-hex", help=argparse.SUPPRESS)
     p_scan.add_argument("--context", type=int, default=300)
     p_scan.add_argument("--ignore-case", action="store_true")
 
@@ -156,6 +240,15 @@ def main():
     p_win.add_argument("--after", type=nonneg_int, default=200)
     p_win.add_argument("--decode", choices=["printable", "utf8", "hex"], default="printable")
 
+    # patch
+    p_patch = sub.add_parser("patch")
+    p_patch.add_argument("file")
+    p_patch.add_argument("--target", help="Literal text to find in binary")
+    p_patch.add_argument("--target-hex", help=argparse.SUPPRESS)
+    p_patch.add_argument("--replacement", help="Replacement text (padded with spaces if shorter)")
+    p_patch.add_argument("--replacement-hex", help=argparse.SUPPRESS)
+    p_patch.add_argument("--dry-run", action="store_true", help="Show what would be patched without writing")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -166,6 +259,30 @@ def main():
     if not os.path.exists(file_path):
         json.dump({"error": f"file not found: {file_path}"}, sys.stdout)
         sys.exit(1)
+
+    if args.command == "scan":
+        if args.pattern is None and args.pattern_hex is None:
+            json.dump({"error": "scan requires --pattern"}, sys.stdout)
+            sys.exit(1)
+
+    # patch handles its own file I/O (needs write access)
+    if args.command == "patch":
+        if args.target is None and args.target_hex is None:
+            json.dump({"error": "patch requires --target", "patched": 0}, sys.stdout)
+            sys.exit(1)
+        if args.replacement is None and args.replacement_hex is None:
+            json.dump({"error": "patch requires --replacement", "patched": 0}, sys.stdout)
+            sys.exit(1)
+        result = patch_binary(
+            file_path,
+            args.target,
+            args.replacement,
+            args.dry_run,
+            target_hex=args.target_hex,
+            replacement_hex=args.replacement_hex,
+        )
+        json.dump(result, sys.stdout)
+        sys.exit(0 if result["patched"] > 0 else 1)
 
     file_size = os.path.getsize(file_path)
     if file_size == 0:
@@ -187,7 +304,7 @@ def main():
                 json.dump(results, sys.stdout)
 
             elif args.command == "scan":
-                results = scan_pattern(data, args.pattern, args.context, args.ignore_case)
+                results = scan_pattern(data, args.pattern, args.context, args.ignore_case, pattern_hex=args.pattern_hex)
                 json.dump(results, sys.stdout)
 
             elif args.command == "window":

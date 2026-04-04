@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# fls — lightweight directory listing via ftree.
+# Part of fsuite. Thin routing layer that translates simple intent into ftree flags.
+# Uses exec to replace the shell process — zero overhead.
+#
+# Modes:
+#   (default)   List direct children         → ftree -L 1
+#   -t          Little tree, shallow view    → ftree -L 2
+#   -r          Recon: sizes and counts      → ftree --recon -L 1
+#
+# Usage:
+#   fls [path]              List directory
+#   fls -t [path]           Shallow tree
+#   fls -r [path]           Quick recon
+#   fls -o json [path]      Structured JSON (inherits ftree's contract)
+
+set -euo pipefail
+
+VERSION="3.1.0"
+
+# ── Resolve ftree ────────────────────────────────────────────────
+SCRIPT_DIR="$(cd "$(dirname "$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
+
+FTREE=""
+for _c in "$SCRIPT_DIR/ftree" "$(command -v ftree 2>/dev/null || true)"; do
+  [[ -n "$_c" && -x "$_c" ]] && { FTREE="$_c"; break; }
+done
+[[ -n "$FTREE" ]] || { echo "fls: error: ftree not found" >&2; exit 1; }
+
+# ── Usage ────────────────────────────────────────────────────────
+usage() {
+  cat <<'EOF'
+fls — list directory contents (thin ftree router)
+
+USAGE
+  fls [options] [path]
+
+MODES
+  (default)        List direct children          → ftree -L 1
+  -t, --tree       Little tree, shallow structure → ftree -L 2
+  -r, --recon      Recon with sizes and counts   → ftree --recon -L 1
+
+OPTIONS
+  -o, --output <fmt>   pretty (default) or json
+  -h, --help           Show this help
+  --version            Show version
+
+HEADLESS / AI AGENT USAGE
+  fls -o json /path      Structured JSON — inherits ftree's JSON contract.
+  fls -t -o json /path   Shallow tree as JSON.
+  fls -r -o json /path   Recon metadata as JSON.
+
+  Output IS ftree output. Parse the same fields: tool, mode, depth,
+  total_dirs, total_files, entries (recon), tree output (tree mode).
+
+EXAMPLES
+  fls                    List cwd
+  fls src/               List src/
+  fls -t src/            Shallow tree of src/
+  fls -r .               Recon: sizes and item counts
+  fls -o json src/       JSON for agents
+EOF
+}
+
+# ── Parse arguments ──────────────────────────────────────────────
+MODE="list"
+FTREE_ARGS=()
+TARGET=""
+
+while (( $# > 0 )); do
+  case "$1" in
+    -t|--tree)   MODE="tree"; shift ;;
+    -r|--recon)  MODE="recon"; shift ;;
+    -o|--output) [[ -n "${2:-}" ]] || { echo "fls: error: -o requires an argument" >&2; exit 1; }; FTREE_ARGS+=(-o "$2"); shift 2 ;;
+    -h|--help)   usage; exit 0 ;;
+    --version)   echo "fls $VERSION"; exit 0 ;;
+    -*)          echo "fls: error: unknown option: $1" >&2; exit 1 ;;
+    *)
+      [[ -z "$TARGET" ]] || { echo "fls: error: unexpected argument: $1" >&2; exit 1; }
+      TARGET="$1"; shift ;;
+  esac
+done
+
+# ── Build ftree args and exec ────────────────────────────────────
+case "$MODE" in
+  list)  FTREE_ARGS+=(-L 1) ;;
+  tree)  FTREE_ARGS+=(-L 2) ;;
+  recon) FTREE_ARGS+=(--recon -L 1) ;;
+esac
+
+[[ -n "$TARGET" ]] && FTREE_ARGS+=("$TARGET")
+
+exec "$FTREE" "${FTREE_ARGS[@]}"

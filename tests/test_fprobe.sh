@@ -110,8 +110,8 @@ test_version() {
 test_help() {
   local output
   output=$("${FPROBE}" --help 2>&1)
-  if [[ "$output" == *"strings"* ]] && [[ "$output" == *"scan"* ]] && [[ "$output" == *"window"* ]]; then
-    pass "Help documents all three subcommands"
+  if [[ "$output" == *"strings"* ]] && [[ "$output" == *"scan"* ]] && [[ "$output" == *"window"* ]] && [[ "$output" == *"patch"* ]]; then
+    pass "Help documents all four subcommands"
   else
     fail "Help missing subcommand docs" "Got: $output"
   fi
@@ -269,6 +269,19 @@ test_scan_reports_offset() {
   fi
 }
 
+test_scan_requires_pattern_even_on_empty_file() {
+  local empty_file output rc=0
+  empty_file="${TEST_DIR}/scan-empty.bin"
+  : > "$empty_file"
+
+  output=$("${FPROBE}" scan "$empty_file" 2>&1) || rc=$?
+  if [[ $rc -ne 0 ]] && [[ "$output" == *"scan requires --pattern"* ]]; then
+    pass "scan validates missing pattern before empty-file fast path"
+  else
+    fail "scan should reject missing pattern on empty files" "rc=$rc output=$output"
+  fi
+}
+
 # ============================================================================
 # window subcommand
 # ============================================================================
@@ -353,6 +366,110 @@ test_window_zero_length() {
 }
 
 # ============================================================================
+# patch subcommand
+# ============================================================================
+
+test_patch_dry_run() {
+  local target output
+  target="${TEST_DIR}/patch-dry-run.bin"
+  printf 'hello world hello world' > "$target"
+  output=$("${FPROBE}" patch "$target" --target "hello" --replacement "HELLO" --dry-run -o json 2>&1)
+  if [[ "$output" == *'"patched": 2'* ]] && [[ "$(cat "$target")" == "hello world hello world" ]]; then
+    pass "patch --dry-run reports matches without writing"
+  else
+    fail "patch --dry-run should not modify the file" "Got: $output"
+  fi
+}
+
+test_patch_symlink_preserves_link() {
+  local real link output
+  real="${TEST_DIR}/patch-real.bin"
+  link="${TEST_DIR}/patch-link.bin"
+  printf 'hello world' > "$real"
+  ln -s "$real" "$link"
+  output=$("${FPROBE}" patch "$link" --target "hello" --replacement "HELLO" -o json 2>&1)
+  if [[ -L "$link" ]] && [[ "$(cat "$real")" == "HELLO world" ]] && [[ "$(cat "$link")" == "HELLO world" ]]; then
+    pass "patch preserves symlinks and modifies the target file"
+  else
+    fail "patch should preserve symlinks and patch the real file" "link=$(ls -ld "$link" 2>/dev/null || true), output: $output"
+  fi
+}
+
+test_patch_rejects_empty_target() {
+  local target output rc=0
+  target="${TEST_DIR}/patch-empty-target.bin"
+  printf 'abc' > "$target"
+  output=$("${FPROBE}" patch "$target" --target "" --replacement "" -o json 2>&1) || rc=$?
+  if [[ $rc -ne 0 ]] && [[ "$output" == *"empty"* || "$output" == *"target"* ]]; then
+    pass "patch rejects an empty target pattern"
+  else
+    fail "patch should reject an empty target pattern" "rc=$rc, output: $output"
+  fi
+}
+
+test_patch_backup_once() {
+  local target backup_file rc1=0 rc2=0
+  target="${TEST_DIR}/patch-backup-once.bin"
+  backup_file="${target}.bak"
+
+  # Create original file
+  printf 'AAAA_original_AAAA' > "$target"
+
+  # First patch: original -> replaced (should create .bak)
+  output=$("${FPROBE}" patch "$target" --target "original" --replacement "replaced" -o json 2>&1) || rc1=$?
+  if [[ $rc1 -ne 0 ]]; then
+    fail "patch backup-once: first patch failed" "rc=$rc1, output: $output"
+    return
+  fi
+
+  # Verify .bak contains original content
+  if [[ ! -f "$backup_file" ]]; then
+    fail "patch backup-once: .bak not created on first patch"
+    return
+  fi
+
+  local backup_content1
+  backup_content1=$(cat "$backup_file")
+  if [[ "$backup_content1" != "AAAA_original_AAAA" ]]; then
+    fail "patch backup-once: .bak doesn't contain original" "Expected 'AAAA_original_AAAA', got '$backup_content1'"
+    return
+  fi
+
+  # Verify live file was modified
+  local live_after_first
+  live_after_first=$(cat "$target")
+  if [[ "$live_after_first" != "AAAA_replaced_AAAA" ]]; then
+    fail "patch backup-once: live file not updated after first patch" "Expected 'AAAA_replaced_AAAA', got '$live_after_first'"
+    return
+  fi
+
+  # Second patch: replaced -> modified (should NOT overwrite .bak)
+  output=$("${FPROBE}" patch "$target" --target "replaced" --replacement "modified" -o json 2>&1) || rc2=$?
+  if [[ $rc2 -ne 0 ]]; then
+    fail "patch backup-once: second patch failed" "rc=$rc2, output: $output"
+    return
+  fi
+
+  # Verify .bak STILL contains original content (not the intermediate replaced state)
+  local backup_content2
+  backup_content2=$(cat "$backup_file")
+  if [[ "$backup_content2" != "AAAA_original_AAAA" ]]; then
+    fail "patch backup-once: .bak was overwritten on second patch" "Expected 'AAAA_original_AAAA', got '$backup_content2'"
+    return
+  fi
+
+  # Verify live file contains final modified state
+  local live_final
+  live_final=$(cat "$target")
+  if [[ "$live_final" != "AAAA_modified_AAAA" ]]; then
+    fail "patch backup-once: live file not updated after second patch" "Expected 'AAAA_modified_AAAA', got '$live_final'"
+    return
+  fi
+
+  pass "patch creates .bak only once and preserves original"
+}
+
+# ============================================================================
 # Cross-cutting concerns
 # ============================================================================
 
@@ -410,21 +527,29 @@ run_test 13 test_scan_ignore_case
 run_test 14 test_scan_no_match
 run_test 15 test_scan_json_output
 run_test 16 test_scan_reports_offset
+run_test 17 test_scan_requires_pattern_even_on_empty_file
 
 echo ""
 echo "── window ──"
-run_test 17 test_window_basic
-run_test 18 test_window_before_and_after
-run_test 19 test_window_hex_decode
-run_test 20 test_window_printable_decode
-run_test 21 test_window_json_output
-run_test 22 test_window_out_of_bounds
-run_test 23 test_window_zero_length
+run_test 18 test_window_basic
+run_test 19 test_window_before_and_after
+run_test 20 test_window_hex_decode
+run_test 21 test_window_printable_decode
+run_test 22 test_window_json_output
+run_test 23 test_window_out_of_bounds
+run_test 24 test_window_zero_length
+
+echo ""
+echo "── patch ──"
+run_test 25 test_patch_dry_run
+run_test 26 test_patch_symlink_preserves_link
+run_test 27 test_patch_rejects_empty_target
+run_test 28 test_patch_backup_once
 
 echo ""
 echo "── Cross-cutting ──"
-run_test 24 test_plain_text_file
-run_test 25 test_strings_on_text_file
+run_test 29 test_plain_text_file
+run_test 30 test_strings_on_text_file
 
 echo ""
 echo "═══════════════════════════════════════════"

@@ -211,13 +211,20 @@ JSONL
 
 test_rebuild_populates_run_facts_after_import() {
   mkdir -p "$HOME/.fsuite"
+  rm -f "$HOME/.fsuite/telemetry.db"
   cat > "$HOME/.fsuite/telemetry.jsonl" <<'JSONL'
 {"timestamp":"2026-03-20T00:00:00Z","tool":"ftree","version":"2.3.0","mode":"snapshot","path_hash":"alpha-1","project_name":"analytics-fixture","duration_ms":12,"exit_code":0,"depth":2,"items_scanned":10,"bytes_scanned":1000,"flags":"--snapshot","backend":"tree","run_id":"run-alpha"}
 {"timestamp":"2026-03-20T00:00:01Z","tool":"fcontent","version":"2.3.0","mode":"directory","path_hash":"alpha-2","project_name":"analytics-fixture","duration_ms":9,"exit_code":0,"depth":1,"items_scanned":4,"bytes_scanned":400,"flags":"-o json","backend":"read","run_id":"run-alpha"}
 JSONL
 
-  run_fmetrics import >/dev/null 2>&1
-  run_fmetrics rebuild >/dev/null 2>&1
+  run_fmetrics import >/dev/null 2>&1 || {
+    fail "Import before rebuild should succeed"
+    return
+  }
+  run_fmetrics rebuild >/dev/null 2>&1 || {
+    fail "Rebuild after import should succeed"
+    return
+  }
 
   local row dirty
   row=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT tool_count || '|' || project_name FROM run_facts_v1 WHERE run_id='run-alpha';" 2>/dev/null || true)
@@ -226,6 +233,77 @@ JSONL
     pass "Rebuild populates run_facts_v1 and clears dirty flag"
   else
     fail "Rebuild should populate run_facts_v1 and clear dirty flag" "row=$row dirty=$dirty"
+  fi
+}
+
+test_json_outputs_escape_quoted_paths() {
+  local original_home quoted_home import_output import_db_path rebuild_output rebuild_db_path
+  original_home="$HOME"
+  quoted_home="${TEST_DIR}/quoted\"home"
+  mkdir -p "$quoted_home/.fsuite"
+  export HOME="$quoted_home"
+
+  import_output=$(run_fmetrics import -o json 2>&1)
+  import_db_path=$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["db_path"])' <<< "$import_output" 2>/dev/null || echo "")
+  if [[ "$import_db_path" != "$quoted_home/.fsuite/telemetry.db" ]]; then
+    fail "Import JSON should escape quoted paths" "output=$import_output"
+    export HOME="$original_home"
+    return
+  fi
+
+  cat > "$HOME/.fsuite/telemetry.jsonl" <<'JSONL'
+{"timestamp":"2026-03-20T00:00:00Z","tool":"ftree","version":"2.3.0","mode":"snapshot","path_hash":"quoted-1","project_name":"quoted-fixture","duration_ms":12,"exit_code":0,"depth":2,"items_scanned":10,"bytes_scanned":1000,"flags":"--snapshot","backend":"tree","run_id":"quoted-run"}
+JSONL
+
+  run_fmetrics import >/dev/null 2>&1 || {
+    fail "Import for quoted-path rebuild fixture should succeed"
+    export HOME="$original_home"
+    return
+  }
+  rebuild_output=$(run_fmetrics rebuild -o json 2>&1)
+  rebuild_db_path=$(python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["db_path"])' <<< "$rebuild_output" 2>/dev/null || echo "")
+  export HOME="$original_home"
+
+  if [[ "$rebuild_db_path" == "$quoted_home/.fsuite/telemetry.db" ]]; then
+    pass "Import and rebuild JSON escape quoted filesystem paths"
+  else
+    fail "Rebuild JSON should escape quoted paths" "output=$rebuild_output"
+  fi
+}
+
+test_combos_skip_next_edge_rebuild_for_single_step_runs() {
+  mkdir -p "$HOME/.fsuite"
+  rm -f "$HOME/.fsuite/telemetry.db"
+  cat > "$HOME/.fsuite/telemetry.jsonl" <<'JSONL'
+{"timestamp":"2026-03-20T00:00:00Z","tool":"ftree","version":"2.3.0","mode":"snapshot","path_hash":"single-1","project_name":"single-step-fixture","duration_ms":12,"exit_code":0,"depth":2,"items_scanned":10,"bytes_scanned":1000,"flags":"--snapshot","backend":"tree","run_id":"single-run"}
+JSONL
+
+  run_fmetrics import >/dev/null 2>&1 || {
+    fail "Import for single-step fixture should succeed"
+    return
+  }
+  run_fmetrics rebuild >/dev/null 2>&1 || {
+    fail "Rebuild for single-step fixture should succeed"
+    return
+  }
+
+  local multi_step_count next_count first second
+  multi_step_count=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM run_facts_v1 WHERE step_count > 1;" 2>/dev/null || echo "0")
+  next_count=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM combo_next_stats_v1;" 2>/dev/null || echo "-1")
+  [[ "$multi_step_count" =~ ^[0-9]+$ ]] || multi_step_count=0
+  first=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT value FROM analytics_meta WHERE key='last_rebuilt_at';" 2>/dev/null || echo "")
+
+  sleep 1
+  run_fmetrics combos >/dev/null 2>&1 || {
+    fail "Combos should succeed for single-step fixture"
+    return
+  }
+  second=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT value FROM analytics_meta WHERE key='last_rebuilt_at';" 2>/dev/null || echo "")
+
+  if [[ "$multi_step_count" == "0" && "$next_count" == "0" && -n "$first" && "$first" == "$second" ]]; then
+    pass "Combos does not rebuild analytics when only single-step runs have zero next edges"
+  else
+    fail "Combos should not treat zero next edges as stale for single-step runs" "multi_step=$multi_step_count next_count=$next_count first=$first second=$second"
   fi
 }
 
@@ -1341,6 +1419,8 @@ main() {
   run_test "Migration rollback on failure preserves data" test_migration_atomicity
   run_test "Import marks analytics dirty without rebuild" test_import_marks_analytics_dirty_without_rebuild
   run_test "Rebuild populates run_facts_v1 analytics" test_rebuild_populates_run_facts_after_import
+  run_test "fmetrics JSON escapes quoted paths" test_json_outputs_escape_quoted_paths
+  run_test "Combos skips rebuild for single-step next edges" test_combos_skip_next_edge_rebuild_for_single_step_runs
   run_test "Import survives malformed lines" test_import_survives_malformed_lines
   run_test "Import only processes newly appended lines" test_import_only_processes_new_lines
   run_test "Clean rebuilds run_facts_v1 after direct seed" test_clean_rebuilds_run_facts_after_direct_seed

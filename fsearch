@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="2.2.0"
+VERSION="3.1.0"
 
 # -------------------------
 # Source common library for tiered telemetry
@@ -117,15 +117,25 @@ DEFAULT_MAX=50
 DEFAULT_BACKEND="auto"   # auto|find|fd
 DEFAULT_OUTPUT="pretty"  # pretty|json|paths
 DEFAULT_EXCLUDE_PATTERNS=(
-  "*/node_modules/*"
-  "*/dist/*"
-  "*/build/*"
-  "*/.next/*"
-  "*/coverage/*"
-  "*/.git/*"
-  "*/vendor/*"
-  "*/target/*"
+"*/node_modules"
+"*/node_modules/*"
+"*/dist"
+"*/dist/*"
+"*/build"
+"*/build/*"
+"*/.next"
+"*/.next/*"
+"*/coverage"
+"*/coverage/*"
+"*/.git"
+"*/.git/*"
+"*/vendor"
+"*/vendor/*"
+"*/target"
+"*/target/*"
 )
+CONFIG_RECURSIVE_ROOTS=()
+CONFIG_TOP_LEVEL_ROOT=""
 
 # -------------------------
 # Helpers
@@ -181,10 +191,33 @@ path_matches_filter() {
   fi
 }
 
+build_config_roots() {
+  local base="$1"
+  CONFIG_RECURSIVE_ROOTS=()
+  CONFIG_TOP_LEVEL_ROOT=""
+
+  [[ -d "$base" ]] || return 0
+
+  if [[ "/${base#/}/" == *"/.config/"* || "/${base#/}/" == *"/.local/"* ]]; then
+    CONFIG_RECURSIVE_ROOTS+=("$base")
+    # When the search base is already inside a config subtree, the recursive
+    # walk covers hidden children too. Re-running the top-level hidden pass on
+    # the same root duplicates hits like ".foo".
+    CONFIG_TOP_LEVEL_ROOT=""
+    return 0
+  fi
+
+  [[ -d "$base/.config" ]] && CONFIG_RECURSIVE_ROOTS+=("$base/.config")
+  [[ -d "$base/.local" ]] && CONFIG_RECURSIVE_ROOTS+=("$base/.local")
+  CONFIG_TOP_LEVEL_ROOT="$base"
+}
+
 filter_results_stream() {
   local item pattern include_match exclude_match
+  local _enumerated=0 _passed=0
   while IFS= read -r item; do
     [[ -z "$item" ]] && continue
+    (( _enumerated++ )) || true
 
     if (( ${#INCLUDE_PATTERNS[@]} > 0 )); then
       include_match=0
@@ -208,8 +241,13 @@ filter_results_stream() {
       (( exclude_match == 1 )) && continue
     fi
 
+    (( _passed++ )) || true
     printf "%s\n" "$item"
   done
+  # Write pipeline counters when FSEARCH_META is set (test/debug hook).
+  if [[ -n "${FSEARCH_META:-}" ]]; then
+    printf '{"items_enumerated":%d,"items_after_filter":%d}\n' "$_enumerated" "$_passed" > "$FSEARCH_META"
+  fi
 }
 
 usage() {
@@ -242,6 +280,9 @@ QUICK EXAMPLES
   # Prefer fd backend if available (faster than find)
   fsearch --backend fd '*.log' /
 
+  # Narrow to config-like roots under HOME (e.g. ~/.config, ~/.local, top-level dotfiles)
+  fsearch --config-only opencode.json ~
+
 OPTIONS
   -p, --path PATH
       Search root. If omitted, uses current directory.
@@ -265,11 +306,39 @@ OPTIONS
       By default, fsearch suppresses dependency/build trees such as:
         node_modules, dist, build, .next, coverage, .git, vendor, target
 
+  --config-only
+      Narrow traversal to config-like roots under the requested path.
+      Searches recursively in .config/ and .local/, plus top-level hidden
+      files/directories at the root path. Intended for fast dotfile/config lookups.
+      This preset currently uses a dedicated find-based traversal.
+
   -b, --backend auto|find|fd
       Choose search backend.
         auto: use fd if installed, else find
         fd:   use fd (fast). Requires fd to be installed
         find: use POSIX find
+
+  --type file|dir|both
+      Choose the search surface. Default: file
+        file: legacy file-name search
+        dir:  directory-oriented nav surface (v1 contract)
+        both: file + directory surface
+
+  --match name|path|both
+      Choose what the query matches against. Default: name
+        name: match file or directory names
+        path: match full paths
+        both: allow either name or path matching
+
+  --mode auto|literal|glob|ext
+      Control query normalization. Default: auto
+        auto:    legacy heuristic in file/name mode only
+        literal: use the query as-is
+        glob:    treat the query as a glob pattern
+        ext:     explicit extension mode placeholder
+
+  --preview N
+      Reserved shallow preview depth. Default: 0
 
   -o, --output pretty|paths|json
       pretty: human-friendly header + list (default)
@@ -327,12 +396,17 @@ HEADLESS / AI AGENT USAGE
   This script is designed to be easy for an agent to call in "headless" mode:
     fsearch --output json '*token*' /path
   The agent can parse:
-    - "total_found"
-    - "shown"
-    - "results" (array of file paths)
-    - "backend" used
-    - "pattern" and "name_glob" resolved
-    - "path" searched
+    - "total_found"       — number of matches found (lower bound when truncated)
+    - "shown"             — number of results in the output
+    - "truncated"         — boolean: were results capped at --max?
+    - "count_mode"        — "exact" or "lower_bound" (is total_found exact?)
+    - "has_more"          — boolean: are there more results beyond shown?
+    - "results"           — array of file paths
+    - "hits"              — array of objects with path, kind, matched_on, next_hint
+    - "backend"           — search backend used (find or fd)
+    - "pattern"           — original query
+    - "name_glob"         — resolved glob pattern
+    - "path"              — search root
 
   For simple piping (no JSON parsing), use:
     fsearch --output paths '*.log' /var/log | head
@@ -385,12 +459,37 @@ EOF
 # - Else treat as extension: "*.pattern"
 normalize_pattern() {
   local p="$1"
+  local search_type="${2:-file}"
+  local match_mode="${3:-name}"
+  local query_mode="${4:-auto}"
   local out="$p"
+
+  if [[ "$query_mode" == "literal" ]]; then
+    printf "%s" "$p"
+    return
+  fi
+
+  if [[ "$query_mode" == "glob" ]]; then
+    printf "%s" "$p"
+    return
+  fi
+
+  if [[ "$query_mode" == "ext" ]]; then
+    if [[ "$p" == .* ]]; then
+      printf "*%s" "$p"
+    else
+      printf "*.%s" "$p"
+    fi
+    return
+  fi
 
   if [[ "$p" == *'*'* || "$p" == *'?'* ]]; then
     # Has wildcards: use as-is
-    out="$p"
-  else
+    printf "%s" "$p"
+    return
+  fi
+
+  if [[ "$search_type" == "file" && "$match_mode" == "name" && "$query_mode" == "auto" ]]; then
     if [[ "$p" == .* ]]; then
       # Starts with dot: treat as extension (.log → *.log)
       out="*${p}"
@@ -435,25 +534,239 @@ choose_backend() {
 # Find results with find
 run_find() {
   local path="$1"
-  local glob="$2"
+  local query="$2"
+  local search_type="${3:-file}"
+  local match_mode="${4:-name}"
+  local type_args=()
+
+  case "$search_type" in
+    file) type_args=(-type f) ;;
+    dir) type_args=(-type d) ;;
+    both) type_args=( \( -type f -o -type d \) ) ;;
+  esac
+
+  # Build prune expressions for default exclude patterns so find skips them
+  # at the filesystem level instead of piping thousands of items through bash.
+  local prune_args=()
+  if (( ${#EXCLUDE_PATTERNS[@]} > 0 )); then
+    for _ep in "${EXCLUDE_PATTERNS[@]}"; do
+      # Convert glob patterns like "*/node_modules" to find -path prune
+      prune_args+=(-path "$_ep" -o)
+    done
+  fi
+
+  local find_cmd=(find "$path")
+  if (( ${#prune_args[@]} > 0 )); then
+    find_cmd+=(\( "${prune_args[@]}" -false \) -prune -o)
+  fi
+
   # 2>/dev/null to avoid permission noise in normal use; agent can rerun with sudo if needed.
-  find "$path" -type f -name "$glob" 2>/dev/null
+  if [[ "$match_mode" == "name" ]]; then
+    "${find_cmd[@]}" "${type_args[@]}" -name "$query" -print 2>/dev/null | normalize_result_paths_stream
+  else
+    "${find_cmd[@]}" "${type_args[@]}" -print 2>/dev/null \
+      | normalize_result_paths_stream \
+      | match_paths_stream "$query" "$match_mode"
+  fi
 }
 
 # Find results with fd/fdfind
 run_fd() {
   local bin="$1"   # fd or fdfind
   local path="$2"
-  local glob="$3"
+  local query="$3"
+  local search_type="${4:-file}"
+  local match_mode="${5:-name}"
+  local type_args=()
+
+  case "$search_type" in
+    file) type_args=(-t f) ;;
+    dir) type_args=(-t d) ;;
+    both) type_args=(-t f -t d) ;;
+  esac
+
   # fd uses pattern matching; for glob, use --glob
-  # We search files only (-t f). Quiet permission errors by default.
-  "$bin" -t f --glob "$glob" "$path" 2>/dev/null
+  if [[ "$match_mode" == "name" ]]; then
+    "$bin" "${type_args[@]}" --glob "$query" "$path" 2>/dev/null | normalize_result_paths_stream
+  else
+    "$bin" "${type_args[@]}" . "$path" 2>/dev/null \
+      | normalize_result_paths_stream \
+      | match_paths_stream "$query" "$match_mode"
+  fi
+}
+
+run_config_find() {
+  local base="$1"
+  local query="$2"
+  local search_type="${3:-file}"
+  local match_mode="${4:-name}"
+  local type_args=()
+  local prune_args=()
+  local root
+
+  build_config_roots "$base"
+
+  case "$search_type" in
+    file) type_args=(-type f) ;;
+    dir) type_args=(-type d) ;;
+    both) type_args=( \( -type f -o -type d \) ) ;;
+  esac
+
+  if (( ${#EXCLUDE_PATTERNS[@]} > 0 )); then
+    for _ep in "${EXCLUDE_PATTERNS[@]}"; do
+      prune_args+=(-path "$_ep" -o)
+    done
+  fi
+
+  {
+    for root in "${CONFIG_RECURSIVE_ROOTS[@]}"; do
+      local find_cmd=(find "$root")
+      if (( ${#prune_args[@]} > 0 )); then
+        find_cmd+=(\( "${prune_args[@]}" -false \) -prune -o)
+      fi
+
+      if [[ "$match_mode" == "name" ]]; then
+        "${find_cmd[@]}" "${type_args[@]}" -name "$query" -print 2>/dev/null
+      else
+        "${find_cmd[@]}" "${type_args[@]}" -print 2>/dev/null
+      fi
+    done
+
+    if [[ -n "$CONFIG_TOP_LEVEL_ROOT" ]]; then
+      local hidden_cmd=(
+        find "$CONFIG_TOP_LEVEL_ROOT"
+        -mindepth 1 -maxdepth 1
+        "${type_args[@]}"
+        -name '.*'
+        ! -name '.'
+        ! -name '..'
+        ! -name '.config'
+        ! -name '.local'
+      )
+
+      if [[ "$match_mode" == "name" ]]; then
+        "${hidden_cmd[@]}" -name "$query" -print 2>/dev/null
+      else
+        "${hidden_cmd[@]}" -print 2>/dev/null
+      fi
+    fi
+  } | normalize_result_paths_stream \
+    | if [[ "$match_mode" == "name" ]]; then cat; else match_paths_stream "$query" "$match_mode"; fi
+}
+
+normalize_result_paths_stream() {
+  local item
+  while IFS= read -r item; do
+    [[ -z "$item" ]] && continue
+    if [[ "$item" != "/" ]]; then
+      item="${item%/}"
+    fi
+    printf "%s\n" "$item"
+  done
+}
+
+collect_limited_results_stream() {
+  local limit="$1"
+  shift
+  local pipe_status=()
+  local status
+
+  # head intentionally closes early once enough results are collected. Treat
+  # SIGPIPE from upstream producers as expected, but preserve any other real
+  # pipeline error so callers do not get silent empty success responses.
+  set +e
+  "$@" | filter_results_stream | head -n "$limit"
+  pipe_status=("${PIPESTATUS[@]}")
+  set -e
+
+  for status in "${pipe_status[@]}"; do
+    if (( status != 0 && status != 141 )); then
+      return "$status"
+    fi
+  done
+
+  return 0
+}
+
+match_paths_stream() {
+  local query="$1"
+  local match_mode="$2"
+  local item base
+
+  while IFS= read -r item; do
+    [[ -z "$item" ]] && continue
+    base="${item##*/}"
+
+    case "$match_mode" in
+      path)
+        path_matches_filter "$item" "$query" && printf "%s\n" "$item"
+        ;;
+      both)
+        if path_matches_filter "$base" "$query" || path_matches_filter "$item" "$query"; then
+          printf "%s\n" "$item"
+        fi
+        ;;
+      *)
+        path_matches_filter "$base" "$query" && printf "%s\n" "$item"
+        ;;
+    esac
+  done
+}
+
+collect_preview() {
+  local dir_path="$1"
+  local limit="$2"
+
+  [[ "$limit" =~ ^[0-9]+$ ]] || return 0
+  (( limit > 0 )) || return 0
+  [[ -d "$dir_path" ]] || return 0
+
+  local pipe_status=()
+  local status
+
+  set +e
+  find "$dir_path" -mindepth 1 -maxdepth 1 2>/dev/null \
+    | filter_results_stream \
+    | LC_ALL=C sort \
+    | head -n "$((limit + 1))"
+  pipe_status=("${PIPESTATUS[@]}")
+  set -e
+
+  for status in "${pipe_status[@]}"; do
+    if (( status != 0 && status != 141 )); then
+      return "$status"
+    fi
+  done
+
+  return 0
+}
+
+path_kind() {
+  local path="$1"
+  if [[ -d "$path" ]]; then
+    printf "dir"
+  else
+    printf "file"
+  fi
+}
+
+render_next_hint_json() {
+  local path="$1"
+  local kind="$2"
+  local escaped_path
+
+  escaped_path="$(printf "%s" "$path" | json_escape)"
+  if [[ "$kind" == "dir" ]]; then
+    printf '{"tool":"fls","args":{"path":"%s","mode":"tree"}}' "$escaped_path"
+  else
+    printf '{"tool":"fread","args":{"path":"%s"}}' "$escaped_path"
+  fi
 }
 
 # JSON escape minimal
 json_escape() {
-  # Escapes backslashes, double quotes, tabs, carriage returns, and newlines.
-  sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/\\t/g' -e 's/\r/\\r/g' -e ':a;N;$!ba;s/\n/\\n/g'
+  # Escapes JSON string delimiters plus all ASCII control characters.
+  perl -0pe 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\r/\\r/g; s/\n/\\n/g; s/([\x00-\x1f])/sprintf("\\u%04x", ord($1))/ge'
 }
 
 # -------------------------
@@ -464,13 +777,22 @@ SEARCH_PATH=""
 MAX="$DEFAULT_MAX"
 BACKEND="$DEFAULT_BACKEND"
 OUTPUT="$DEFAULT_OUTPUT"
+SEARCH_TYPE="file"
+MATCH_MODE="name"
+QUERY_MODE="auto"
+PREVIEW="0"
 FORCE_INTERACTIVE=0
 INSTALL_HINTS=0
 SELF_CHECK=0
 QUIET=0
 NO_DEFAULT_IGNORE=0
+CONFIG_ONLY=0
 INCLUDE_PATTERNS=()
 EXCLUDE_PATTERNS=()
+TYPE_SEEN=0
+MATCH_SEEN=0
+MODE_SEEN=0
+PREVIEW_SEEN=0
 
 # Pre-process arguments: expand combined short flags like -m5 to -m 5
 _args=()
@@ -506,7 +828,50 @@ while [[ $# -gt 0 ]]; do
       _TELEM_FLAGS+=" --no-default-ignore"
       shift
       ;;
+    --config-only)
+      CONFIG_ONLY=1
+      _TELEM_FLAGS+=" --config-only"
+      shift
+      ;;
     -b|--backend) BACKEND="${2:-}"; _TELEM_FLAGS+=" -b $2"; shift 2 ;;
+    --type)
+      [[ -n "${2:-}" ]] || die "Missing value for --type"
+      case "$2" in
+        file|dir|both) SEARCH_TYPE="$2" ;;
+        *) die "Invalid --type: $2" ;;
+      esac
+      TYPE_SEEN=1
+      _TELEM_FLAGS+=" --type $2"
+      shift 2
+      ;;
+    --match)
+      [[ -n "${2:-}" ]] || die "Missing value for --match"
+      case "$2" in
+        name|path|both) MATCH_MODE="$2" ;;
+        *) die "Invalid --match: $2" ;;
+      esac
+      MATCH_SEEN=1
+      _TELEM_FLAGS+=" --match $2"
+      shift 2
+      ;;
+    --mode)
+      [[ -n "${2:-}" ]] || die "Missing value for --mode"
+      case "$2" in
+        auto|literal|glob|ext) QUERY_MODE="$2" ;;
+        *) die "Invalid --mode: $2" ;;
+      esac
+      MODE_SEEN=1
+      _TELEM_FLAGS+=" --mode $2"
+      shift 2
+      ;;
+    --preview)
+      [[ -n "${2:-}" ]] || die "Missing value for --preview"
+      [[ "$2" =~ ^[0-9]+$ ]] || die "Invalid --preview: $2"
+      PREVIEW="$2"
+      PREVIEW_SEEN=1
+      _TELEM_FLAGS+=" --preview $2"
+      shift 2
+      ;;
     -o|--output) OUTPUT="${2:-}"; shift 2 ;;
     -q|--quiet) QUIET=1; _TELEM_FLAGS+=" -q"; shift ;;
     -i|--interactive) FORCE_INTERACTIVE=1; shift ;;
@@ -557,6 +922,10 @@ fi
 
 # Seed telemetry flags with defaults
 _TELEM_FLAGS+=" -o ${OUTPUT:-pretty}"
+(( TYPE_SEEN == 0 )) && _TELEM_FLAGS+=" --type $SEARCH_TYPE"
+(( MATCH_SEEN == 0 )) && _TELEM_FLAGS+=" --match $MATCH_MODE"
+(( MODE_SEEN == 0 )) && _TELEM_FLAGS+=" --mode $QUERY_MODE"
+(( PREVIEW_SEEN == 0 )) && _TELEM_FLAGS+=" --preview $PREVIEW"
 
 # Validate output/backend
 case "$OUTPUT" in pretty|paths|json) ;; *) die "Invalid --output: $OUTPUT" ;; esac
@@ -579,33 +948,45 @@ fi
 
 [[ -n "$PATTERN" ]] || die "Missing pattern. Try: fsearch --help"
 
-NAME_GLOB="$(normalize_pattern "$PATTERN")"
-BACKEND_BIN="$(choose_backend "$BACKEND")"
+NAME_GLOB="$(normalize_pattern "$PATTERN" "$SEARCH_TYPE" "$MATCH_MODE" "$QUERY_MODE")"
+if (( CONFIG_ONLY == 1 )); then
+  BACKEND_BIN="config-find"
+else
+  BACKEND_BIN="$(choose_backend "$BACKEND")"
+fi
 
 # -------------------------
 # Execute search
 # -------------------------
 # Bound memory: collect only MAX+1 filtered results first, then compute exact
 # filtered total only when truncation is detected.
-if [[ "$BACKEND_BIN" == "find" ]]; then
-  mapfile -t RESULTS < <(run_find "$SEARCH_PATH" "$NAME_GLOB" | filter_results_stream | head -n "$((MAX + 1))" || true)
+if [[ "$BACKEND_BIN" == "config-find" ]]; then
+  mapfile -t RESULTS < <(collect_limited_results_stream "$((MAX + 1))" run_config_find "$SEARCH_PATH" "$NAME_GLOB" "$SEARCH_TYPE" "$MATCH_MODE" || true)
+elif [[ "$BACKEND_BIN" == "find" ]]; then
+  mapfile -t RESULTS < <(collect_limited_results_stream "$((MAX + 1))" run_find "$SEARCH_PATH" "$NAME_GLOB" "$SEARCH_TYPE" "$MATCH_MODE" || true)
 else
-  mapfile -t RESULTS < <(run_fd "$BACKEND_BIN" "$SEARCH_PATH" "$NAME_GLOB" | filter_results_stream | head -n "$((MAX + 1))" || true)
+  mapfile -t RESULTS < <(collect_limited_results_stream "$((MAX + 1))" run_fd "$BACKEND_BIN" "$SEARCH_PATH" "$NAME_GLOB" "$SEARCH_TYPE" "$MATCH_MODE" || true)
 fi
 
 TOTAL_FOUND="${#RESULTS[@]}"
+TRUNCATED=false
+COUNT_MODE="exact"
+HAS_MORE=false
+# When results exceed MAX, we know there are more but don't recount the
+# entire pipeline (was O(2N) and caused 10s+ timeouts on large trees).
 if (( TOTAL_FOUND > MAX )); then
-  _full_count=0
-  if [[ "$BACKEND_BIN" == "find" ]]; then
-    _full_count=$(run_find "$SEARCH_PATH" "$NAME_GLOB" | filter_results_stream | wc -l || true)
-  else
-    _full_count=$(run_fd "$BACKEND_BIN" "$SEARCH_PATH" "$NAME_GLOB" | filter_results_stream | wc -l || true)
-  fi
-  _full_count="${_full_count//[[:space:]]/}"
-  [[ "$_full_count" =~ ^[0-9]+$ ]] && TOTAL_FOUND="$_full_count"
+  TRUNCATED=true
+  COUNT_MODE="lower_bound"
+  HAS_MORE=true
 fi
 SHOWN="$TOTAL_FOUND"
 if (( SHOWN > MAX )); then SHOWN="$MAX"; fi
+
+TOP_LEVEL_NEXT_HINT_JSON="null"
+if (( TOTAL_FOUND == 1 && SHOWN == 1 )); then
+  _top_kind="$(path_kind "${RESULTS[0]}")"
+  TOP_LEVEL_NEXT_HINT_JSON="$(render_next_hint_json "${RESULTS[0]}" "$_top_kind")"
+fi
 
 # -------------------------
 # Output
@@ -626,16 +1007,58 @@ if [[ "$OUTPUT" == "json" ]]; then
   echo -n "\"pattern\":\"$(printf "%s" "$PATTERN" | json_escape)\","
   echo -n "\"name_glob\":\"$(printf "%s" "$NAME_GLOB" | json_escape)\","
   echo -n "\"path\":\"$(printf "%s" "$SEARCH_PATH" | json_escape)\","
+  if (( CONFIG_ONLY == 1 )); then
+    echo -n "\"config_only\":true,"
+  fi
   echo -n "\"backend\":\"$BACKEND_BIN\","
+  echo -n "\"search_type\":\"$SEARCH_TYPE\","
+  echo -n "\"match_mode\":\"$MATCH_MODE\","
+  echo -n "\"preview_limit\":$PREVIEW,"
   echo -n "\"total_found\":$TOTAL_FOUND,"
   echo -n "\"shown\":$SHOWN,"
+  echo -n "\"truncated\":$TRUNCATED,"
+  echo -n "\"count_mode\":\"$COUNT_MODE\","
+  echo -n "\"has_more\":$HAS_MORE,"
   echo -n "\"results\":["
   for ((i=0; i<SHOWN; i++)); do
     p="$(printf "%s" "${RESULTS[i]}" | json_escape)"
     if (( i > 0 )); then echo -n ","; fi
     echo -n "\"$p\""
   done
-  echo -n "]}"
+  echo -n "],\"hits\":["
+  for ((i=0; i<SHOWN; i++)); do
+    hit_path="${RESULTS[i]}"
+    hit_kind="$(path_kind "$hit_path")"
+    if (( i > 0 )); then echo -n ","; fi
+    echo -n "{"
+    echo -n "\"path\":\"$(printf "%s" "$hit_path" | json_escape)\","
+    echo -n "\"kind\":\"$hit_kind\","
+    echo -n "\"matched_on\":\"$MATCH_MODE\""
+
+    if [[ "$hit_kind" == "dir" && "$PREVIEW" -gt 0 ]]; then
+      mapfile -t PREVIEW_PATHS < <(collect_preview "$hit_path" "$PREVIEW" || true)
+      preview_truncated="false"
+      preview_count="${#PREVIEW_PATHS[@]}"
+      if (( preview_count > PREVIEW )); then
+        preview_truncated="true"
+        preview_count="$PREVIEW"
+      fi
+
+      echo -n ",\"preview\":["
+      for ((j=0; j<preview_count; j++)); do
+        child_path="${PREVIEW_PATHS[j]}"
+        child_name="${child_path##*/}"
+        child_kind="$(path_kind "$child_path")"
+        if (( j > 0 )); then echo -n ","; fi
+        echo -n "{\"name\":\"$(printf "%s" "$child_name" | json_escape)\",\"kind\":\"$child_kind\"}"
+      done
+      echo -n "],\"preview_truncated\":$preview_truncated"
+    fi
+
+    echo -n ",\"next_hint\":$(render_next_hint_json "$hit_path" "$hit_kind")"
+    echo -n "}"
+  done
+  echo -n "],\"next_hint\":$TOP_LEVEL_NEXT_HINT_JSON}"
   echo
   exit 0
 fi
@@ -643,7 +1066,11 @@ fi
 # pretty output
 if (( QUIET == 0 )); then
   echo "Search(pattern: \"$PATTERN\" -> name \"$NAME_GLOB\", path: \"$SEARCH_PATH\")"
-  echo "  ⎿ Found $TOTAL_FOUND files (backend: $BACKEND_BIN)"
+  if [[ "$COUNT_MODE" == "exact" ]]; then
+    echo "  ⎿ Found $TOTAL_FOUND results (backend: $BACKEND_BIN)"
+  else
+    echo "  ⎿ Found ${TOTAL_FOUND}+ results (backend: $BACKEND_BIN)"
+  fi
 fi
 if (( TOTAL_FOUND == 0 )); then exit 0; fi
 for ((i=0; i<SHOWN; i++)); do

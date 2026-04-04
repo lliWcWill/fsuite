@@ -58,6 +58,25 @@ fmetrics predict /project
 - Use `fcontent` as exact-text confirmation after narrowing, not as the first conceptual repo search.
 - Do not rediscover the repo unless the target changes or a contradiction appears.
 
+## Git Remotes And PR Workflow
+
+- Before any push, PR creation, or remote-branch advice, run `git remote -v` and state the target remote/repo explicitly.
+- Expected remote roles in this repo:
+  - `upstream` = `lliWcWill/fsuite` (canonical upstream)
+  - `fork` = `Cwilliams333/fsuite` (public fork that should stay aligned with upstream)
+  - `origin` = `Cwilliams333/fsuite-private` (private repo with extra history such as `flog`)
+- Default publication flow:
+  1. Push feature branches to `fork`
+  2. Open PRs into `fork/master`
+  3. Merge to `fork`
+  4. Open upstream PRs from `fork` as needed
+  5. Cherry-pick selected commits from `fork` into `origin`
+- Never treat `origin` as the branch sync target for `fork` or `upstream`.
+- Never rebase or merge `origin` onto `fork` or `upstream` just to "catch it up" because `origin` carries private history that must be preserved.
+- Prefer cherry-picking from `fork` into `origin` rather than merging `fork` into `origin`.
+- If a user asks to push or create a PR and the target is even slightly ambiguous, stop and confirm which remote should receive the branch or PR.
+- See `docs/git-remotes-workflow.md` for the fuller rationale and examples.
+
 ## Tool Selection
 
 - Need project shape or likely hotspots: `ftree`

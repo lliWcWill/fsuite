@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="2.2.0"
+VERSION="3.1.0"
 
 # -------------------------
 # Source common library for tiered telemetry
@@ -95,6 +95,9 @@ FROM_STDIN=0
 STDIN_FORMAT=""
 
 TARGET_PATH=""
+MULTI_PATHS=""
+RESOLVED_PATH=""
+MULTI_PATH_TOTAL=0
 NEXT_HINT=""
 SYMBOL_NAME=""
 SYMBOL_RESOLUTION_PATH=""
@@ -191,16 +194,44 @@ count_file_lines() {
 }
 
 normalize_abs_path() {
-  local p="$1"
-  if abs="$(realpath -e "$p" 2>/dev/null)"; then
-    printf '%s' "$abs"
-    return 0
+local p="$1"
+if abs="$(realpath -e "$p" 2>/dev/null)"; then
+printf '%s' "$abs"
+return 0
   fi
   if abs="$(cd "$(dirname "$p")" 2>/dev/null && printf '%s/%s' "$(pwd)" "$(basename "$p")")"; then
     printf '%s' "$abs"
     return 0
+fi
+printf '%s' "$p"
+}
+
+split_multi_paths() {
+local input="$1"
+local token="" char next_char
+local i input_len
+_MULTI_PATH_ARR=()
+input_len=${#input}
+
+for ((i=0; i<input_len; i++)); do
+  char="${input:i:1}"
+  if [[ "$char" == '\' ]] && (( i + 1 < input_len )); then
+    next_char="${input:i+1:1}"
+    if [[ "$next_char" == "," ]]; then
+      token+=","
+      ((i++))
+      continue
+    fi
   fi
-  printf '%s' "$p"
+  if [[ "$char" == "," ]]; then
+    _MULTI_PATH_ARR+=("$token")
+    token=""
+    continue
+  fi
+  token+="$char"
+done
+
+_MULTI_PATH_ARR+=("$token")
 }
 
 detect_language() {
@@ -914,6 +945,10 @@ compute_next_hint() {
 render_pretty() {
   local i path start end lines bytes content
 
+  if [[ -n "$RESOLVED_PATH" ]] && (( QUIET == 0 )); then
+    echo "# Reading $RESOLVED_PATH (1 of $MULTI_PATH_TOTAL candidates)"
+  fi
+
   for (( i=0; i<CHUNK_COUNT; i++ )); do
     path="${CHUNK_PATHS[$i]}"
     start="${CHUNK_STARTS[$i]}"
@@ -961,6 +996,10 @@ render_json() {
   echo -n "\"tool\":\"fread\","
   echo -n "\"version\":\"$VERSION\","
   echo -n "\"mode\":\"$MODE\","
+  if [[ -n "$RESOLVED_PATH" ]]; then
+    echo -n "\"resolved_path\":\"$(json_escape_str "$RESOLVED_PATH")\","
+    echo -n "\"paths_tried\":$MULTI_PATH_TOTAL,"
+  fi
   echo -n "\"truncated\":$TRUNCATED,"
   echo -n "\"truncation_reason\":\"$TRUNCATION_REASON\","
   echo -n "\"token_estimate\":$total_token_est,"
@@ -1117,10 +1156,12 @@ USAGE
   fread <file> --tail 30                         Last N lines
   fread <file> --around-line 150 -B 5 -A 10      Context around line
   fread <file> --around "pattern" -B 5 -A 10     Context around literal pattern
+  fread --paths "~/.codex/auth.json,~/.config/codex/auth.json"   Try paths in order
   ... | fread --from-stdin --stdin-format=paths
   git diff | fread --from-stdin --stdin-format=unified-diff -B 3 -A 10
 
 OPTIONS
+  --paths P1,P2,...           Comma-separated file paths to try in order (first existing wins)
   -r, --lines START:END       Line range (1-based, inclusive)
   --head N                    Read first N lines
   --tail N                    Read last N lines
@@ -1353,6 +1394,12 @@ while [[ $# -gt 0 ]]; do
       _TELEM_PROJECT_NAME="$2"
       shift 2
       ;;
+    --paths)
+      [[ -n "${2:-}" ]] || die "Missing value for --paths"
+      MULTI_PATHS="$2"
+      _TELEM_FLAGS+=" --paths"
+      shift 2
+      ;;
     --self-check) self_check ;;
     --install-hints) install_hints ;;
     --version) echo "fread $VERSION"; exit 0 ;;
@@ -1388,6 +1435,49 @@ fi
 
 TARGET_PATH="${POSITIONAL[0]:-}"
 
+# -------------------------
+# Multi-path fallback resolution
+# -------------------------
+MULTI_PATH_NO_MATCH=0
+if [[ -n "$MULTI_PATHS" ]]; then
+  # --paths takes priority over positional path
+  if [[ -n "$TARGET_PATH" ]]; then
+    add_warning "Both positional path and --paths provided; --paths takes priority"
+  fi
+  TARGET_PATH=""
+  RESOLVED_PATH=""
+  split_multi_paths "$MULTI_PATHS"
+  MULTI_PATH_TOTAL=${#_MULTI_PATH_ARR[@]}
+  _mp_found=0
+  MULTI_PATH_NO_MATCH=0
+  _mp_tried=()
+  for _mp in "${_MULTI_PATH_ARR[@]}"; do
+    # Trim whitespace and expand ~
+    _mp="${_mp#"${_mp%%[![:space:]]*}"}"
+    _mp="${_mp%"${_mp##*[![:space:]]}"}"
+    _mp="${_mp/#\~/$HOME}"
+    _mp_tried+=("$_mp")
+    # Symbol mode accepts either a directory scope or an exact file candidate.
+    if [[ -n "${SYMBOL_NAME:-}" ]]; then
+      [[ -d "$_mp" || -f "$_mp" ]] || continue
+    else
+      [[ -f "$_mp" ]] || continue
+    fi
+    TARGET_PATH="$_mp"
+    RESOLVED_PATH="$_mp"
+    _mp_found=1
+    break
+  done
+  if (( _mp_found == 0 )); then
+    # No match found — record error for JSON renderer, don't call die
+    add_error "<<multipath>>" "no_match" "No file found in paths candidates: ${_mp_tried[*]}"
+    TARGET_PATH=""
+    RESOLVED_PATH=""
+    MULTI_PATH_NO_MATCH=1
+  fi
+  unset _mp_found _mp_tried _mp _MULTI_PATH_ARR
+fi
+
 if (( FROM_STDIN == 1 )); then
   [[ -n "$STDIN_FORMAT" ]] || die "--from-stdin requires --stdin-format=paths|unified-diff"
   case "$STDIN_FORMAT" in
@@ -1399,7 +1489,20 @@ if (( FROM_STDIN == 1 )); then
     die "File selectors and positional path are not valid with --from-stdin"
   fi
 else
-  [[ -n "$TARGET_PATH" ]] || die "Missing file argument. Try: fread --help"
+if (( MULTI_PATH_NO_MATCH == 1 )); then
+compute_next_hint
+if [[ "$OUTPUT" == "json" ]]; then
+render_json
+elif [[ "$OUTPUT" == "paths" ]]; then
+render_paths
+else
+render_pretty
+fi
+exit 1
+fi
+if [[ -z "$TARGET_PATH" ]] && (( ERR_COUNT == 0 )); then
+die "Missing file argument. Try: fread --help"
+fi
 fi
 
 # -------------------------

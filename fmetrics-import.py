@@ -176,6 +176,11 @@ def main() -> int:
                 raw = handle.readline()
                 if not raw:
                     break
+                # Only advance the cursor past lines that end with a newline.
+                # A partial trailing line (no newline at EOF) is left behind so
+                # the next import retries it once the writer has flushed.
+                if not raw.endswith(b"\n"):
+                    break
                 end_offset = handle.tell()
                 if not raw.strip():
                     continue

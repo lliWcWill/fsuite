@@ -74,6 +74,15 @@ const theme = {
   symbol:  (s) => `${fg(102, 217, 239)}${s}${RESET}`,
 };
 
+// Highlight the filename in a path — directory stays dim, filename gets color
+function colorPath(fullPath) {
+  if (!fullPath) return "";
+  const p = shortPath(fullPath);
+  const slash = p.lastIndexOf("/");
+  if (slash === -1) return theme.path(p);
+  return `${DIM}${p.slice(0, slash + 1)}${UNDIM}${theme.path(p.slice(slash + 1))}`;
+}
+
 // Map hljs CSS class → ANSI color
 const HLJS_CLASS_TO_ANSI = {
   "hljs-keyword":    fg(249, 38, 114),
@@ -187,6 +196,7 @@ const TOOL_PALETTE = {
   fcontent: 27, fsearch: 27, fs: 27,            // royal blue — search
   fmap: 129, fcase: 129,                        // dark violet — structure/knowledge
   fprobe: 196, fmetrics: 196,                   // pure red — diagnostic/recon
+  fbash: 220,                                    // gold — shell execution
 };
 function coloredTitle(name) {
   const c = TOOL_PALETTE[name];
@@ -215,8 +225,9 @@ function shortPath(fullPath) {
 function colorizeDiff(diff, filePath) {
   if (!diff) return "";
   // MCP runs as stdio subprocess — stdout.columns is undefined (piped).
-  // Try stderr (may still be a TTY), env var, or fall back to generous default.
-  const cols = process.stderr.columns || parseInt(process.env.COLUMNS, 10) || 160;
+  // Try stderr (may still be a TTY), env var, or fall back conservatively.
+  // 120 is safer than 160 — avoids Ink text wrapping that breaks backgrounds.
+  const cols = process.stderr.columns || parseInt(process.env.COLUMNS, 10) || 120;
   const lang = detectLang(filePath || "");
 
   let oldLine = 0, newLine = 0;
@@ -293,7 +304,8 @@ function renderFeditResult(jsonStr) {
       }
     }
 
-    // Status-only body — no path line, Claude Code header already shows it
+    // Build clean metadata line like fmap's "27 symbols | typescript"
+    // Shows operation summary: "Applied +2 -2 lines | replace | function_name"
     const parts = [];
     if (d.applied) {
       parts.push(theme.ok("Applied"));
@@ -305,8 +317,14 @@ function renderFeditResult(jsonStr) {
     if (added > 0 || removed > 0) parts.push("lines");
     if (!d.preconditions_ok) parts.push(theme.error("PRECONDITION FAILED"));
 
-    let out = parts.join(" ") + "\n";
+    // Add operation context on same line (mode, anchors used)
+    const ctx = [];
+    if (d.mode && d.mode !== "patch") ctx.push(d.mode);
+    if (d.function_name) ctx.push(`fn:${d.function_name}`);
+    else if (d.lines_start) ctx.push(`L${d.lines_start}:${d.lines_end || ""}`);
+    if (ctx.length) parts.push(theme.meta("| " + ctx.join(" | ")));
 
+    let out = colorPath(d.path) + " " + parts.join(" ") + "\n";
     if (d.error_code) {
       out += theme.error(`Error: ${d.error_code}`) + ` \u2014 ${d.error_detail}\n`;
       return out;
@@ -326,6 +344,14 @@ function renderFeditResult(jsonStr) {
       }
     }
 
+    // Warnings
+    if (d.warnings && Array.isArray(d.warnings) && d.warnings.length > 0) {
+      out += "\n";
+      for (const warning of d.warnings) {
+        out += theme.warn(`⚠ Warning: ${warning}`) + "\n";
+      }
+    }
+
     return out;
   } catch {
     return null;
@@ -337,12 +363,16 @@ function renderFreadResult(jsonStr) {
     const d = JSON.parse(jsonStr);
     if (!d.tool || d.tool !== "fread") return null;
 
-    let meta = `${d.lines_emitted} lines | ~${d.token_estimate} tokens`;
+    // Clean metadata line with dividers: "21 lines | ~274 tokens | L120:140"
+    const metaParts = [`${d.lines_emitted} lines`, `~${d.token_estimate} tokens`];
     if (d.symbol_resolution) {
-      meta += ` | L${d.symbol_resolution.line_start}-${d.symbol_resolution.line_end}`;
+      metaParts.push(`L${d.symbol_resolution.line_start}-${d.symbol_resolution.line_end}`);
+    } else if (d.chunks?.[0]?.start_line) {
+      metaParts.push(`L${d.chunks[0].start_line}:${d.chunks[0].end_line}`);
     }
-    if (d.truncated) meta += ` ${theme.warn("truncated")}`;
-    let out = theme.meta(meta) + "\n";
+    if (d.truncated) metaParts.push(theme.warn("truncated"));
+    const filePath = d.symbol_resolution?.path || d.files?.[0]?.path || d.path || "";
+    let out = colorPath(filePath) + " " + theme.meta(metaParts.join(" | ")) + "\n";
 
     for (const w of (d.warnings || [])) {
       out += `   ${theme.warn("\u26a0 " + w)}\n`;
@@ -358,8 +388,22 @@ function renderFreadResult(jsonStr) {
 
     const lang = detectLang(d.symbol_resolution?.path || d.files?.[0]?.path || "");
 
+    // Cap pretty output at 18 lines — user can Ctrl+O to see full output
+    const MAX_PRETTY_LINES = 18;
+    let lineCount = 0;
+    let totalLines = 0;
+    for (const chunk of (d.chunks || [])) {
+      totalLines += chunk.content?.length || 0;
+    }
+
     for (const chunk of (d.chunks || [])) {
       for (const rawLine of chunk.content) {
+        if (lineCount >= MAX_PRETTY_LINES) {
+          const remaining = totalLines - MAX_PRETTY_LINES;
+          out += theme.meta(`  ... ${remaining} more lines (${totalLines} total)`) + "\n";
+          lineCount = -1; // sentinel to break outer loop
+          break;
+        }
         const m = rawLine.match(/^(\d+)(\s{2,})(.*)/);
         if (m) {
           const ln = `${DIM} ${m[1].padStart(4)} ${UNDIM}`;
@@ -368,7 +412,9 @@ function renderFreadResult(jsonStr) {
         } else {
           out += rawLine + "\n";
         }
+        lineCount++;
       }
+      if (lineCount === -1) break;
     }
 
     if (d.next_hint) out += theme.meta(`next: ${d.next_hint}`) + "\n";
@@ -409,16 +455,17 @@ function renderFmapResult(jsonStr) {
 }
 
 function renderFcontentResult(jsonStr) {
-try {
-  const d = JSON.parse(jsonStr);
-  if (!d.tool || d.tool !== "fcontent") return null;
+  try {
+    const d = JSON.parse(jsonStr);
+    if (!d.tool || d.tool !== "fcontent") return null;
 
-  const query = d.query || "";
+    const query = d.query || "";
 
-  if (d.shown_matches === 0) {
-    return theme.meta("no matches") + "\n";
-  }
-  let out = theme.meta(`${d.total_matched_files} files, ${d.shown_matches} matches`) + "\n";
+    if (d.shown_matches === 0) {
+      return theme.meta("no matches") + "\n";
+    }
+    // Clean summary: just files + matches count (no max_matches noise)
+    let out = theme.meta(`${d.total_matched_files} files, ${d.shown_matches} matches`) + "\n";
 
   for (const m of (d.matches || [])) {
     // Parse "filepath:linenum:content"
@@ -535,24 +582,331 @@ function colorByExt(filename) {
   return EXT_COLORS[ext] || fg(248, 248, 242);
 }
 
-function renderFsearchResult(jsonStr) {
-try {
-  const d = JSON.parse(jsonStr);
-  if (!d.tool || d.tool !== "fsearch") return null;
+function renderFsearchStructured(d) {
+  if (!d || d.tool !== "fsearch") return null;
 
-  let out = theme.meta(`${d.total_found} files found`) + "\n";
+  const lines = [];
+  const countLabel = d.count_mode === "lower_bound" ? `${d.total_found}+` : `${d.total_found}`;
+  const summary = d.has_more
+    ? `${d.shown}/${countLabel} results shown (more available)`
+    : `${d.total_found} results found`;
+  lines.push(theme.meta(summary));
 
-  for (const filePath of (d.results || [])) {
-    const short = shortPath(filePath);
+  const hits = (d.hits && d.hits.length > 0)
+    ? d.hits
+    : (d.results || []).map((path) => ({ path, kind: "file", matched_on: "name" }));
+
+  for (const hit of hits) {
+    const fullPath = hit.path;
+    const short = shortPath(fullPath);
     const filename = short.split("/").pop() || short;
     const dir = short.substring(0, short.length - filename.length);
-    const color = colorByExt(filename);
-    out += `  ${DIM}${dir}${UNDIM}${color}${BOLD}${filename}${RESET}\n`;
+    const suffix = hit.kind === "dir" ? "/" : "";
+    const matchNote = hit.matched_on && hit.matched_on !== "name"
+      ? `${DIM} (${hit.matched_on})${RESET}`
+      : "";
+
+    if (hit.kind === "dir") {
+      lines.push(`  ${theme.path(short)}${suffix}${matchNote}`);
+    } else {
+      const color = colorByExt(filename);
+      lines.push(`  ${DIM}${dir}${UNDIM}${color}${BOLD}${filename}${RESET}${matchNote}`);
+    }
+
+    if (hit.kind === "dir" && hit.preview?.length) {
+      for (const child of hit.preview) {
+        const childSuffix = child.kind === "dir" ? "/" : "";
+        lines.push(`    ${DIM}${child.name}${childSuffix}${RESET}`);
+      }
+      if (hit.preview_truncated) {
+        lines.push(`    ${DIM}...${RESET}`);
+      }
+    }
   }
-  return out;
-} catch {
-  return null;
+
+  if (d.next_hint) {
+    const nhArgs = Object.entries(d.next_hint.args || {})
+      .map(([k, v]) => `${fg(166, 226, 46)}${k}${RESET}${DIM}: ${UNDIM}${fg(230, 219, 116)}${v}${RESET}`)
+      .join(DIM + ", " + RESET);
+    lines.push("");
+    lines.push(`${fg(190, 132, 255)}${BOLD}next ->${RESET} ${fg(102, 217, 239)}${d.next_hint.tool}${RESET}(${nhArgs})`);
+  }
+
+  return lines.join("\n") + "\n";
 }
+
+function renderFsearchResult(jsonStr) {
+  try {
+    return renderFsearchStructured(JSON.parse(jsonStr));
+  } catch {
+    return null;
+  }
+}
+
+const fsearchNextHintSchema = z.object({
+  tool: z.string(),
+  args: z.object({}).passthrough(),
+});
+
+const fsearchPreviewEntrySchema = z.object({
+  name: z.string(),
+  kind: z.enum(["file", "dir"]),
+});
+
+const fsearchHitSchema = z.object({
+  path: z.string(),
+  kind: z.enum(["file", "dir"]),
+  matched_on: z.enum(["name", "path", "both"]),
+  preview: z.array(fsearchPreviewEntrySchema).optional(),
+  preview_truncated: z.boolean().optional(),
+  next_hint: fsearchNextHintSchema.nullable().optional(),
+}).passthrough();
+
+// ─── fcase pretty renderer ────────────────────────────────────────
+function renderFcaseResult(jsonStr) {
+  try {
+    const d = JSON.parse(jsonStr);
+    // Only render case views — skip export (has .events) which needs raw JSON
+    if (!d.cases && !d.case) return null;
+    if (d.events) return null;
+
+    // Single case view (status, note, init, resolve, etc.)
+    if (d.case) {
+      const c = d.case;
+      const icon = c.status === "resolved" ? `${fg(80,200,80)}\u2713${RESET}`
+                 : c.status === "archived" ? `${DIM}\u25CB${RESET}`
+                 : c.status === "deleted"  ? `${fg(255,80,80)}\u2717${RESET}`
+                 : `${fg(255,200,50)}\u25CF${RESET}`;
+      const pri = c.priority === "critical" ? ` ${fg(255,80,80)}crit${RESET}`
+                : c.priority === "high"     ? ` ${fg(255,80,80)}high${RESET}`
+                : "";
+      let out = `${icon} ${BOLD}#${c.id}${RESET} ${c.slug}${pri}\n`;
+      if (c.goal) out += `${DIM}  ${c.goal}${UNDIM}\n`;
+      if (c.resolution_summary) out += `${fg(80,200,80)}  ${c.resolution_summary}${RESET}\n`;
+      if (c.next_move) out += `${fg(255,200,50)}  next: ${c.next_move}${RESET}\n`;
+      // Pass through any message from the action
+      if (d.message) out += `${DIM}${d.message}${UNDIM}\n`;
+      return out;
+    }
+
+    // Case list view
+    const cases = d.cases || [];
+    const resolved = cases.filter(c => c.status === "resolved");
+    const open = cases.filter(c => c.status === "open");
+    const archived = cases.filter(c => c.status === "archived");
+    const deleted = cases.filter(c => c.status === "deleted");
+
+    // Priority sort: critical > high > medium > low > normal
+    const priOrder = { critical: 0, high: 1, medium: 2, low: 3, normal: 4 };
+    const sortByPri = (a, b) => (priOrder[a.priority] ?? 4) - (priOrder[b.priority] ?? 4);
+
+    // Summary bar
+    const parts = [`${cases.length} cases`];
+    if (resolved.length) parts.push(`${resolved.length} resolved`);
+    if (open.length) parts.push(`${open.length} open`);
+    if (archived.length) parts.push(`${archived.length} archived`);
+    if (deleted.length) parts.push(`${deleted.length} deleted`);
+    let out = theme.meta(parts.join(" | ")) + "\n";
+
+    const renderCase = (c) => {
+      const icon = c.status === "resolved" ? `${fg(80,200,80)}\u2713${RESET}`
+                 : c.status === "archived" ? `${DIM}\u25CB${RESET}`
+                 : c.status === "deleted" ? `${fg(255,80,80)}\u2717${RESET}`
+                 : `${fg(255,200,50)}\u25CF${RESET}`;
+      const pri = c.priority === "critical" ? `${fg(255,80,80)}crit${RESET}   `
+                : c.priority === "high"     ? `${fg(255,80,80)}high${RESET}   `
+                : "       ";
+      const slug = c.slug.length > 24 ? c.slug : c.slug.padEnd(24);
+      const goal = c.resolution_summary || c.goal || "";
+      const goalTrim = goal.length > 50 ? goal.slice(0, 47) + "..." : goal;
+      return `  ${icon} ${BOLD}#${String(c.id).padStart(2)}${RESET} ${slug} ${pri}${DIM}\u2014 ${goalTrim}${UNDIM}`;
+    };
+
+    const MAX_PER_GROUP = 6;
+
+    if (resolved.length) {
+      resolved.sort(sortByPri);
+      out += `${fg(80,200,80)}${BOLD} RESOLVED (${resolved.length})${RESET}\n`;
+      resolved.slice(0, MAX_PER_GROUP).forEach(c => { out += renderCase(c) + "\n"; });
+      if (resolved.length > MAX_PER_GROUP) out += `${DIM}  ... +${resolved.length - MAX_PER_GROUP} more${UNDIM}\n`;
+    }
+    if (open.length) {
+      open.sort(sortByPri);
+      out += `${fg(255,200,50)}${BOLD} OPEN (${open.length})${RESET}\n`;
+      open.slice(0, MAX_PER_GROUP).forEach(c => { out += renderCase(c) + "\n"; });
+      if (open.length > MAX_PER_GROUP) out += `${DIM}  ... +${open.length - MAX_PER_GROUP} more (ctrl+o to expand)${UNDIM}\n`;
+    }
+    if (archived.length) {
+      out += `${DIM}${BOLD} ARCHIVED (${archived.length})${RESET}\n`;
+      archived.slice(0, 3).forEach(c => { out += renderCase(c) + "\n"; });
+      if (archived.length > 3) out += `${DIM}  ... +${archived.length - 3} more${UNDIM}\n`;
+    }
+
+    if (deleted.length) {
+      deleted.sort(sortByPri);
+      out += `${fg(255,80,80)}${BOLD} DELETED (${deleted.length})${RESET}\n`;
+      deleted.slice(0, MAX_PER_GROUP).forEach(c => { out += renderCase(c) + "\n"; });
+      if (deleted.length > MAX_PER_GROUP) out += `${DIM}  ... +${deleted.length - MAX_PER_GROUP} more${UNDIM}\n`;
+    }
+
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+// ─── fprobe pretty renderer ──────────────────────────────────────
+function renderFprobeResult(jsonStr, ctx = {}) {
+  try {
+    const d = JSON.parse(jsonStr);
+    // Handle array results from strings and scan modes.
+    const items = Array.isArray(d) ? d : d.items || d.matches || d.results;
+    if (items && Array.isArray(items)) {
+      const firstItem = items[0];
+      const isScanResult = ctx.action === "scan" || (!!firstItem &&
+        typeof firstItem === "object" &&
+        (firstItem.match_length !== undefined ||
+          firstItem.context_start !== undefined ||
+          firstItem.context_end !== undefined));
+      const mode = isScanResult ? "scan" : "strings";
+      let out = theme.meta(`fprobe ${mode} | ${items.length} matches`) + "\n";
+      const filter = (d && typeof d === "object" && !Array.isArray(d)) ? d.filter : undefined;
+      items.forEach(item => {
+        const offset = item.offset !== undefined ? item.offset : item.start;
+        const hex = offset !== undefined ? `0x${offset.toString(16).padStart(4, "0")}` : "    ";
+        let text = item.text || item.content || item.value || "";
+        if (text.length > 80) text = "..." + text.slice(-77);
+        // Highlight filter term if present
+        if (filter && text.includes(filter)) {
+          text = text.replace(new RegExp(filter.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"),
+            `${fg(255,200,50)}${BOLD}${filter}${RESET}`);
+        }
+        out += `${fg(190,132,255)}${hex}${RESET} \u2502 ${text}\n`;
+      });
+      return out;
+    }
+
+    // Scan mode results
+    if (d.matches !== undefined && typeof d.matches === "number") {
+      let out = theme.meta(`fprobe scan | ${d.matches} matches`) + "\n";
+      if (d.offsets && Array.isArray(d.offsets)) {
+        d.offsets.forEach(o => {
+          const hex = `0x${o.toString(16).padStart(8, "0")}`;
+          out += `${fg(190,132,255)}${hex}${RESET}\n`;
+        });
+      }
+      if (d.context_preview) out += `${DIM}${d.context_preview}${UNDIM}\n`;
+      return out;
+    }
+
+    // Patch mode result
+    if (d.patched !== undefined || d.dry_run !== undefined) {
+      const patchedCount = Number.isInteger(d.patched) ? d.patched : 0;
+      const noun = patchedCount === 1 ? "replacement" : "replacements";
+      const status = d.dry_run ? `${fg(255,200,50)}Dry run${RESET}` : patchedCount > 0 ? `${fg(80,200,80)}Patched${RESET}` : `${fg(255,80,80)}Failed${RESET}`;
+      let out = `${status} ${patchedCount} ${noun}`;
+      if (d.file) out += ` in ${d.file}`;
+      out += "\n";
+      return out;
+    }
+
+    // Window mode — just show the hex/printable dump
+    if (d.window || d.hex || d.printable) {
+      return null; // fall through to raw JSON for window dumps
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// ─── fbash pretty renderer ──────────────────────────────────────
+function renderFbashResult(jsonStr) {
+  const d = maybeParseJson(jsonStr);
+  if (!d || d.tool !== "fbash") return null;
+
+  const lines = [];
+
+  // Header: class badge + exit code + duration
+  const classBadge = {
+    build: fg(166, 226, 46),
+    test: fg(102, 217, 239),
+    git: fg(190, 132, 255),
+    install: fg(253, 151, 31),
+    service: fg(220, 90, 90),
+    query: fg(200, 200, 200),
+    search: fg(102, 217, 239),
+  };
+  const cc = classBadge[d.command_class] || fg(200, 200, 200);
+  const exitColor = d.exit_code == null ? DIM : d.exit_code === 0 ? fg(80, 200, 80) : fg(220, 90, 90);
+  lines.push(
+    `${cc}${BOLD}${d.command_class}${RESET} ` +
+    `${exitColor}exit=${d.exit_code}${RESET} ` +
+    `${DIM}${d.duration_ms}ms${RESET} ` +
+      `${DIM}cwd=${RESET}${colorPath(d.cwd)}`
+  );
+
+  // Truncation warning
+  if (d.truncated) {
+    lines.push(
+      `${fg(230, 219, 116)}  truncated: ${d.stdout_lines} of ${d.lines_total} lines ` +
+      `(${d.truncation_reason})${RESET}`
+    );
+  }
+
+  // Routing suggestion
+  if (d.routing_suggestion && d.routing_suggestion.tool) {
+    lines.push(
+      `${fg(190, 132, 255)}  hint:${RESET} use ${fg(102, 217, 239)}${d.routing_suggestion.tool}${RESET} ` +
+      `${DIM}— ${d.routing_suggestion.reason}${RESET}`
+    );
+  }
+
+  lines.push("");
+
+  // Output body
+  if (d.stdout) {
+    lines.push(d.stdout);
+  }
+  if (d.stderr) {
+    lines.push(`${fg(220, 90, 90)}--- stderr ---${RESET}`);
+    lines.push(d.stderr);
+  }
+
+  // Warnings
+  if (d.warnings && Array.isArray(d.warnings) && d.warnings.length > 0) {
+    lines.push("");
+    for (const warning of d.warnings) {
+      lines.push(`${fg(230, 219, 116)}${BOLD}warning:${RESET} ${warning}`);
+    }
+  }
+
+  // Errors
+  if (d.errors && Array.isArray(d.errors) && d.errors.length > 0) {
+    lines.push("");
+    for (const error of d.errors) {
+      lines.push(`${fg(220, 90, 90)}${BOLD}error:${RESET} ${error}`);
+    }
+  }
+
+  // Metadata (background job ID)
+  if (d.metadata?.background_job_id) {
+    lines.push("");
+    lines.push(`${fg(117, 113, 94)}background_job_id: ${d.metadata.background_job_id}${RESET}`);
+  }
+
+  // next_hint
+  if (d.next_hint) {
+    lines.push("");
+    let hintText = d.next_hint;
+    if (typeof d.next_hint === "object") {
+      hintText = JSON.stringify(d.next_hint, null, 2);
+    }
+    lines.push(`${fg(190, 132, 255)}${BOLD}next ->${RESET} ${hintText}`);
+  }
+
+  return lines.join("\n");
 }
 
 // Tool → renderer mapping
@@ -563,30 +917,152 @@ const RENDERERS = {
   fmap: renderFmapResult,
   fcontent: renderFcontentResult,
   ftree: renderFtreeResult,
+  fls: renderFtreeResult,
   fsearch: renderFsearchResult,
+  fcase: renderFcaseResult,
+  fprobe: renderFprobeResult,
+  fbash: renderFbashResult,
 };
 
+function maybeParseJson(raw) {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeStructuredContent(parsed) {
+  if (parsed === undefined) return undefined;
+  // MCP results are happiest when structured content is object-shaped.
+  // Preserve array payloads without forcing agents to scrape text output.
+  if (Array.isArray(parsed)) return { items: parsed };
+  return parsed;
+}
+
+// ─── Helper: strip redundant/telemetry fields from structured JSON ──
+// Runs AFTER normalizeStructuredContent, BEFORE return in cli().
+// Goal: reduce token waste — agents don't need internal telemetry or
+// duplicate representations (lines[] vs tree_json, size_human vs size_bytes).
+function slimStructuredContent(obj) {
+  if (obj === undefined || obj === null) return obj;
+
+  // Top-level keys to remove entirely
+  const TOP_STRIP = new Set([
+    "tool", "version", "mode", "backend",
+    "budget_seconds", "budget_used_seconds", "budget_budget",
+    "recon_depth", "ignored",
+  ]);
+
+  // Keys to remove from nested objects only (keep top-level duration_ms)
+  const NESTED_STRIP = new Set([
+    "version",
+    "budget_seconds", "budget_used_seconds", "budget_budget",
+    "recon_depth", "ignored",
+    "size_human",
+  ]);
+
+  function slim(node, depth) {
+    if (node === null || node === undefined) return node;
+    if (depth >= 20) return node;
+    if (Array.isArray(node)) return node.map(item => slim(item, depth));
+    if (typeof node !== "object") return node;
+
+    const strip = depth === 0 ? TOP_STRIP : NESTED_STRIP;
+    const out = {};
+    for (const [k, v] of Object.entries(node)) {
+      if (strip.has(k)) continue;
+      // Drop lines[] from tree output — tree_json has the data
+      if (k === "lines" && node.tree_json) continue;
+      out[k] = slim(v, depth + 1);
+    }
+
+    // Flatten single-key nesting: { snapshot: { recon: X, tree: Y } } stays,
+    // but { result: { ...data } } flattens when only one key remains.
+    const keys = Object.keys(out);
+    if (keys.length === 1) {
+      const only = out[keys[0]];
+      // Flatten { wrapper: <object> } but not { wrapper: <primitive/array> }
+      // Exception: keep "items" wrapper for arrays (normalizeStructuredContent made it)
+      if (typeof only === "object" && only !== null && !Array.isArray(only) && keys[0] !== "items") {
+        return only;
+      }
+    }
+    return out;
+  }
+
+  return slim(obj, 0);
+}
+
+
 // ─── Helper: run CLI tool, pretty-render if possible ─────────────
-async function cli(tool, args, renderAs) {
+async function cli(tool, args, renderAs, renderContext) {
   try {
     const { stdout, stderr } = await run(resolveTool(tool), args, EXEC_OPTS);
     const raw = stdout || stderr || "(no output)";
+    const parsed = slimStructuredContent(normalizeStructuredContent(maybeParseJson(raw)));
 
-    // Try pretty rendering
-    const renderer = RENDERERS[renderAs || tool];
-    if (renderer) {
-      const pretty = renderer(raw);
-      if (pretty) return { content: [{ type: "text", text: pretty }] };
+        // Pretty ANSI for user display. structuredContent intentionally omitted —
+        // Claude Code's "early return blender" discards content[text] when
+        // structuredContent exists, so rendered tools must return content[text] only.
+      const renderer = RENDERERS[renderAs || tool];
+      if (renderer) {
+        const pretty = renderer(raw, renderContext);
+        if (pretty) {
+            // When renderer produces pretty ANSI, return content[text] only.
+            // Claude Code's "early return blender" discards content[text]
+            // when structuredContent exists — so we must omit it here.
+            const result = { content: [{ type: "text", text: pretty }] };
+            return result;
+        }
+      }
+
+    const result = { content: [{ type: "text", text: raw }] };
+    if (parsed !== undefined) result.structuredContent = parsed;
+    return result;
+  } catch (err) {
+    // Try to parse JSON from stdout first, then stderr, then fall back to plain text
+    let errorText = err.message;
+    let parsed = undefined;
+    const parsedErrorText = (value) => {
+      if (!value || typeof value !== "object") return "";
+      if (value.errors?.length) {
+        return value.errors.map((e) => e.error_detail || e.error || e).join("; ");
+      }
+      if (value.error_detail) return value.error_detail;
+      if (value.error) return value.error;
+      if (typeof value.stderr === "string" && value.stderr.trim()) return value.stderr;
+      if (typeof value.stdout === "string" && value.stdout.trim()) return value.stdout;
+      return "";
+    };
+
+    if (err.stdout) {
+      try {
+        parsed = JSON.parse(err.stdout);
+        const message = parsedErrorText(parsed);
+        if (message) errorText = message;
+      } catch { /* not JSON in stdout, try stderr */ }
     }
 
-    return { content: [{ type: "text", text: raw }] };
-  } catch (err) {
-    return { content: [{ type: "text", text: `Error running ${tool}: ${err.stderr || err.stdout || err.message}` }], isError: true };
+    if ((errorText === err.message || !parsed) && err.stderr) {
+      try {
+        const stderrParsed = JSON.parse(err.stderr);
+        if (!parsed) parsed = stderrParsed;
+        const message = parsedErrorText(stderrParsed);
+        if (message) errorText = message;
+      } catch { /* not JSON in stderr, use plain text */ }
+    }
+
+    if (errorText === err.message) {
+      errorText = err.stderr || err.stdout || err.message;
+    }
+
+    return { content: [{ type: "text", text: `Error running ${tool}: ${errorText}` }], isError: true };
   }
 }
 
 // ─── Server ──────────────────────────────────────────────────────
-const server = new McpServer({ name: "fsuite", version: "2.3.0" });
+const server = new McpServer({ name: "fsuite", version: "3.1.0" });
 
 // ─── ftree ───────────────────────────────────────────────────────
 server.registerTool(
@@ -636,7 +1112,8 @@ server.registerTool(
       "Budgeted file reading with symbol resolution. Use symbol to read exactly one function/class " +
       "by name — no guessing line ranges. Use around for context around a pattern match.",
     inputSchema: z.object({
-      path: z.string().describe("File path (or directory when using symbol)"),
+      path: z.string().optional().describe("File path (or directory when using symbol). Ignored when paths is provided."),
+      paths: z.array(z.string()).optional().describe("Array of file paths to try in order. Returns content from first existing path."),
       symbol: z.string().optional().describe("Read exactly one symbol (function, class, etc.) by name"),
       lines: z.string().optional().describe("Line range, e.g. '120:220'"),
       around: z.string().optional().describe("Show context around first literal pattern match"),
@@ -648,8 +1125,15 @@ server.registerTool(
       max_lines: z.number().optional().describe("Cap total lines emitted (default 200)"),
     }),
   },
-  async ({ path, symbol, lines, around, around_line, before, after, head, tail, max_lines }) => {
-    const args = [path];
+  async ({ path, paths, symbol, lines, around, around_line, before, after, head, tail, max_lines }) => {
+    const args = [];
+    if (paths && paths.length > 0) {
+      args.push("--paths", paths.map((p) => p.replace(/,/g, "\\,")).join(","));
+    } else if (path) {
+      args.push(path);
+    } else {
+      return { content: [{ type: "text", text: "fread: error: Either path or paths is required" }], isError: true };
+    }
     if (symbol) args.push("--symbol", symbol);
     if (lines) args.push("-r", lines);
     if (around) args.push("--around", around);
@@ -690,17 +1174,48 @@ server.registerTool(
   "fsearch",
   {
     title: coloredTitle("fsearch"),
-    description: "Find files by name, glob pattern, or extension. Returns matching file paths.",
+    description: "Find files or directories by name or path, with optional shallow directory preview.",
     inputSchema: z.object({
-      query: z.string().describe("Glob pattern or filename (e.g. '*.rs', 'app.rs')"),
+      query: z.string().describe("Literal, glob, or extension-style search input"),
       path: z.string().optional().describe("Directory to search"),
-      output: z.enum(["json", "paths", "pretty"]).default("json"),
+      type: z.enum(["file", "dir", "both"]).optional()
+        .describe("Search files, directories, or both. Default: file"),
+      match: z.enum(["name", "path", "both"]).optional()
+        .describe("Match against basename, full path, or both. Default: name"),
+      mode: z.enum(["auto", "literal", "glob", "ext"]).optional()
+        .describe("Query interpretation mode. Default: auto"),
+      preview: z.number().optional()
+        .describe("Directory preview child limit. Default: 0"),
     }),
+    // outputSchema removed: 2.1.88 StructuredOutput schema cache bug
+    // causes silent failures with multiple schemas across tools.
   },
-  async ({ query, path, output }) => {
-    const args = ["-o", output, query];
+  async ({ query, path, type, match, mode, preview }) => {
+    const args = ["-o", "json"];
+    if (type) args.push("--type", type);
+    if (match) args.push("--match", match);
+    if (mode) args.push("--mode", mode);
+    if (preview !== undefined) args.push("--preview", String(preview));
+    args.push(query);
     if (path) args.push(path);
-    return cli("fsearch", args);
+    try {
+      const { stdout } = await run(resolveTool("fsearch"), args, EXEC_OPTS);
+      try {
+        const parsed = JSON.parse(stdout);
+        const rendered = renderFsearchStructured(parsed);
+        if (typeof rendered !== "string") {
+          return { content: [{ type: "text", text: stdout }] };
+        }
+        return {
+          content: [{ type: "text", text: rendered }],
+        };
+      } catch (renderErr) {
+        console.error("fsearch render error:", renderErr);
+        return { content: [{ type: "text", text: stdout }] };
+      }
+    } catch (err) {
+      return { content: [{ type: "text", text: `fsearch error: ${err.stderr || err.message || "unknown"}` }], isError: true };
+    }
   }
 );
 
@@ -725,9 +1240,10 @@ server.registerTool(
       lines: z.string().optional().describe("Replace line range directly, e.g. '71:73'. Fastest mode — no text matching needed. Use line numbers from fread."),
       apply: z.boolean().default(true).describe("Apply changes (default: true). Set false for dry-run preview."),
       expect: z.string().optional().describe("Precondition — text that must exist in file for edit to proceed"),
+      no_validate: z.boolean().optional().describe("Skip structural validation (escape hatch for JSONC, test fixtures)"),
     }),
   },
-  async ({ path, replace, with_text, function_name, after, before, lines, apply, expect }) => {
+  async ({ path, replace, with_text, function_name, after, before, lines, apply, expect, no_validate }) => {
     const args = [path];
     if (function_name) args.push("--function", function_name);
     if (lines) {
@@ -741,6 +1257,7 @@ server.registerTool(
     }
     if (apply) args.push("--apply");
     if (expect) args.push("--expect", expect);
+    if (no_validate) args.push("--no-validate");
     args.push("-o", "json");
     return cli("fedit", args);
   }
@@ -789,48 +1306,61 @@ server.registerTool(
 );
 
 // ─── fcase ───────────────────────────────────────────────────────
-server.registerTool(
-  "fcase",
-  {
-    title: coloredTitle("fcase"),
-    description:
-      "Investigation continuity ledger. Track findings, evidence, and handoff state across sessions. Supports full lifecycle: open, resolve, archive, delete. Search resolved cases with find.",
-    inputSchema: z.object({
-      action: z.enum(["init", "note", "status", "list", "next", "handoff", "export",
-        "resolve", "archive", "delete", "find"]).describe("Case action"),
-      slug: z.string().optional().describe("Case identifier (e.g. 'auth-refactor')"),
-      goal: z.string().optional().describe("Case goal (for init)"),
-      body: z.string().optional().describe("Note body (for note/next)"),
-      priority: z.enum(["low", "medium", "high", "critical"]).optional(),
-      summary: z.string().optional().describe("Resolution summary (required for resolve action)"),
-      reason: z.string().optional().describe("Deletion reason (required for delete action)"),
-      confirm_delete: z.string().optional().describe("Must be literal 'DELETE' to confirm deletion"),
-      query: z.string().optional().describe("Search query (for find action)"),
-      deep: z.boolean().optional().describe("Deep search including evidence/hypotheses (for find)"),
-      statuses: z.string().optional().describe("Comma-separated status filter: open,resolved,archived,deleted,all (for list/find)"),
-    }),
-  },
-  async ({ action, slug, goal, body, priority, summary, reason, confirm_delete, query, deep, statuses }) => {
-    const args = [action];
-    if (action === "find" && query) {
-      args.push(query);
-    } else if (slug) {
-      args.push(slug);
+  server.registerTool(
+    "fcase",
+    {
+      title: coloredTitle("fcase"),
+      description:
+        "Investigation continuity ledger. Track findings, evidence, and handoff state across sessions. Supports full lifecycle: open, resolve, archive, delete. Search resolved cases with find.",
+      inputSchema: z.object({
+        action: z.enum(["init", "note", "status", "list", "next", "handoff", "export",
+          "resolve", "archive", "delete", "find"]).describe("Case action"),
+        slug: z.string().optional().describe("Case identifier (e.g. 'auth-refactor')"),
+        goal: z.string().optional().describe("Case goal (for init)"),
+        body: z.string().optional().describe("Note body (for note/next)"),
+        priority: z.enum(["low", "medium", "high", "critical"]).optional(),
+        summary: z.string().optional().describe("Resolution summary (required for resolve action)"),
+        reason: z.string().optional().describe("Deletion reason (required for delete action)"),
+        confirm_delete: z.string().optional().describe("Must be literal 'DELETE' to confirm deletion"),
+        query: z.string().optional().describe("Search query (for find action)"),
+        deep: z.boolean().optional().describe("Deep search including evidence/hypotheses (for find)"),
+        statuses: z.string().optional().describe("Comma-separated status filter: open,resolved,archived,deleted,all (for list/find)"),
+      }),
+    },
+    async ({ action, slug, goal, body, priority, summary, reason, confirm_delete, query, deep, statuses }) => {
+      const args = [action];
+      const outputModeByAction = {
+        init: "json",
+        status: "json",
+        list: "json",
+        next: "json",
+        handoff: "json",
+        export: "json",
+        resolve: "json",
+        archive: "json",
+        delete: "json",
+        find: "json",
+      };
+      if (action === "find" && query) {
+        args.push(query);
+      } else if (slug) {
+        args.push(slug);
+      }
+      if (goal) args.push("--goal", goal);
+      if (body) args.push("--body", body);
+      if (priority) args.push("--priority", priority);
+      if (summary) args.push("--summary", summary);
+      if (reason) args.push("--reason", reason);
+      if (confirm_delete) args.push("--confirm", confirm_delete);
+      if (deep) args.push("--deep");
+      if (statuses) args.push("--status", statuses);
+      const outputMode = outputModeByAction[action];
+      if (outputMode) args.push("-o", outputMode);
+      return cli("fcase", args);
     }
-    if (goal) args.push("--goal", goal);
-    if (body) args.push("--body", body);
-    if (priority) args.push("--priority", priority);
-    if (summary) args.push("--summary", summary);
-    if (reason) args.push("--reason", reason);
-    if (confirm_delete) args.push("--confirm", confirm_delete);
-    if (deep) args.push("--deep");
-    if (statuses) args.push("--status", statuses);
-    args.push("-o", "pretty");
-    return cli("fcase", args);
-  }
-);
+  );
 
-// ─── fmetrics ────────────────────────────────────────────────────
+  // ─── fmetrics ────────────────────────────────────────────────────
   server.registerTool(
     "fmetrics",
     {
@@ -856,52 +1386,160 @@ server.registerTool(
       if (contains) args.push("--contains", contains);
       if (min_occurrences !== undefined) args.push("--min-occurrences", String(min_occurrences));
       if (after) args.push("--after", after);
+      args.push("-o", "json");
       return cli("fmetrics", args);
     }
   );
 
-// ─── fprobe ─────────────────────────────────────────────────────
-server.registerTool(
-  "fprobe",
-  {
-    title: coloredTitle("fprobe"),
-    description:
-      "Binary/opaque file reconnaissance. Extracts printable strings, scans for literal " +
-      "byte patterns with context, and reads raw byte windows at known offsets. Works on " +
-      "compiled binaries, SEA bundles, packed assets — anything with embedded text.",
-    inputSchema: z.object({
-      action: z.enum(["strings", "scan", "window"]).describe("Subcommand"),
-      file: z.string().describe("File to probe"),
-      filter: z.string().optional().describe("Filter strings to those containing this literal (strings mode)"),
-      pattern: z.string().optional().describe("Literal pattern to find (scan mode)"),
-      context: z.number().optional().describe("Bytes of context around match (scan mode, default 300)"),
-      offset: z.number().optional().describe("Byte offset to read from (window mode)"),
-      before: z.number().optional().describe("Bytes before offset (window mode, default 0)"),
-      after: z.number().optional().describe("Bytes after offset (window mode, default 200)"),
-      decode: z.enum(["printable", "utf8", "hex"]).optional().describe("Decode mode (window mode, default printable)"),
-      ignore_case: z.boolean().optional().describe("Case-insensitive matching"),
-    }),
-  },
-async ({ action, file, filter, pattern, context, offset, before, after, decode, ignore_case }) => {
-    if (action === "scan" && !pattern) {
-      return { content: [{ type: "text", text: "fprobe scan requires pattern" }], isError: true };
+  // ─── freplay ──────────────────────────────────────────────────────
+  server.registerTool(
+    "freplay",
+    {
+      title: coloredTitle("freplay"),
+      description:
+        "Deterministic replay engine for fsuite investigation commands. Record, inspect, export, verify, and manage replays tied to a case.",
+      inputSchema: z.object({
+        action: z.enum(["record", "show", "list", "export", "verify", "promote", "archive"]).describe("Replay action"),
+        slug: z.string().describe("Case slug"),
+        replay_id: z.number().int().positive().optional().describe("Replay ID for show/export/verify, or positional replay for promote/archive"),
+        purpose: z.string().optional().describe("Human-readable purpose for record"),
+        links: z.array(z.string()).optional().describe("Related links as type:id entries for record"),
+        new: z.boolean().optional().describe("Force a new replay when recording"),
+        command: z.array(z.string()).optional().describe("Command argv after -- for record, e.g. ['fsearch', '-o', 'json', 'docs', '/repo']"),
+      }),
+    },
+    async ({ action, slug, replay_id, purpose, links, new: createNew, command }) => {
+      const args = [action, slug];
+
+      if (action === "record") {
+        if (purpose) args.push("--purpose", purpose);
+        for (const link of (links || [])) args.push("--link", link);
+        if (replay_id !== undefined) args.push("--replay-id", String(replay_id));
+        if (createNew) args.push("--new");
+        if (!command || command.length === 0) {
+          return { content: [{ type: "text", text: "freplay record requires command" }], isError: true };
+        }
+        args.push("--", ...command);
+        return cli("freplay", args);
+      }
+
+      if (action === "promote" || action === "archive") {
+        if (replay_id === undefined) {
+          return { content: [{ type: "text", text: `freplay ${action} requires replay_id` }], isError: true };
+        }
+        args.push(String(replay_id));
+        return cli("freplay", args);
+      }
+
+      if (replay_id !== undefined) args.push("--replay-id", String(replay_id));
+      args.push("-o", "json");
+      return cli("freplay", args);
     }
-    if (action === "window" && offset === undefined) {
-      return { content: [{ type: "text", text: "fprobe window requires offset" }], isError: true };
+  );
+
+  // ─── fprobe ─────────────────────────────────────────────────────
+
+  // Decode byte escapes into a Buffer and pass them to the engine via hidden
+  // hex argv flags so raw bytes survive the JS -> argv boundary unchanged.
+  function decodeFprobeParam(name, s) {
+    if (s === undefined || s === null) return undefined;
+    const parts = [];
+    let lastIndex = 0;
+    const escapePattern = /\\x([0-9a-fA-F]{2})|\\u([0-9a-fA-F]{4})/g;
+    let match;
+
+    while ((match = escapePattern.exec(s)) !== null) {
+      if (match.index > lastIndex) {
+        parts.push(Buffer.from(s.slice(lastIndex, match.index), "utf8"));
+      }
+
+      if (match[1]) {
+        parts.push(Buffer.from([parseInt(match[1], 16)]));
+      } else {
+        const value = parseInt(match[2], 16);
+        if (value > 0xff) {
+          throw new Error(`${name} contains \\u${match[2]} which exceeds one raw byte; use \\xNN for byte values`);
+        }
+        parts.push(Buffer.from([value]));
+      }
+
+      lastIndex = escapePattern.lastIndex;
     }
+
+    if (lastIndex < s.length) {
+      parts.push(Buffer.from(s.slice(lastIndex), "utf8"));
+    }
+    return Buffer.concat(parts);
+  }
+  server.registerTool("fprobe", {
+      description:
+        "Binary reconnaissance and surgical patching. Scan for patterns, read byte windows, " +
+        "extract strings, and patch binaries with same-length replacements. Works on compiled " +
+        "binaries, SEA bundles, packed assets — anything with embedded text.",
+      inputSchema: z.object({
+        action: z.enum(["strings", "scan", "window", "patch"]).describe("Subcommand"),
+        file: z.string().describe("File to probe or patch"),
+        filter: z.string().optional().describe("Filter strings to those containing this literal (strings mode)"),
+        pattern: z.string().optional().describe("Pattern to find (scan mode). Literal by default; set decode_escapes for \\xNN/\\uNNNN"),
+        context: z.number().optional().describe("Bytes of context around match (scan mode, default 300)"),
+        offset: z.number().optional().describe("Byte offset to read from (window mode)"),
+        before: z.number().optional().describe("Bytes before offset (window mode, default 0)"),
+        after: z.number().optional().describe("Bytes after offset (window mode, default 200)"),
+        decode: z.enum(["printable", "utf8", "hex"]).optional().describe("Decode mode (window mode, default printable)"),
+        ignore_case: z.boolean().optional().describe("Case-insensitive matching"),
+        target: z.string().optional().describe("Text to find and replace (patch mode). Literal by default; set decode_escapes for \\xNN/\\uNNNN"),
+        replacement: z.string().optional().describe("Replacement text, padded with spaces if shorter (patch mode). Literal by default; set decode_escapes for \\xNN/\\uNNNN"),
+        dry_run: z.boolean().optional().describe("Preview patch without writing (patch mode)"),
+        decode_escapes: z.boolean().optional().describe("Decode \\\\xNN and \\\\uNNNN escape sequences in pattern/target/replacement to raw bytes. Default false (literal)"),
+      }),
+    },
+    async ({ action, file, filter, pattern, context, offset, before, after, decode, ignore_case, target, replacement, dry_run, decode_escapes }) => {
+      if (action === "scan" && !pattern) {
+        return { content: [{ type: "text", text: "fprobe scan requires pattern" }], isError: true };
+      }
+      if (action === "window" && offset === undefined) {
+        return { content: [{ type: "text", text: "fprobe window requires offset" }], isError: true };
+      }
+      if (action === "patch" && (!target || !replacement)) {
+        return { content: [{ type: "text", text: "fprobe patch requires --target and --replacement" }], isError: true };
+}
     const args = [action, file];
     if (action === "strings" && filter) args.push("--filter", filter);
-    if (action === "scan" && pattern) args.push("--pattern", pattern);
-    if (context) args.push("--context", String(context));
+    if (action === "scan" && pattern) {
+      if (decode_escapes) {
+        const buf = decodeFprobeParam("pattern", pattern);
+        if (buf) args.push("--pattern-hex", buf.toString("hex"));
+      } else {
+        args.push("--pattern", pattern);
+      }
+    }
+    if (context !== undefined) args.push("--context", String(context));
     if (offset !== undefined) args.push("--offset", String(offset));
     if (before !== undefined) args.push("--before", String(before));
     if (after !== undefined) args.push("--after", String(after));
     if (decode) args.push("--decode", decode);
     if (ignore_case) args.push("--ignore-case");
-    args.push("-o", "json");
-    return cli("fprobe", args);
-  }
-);
+    if (action === "patch" && target) {
+      if (decode_escapes) {
+        const buf = decodeFprobeParam("target", target);
+        if (buf) args.push("--target-hex", buf.toString("hex"));
+      } else {
+        args.push("--target", target);
+      }
+    }
+    if (action === "patch" && replacement) {
+      if (decode_escapes) {
+        const buf = decodeFprobeParam("replacement", replacement);
+        if (buf) args.push("--replacement-hex", buf.toString("hex"));
+      } else {
+        args.push("--replacement", replacement);
+      }
+    }
+    if (action === "patch" && dry_run) args.push("--dry-run");
+      args.push("-o", "json");
+      return cli("fprobe", args, undefined, { action });
+    }
+  );
 
 // ─── fs (unified search orchestrator) ───────────────────────────
 server.registerTool(
@@ -909,7 +1547,7 @@ server.registerTool(
   {
     title: coloredTitle("fs"),
     description:
-      "Unified search orchestrator. One call to find files, content, or symbols. " +
+      "Unified search orchestrator. One call to find files, paths, content, or symbols. " +
       "Auto-classifies query intent and chains the right fsuite tools (fsearch, fcontent, fmap). " +
       "Returns ranked hits with enrichment and a recommended next step (next_hint). " +
       "Use scope to narrow by file glob. Use intent to override auto-classification.",
@@ -917,66 +1555,60 @@ server.registerTool(
       query: z.string().describe("Search intent: glob pattern, literal string, or code identifier"),
       path: z.string().optional().describe("Search root directory (default: cwd)"),
       scope: z.string().optional().describe("Glob filter to narrow file set first, e.g. '*.py'"),
-      intent: z.enum(["auto", "file", "content", "symbol"]).optional()
-        .describe("Override auto-classification. Default: auto"),
-    }),
-    outputSchema: z.object({
-      query: z.string(),
-      path: z.string(),
-      scope: z.string().optional(),
-      intent: z.enum(["auto", "file", "content", "symbol"]),
-      resolved_intent: z.enum(["file", "content", "symbol"]),
-      route_reason: z.string(),
-      route_confidence: z.enum(["high", "medium", "low"]),
-      selected_chain: z.array(z.string()),
-      hits: z.array(z.object({}).passthrough()),
-      truncated: z.boolean(),
-      budget: z.object({
-        candidate_files: z.number(),
-        enriched_files: z.number(),
-        time_ms: z.number(),
+        intent: z.enum(["auto", "file", "content", "symbol", "nav"]).optional()
+          .describe("Override auto-classification. Default: auto"),
+        compact: z.boolean().optional()
+          .describe("Nav-only compact mode: relative paths, no next_hint, minimal per-hit data. Ignored for non-nav intents."),
       }),
-      next_hint: z.object({
-        tool: z.string(),
-        args: z.object({}).passthrough(),
-      }).nullable(),
-    }),
+      // outputSchema removed: 2.1.88 StructuredOutput schema cache bug
   },
-  async ({ query, path, scope, intent }) => {
+  async ({ query, path, scope, intent, compact }) => {
     // fs bypasses cli() — returns both pretty ANSI content AND typed
     // structuredContent so agents get machine-readable output.
     const args = ["-o", "json", query];
     if (path) args.push("--path", path);
     if (scope) args.push("--scope", scope);
-    if (intent) args.push("--intent", intent);
+    if (intent && intent !== "auto") args.push("--intent", intent);
+    if (compact) args.push("--compact");
     try {
       const { stdout } = await run(resolveTool("fs"), args, EXEC_OPTS);
       try {
 const parsed = JSON.parse(stdout);
 
       // ─── Pretty render fs result ───
-      const intentColor = { file: fg(166, 226, 46), content: fg(102, 217, 239), symbol: fg(190, 132, 255) };
+        const intentColor = { file: fg(166, 226, 46), content: fg(102, 217, 239), symbol: fg(190, 132, 255), nav: fg(253, 151, 31) };
       const confBadge = { high: fg(80, 200, 80) + "high" + RESET, medium: fg(230, 219, 116) + "medium" + RESET, low: fg(220, 90, 90) + "low" + RESET };
       const ic = intentColor[parsed.resolved_intent] || fg(248, 248, 242);
       const cb = confBadge[parsed.route_confidence] || parsed.route_confidence;
       const chainStr = (parsed.selected_chain || []).map(t => fg(248, 248, 242) + t).join(fg(117, 113, 94) + " → ");
 
-      const lines = [];
-      lines.push(`${BOLD}${ic}${parsed.resolved_intent}${RESET} ${DIM}(${UNDIM}${cb}${DIM})${UNDIM} ${DIM}via${UNDIM} ${chainStr}${RESET}`);
-      lines.push(`${DIM}  ${parsed.route_reason}${RESET}`);
-      const b = parsed.budget || {};
-      lines.push(`${DIM}  ${b.candidate_files || 0} candidates, ${b.enriched_files || 0} enriched, ${b.time_ms || 0}ms${parsed.truncated ? fg(230, 219, 116) + " ⚠ truncated" : ""}${RESET}`);
-      lines.push("");
+        const lines = [];
+        lines.push(`${BOLD}${ic}${parsed.resolved_intent}${RESET} ${DIM}(${UNDIM}${cb}${DIM})${UNDIM} ${DIM}via${UNDIM} ${chainStr}${RESET}`);
+        lines.push(`${DIM}  ${parsed.route_reason}${RESET}`);
+        const b = parsed.budget || {};
+        lines.push(`${DIM}  ${b.candidate_files || 0} candidates, ${b.enriched_files || 0} enriched, ${b.time_ms || 0}ms${parsed.truncated ? fg(230, 219, 116) + " ⚠ truncated" : ""}${RESET}`);
+        lines.push("");
 
-      for (const h of (parsed.hits || []).slice(0, 20)) {
-        const sp = shortPath(h.file);
-        lines.push(`  ${fg(102, 217, 239)}${sp}${RESET}${h.match_count ? DIM + ` (${h.match_count} matches)` + RESET : ""}`);
-        for (const m of (h.matches || []).slice(0, 5)) {
-          const lineNum = m.line ? `${DIM}${m.line}${UNDIM}` : "";
-          const lang = h.file ? detectLang(h.file) : "";
-          const hl = lang ? highlightLine(m.text || "", lang) : fg(248, 248, 242) + (m.text || "");
-          lines.push(`    ${fg(117, 113, 94)}${lineNum} ${RESET}${hl}${RESET}`);
-        }
+        for (const h of (parsed.hits || []).slice(0, 20)) {
+          const itemPath = h.file || h.path || "";
+          const sp = shortPath(itemPath);
+          const suffix = h.kind === "dir" ? "/" : "";
+          lines.push(`  ${fg(102, 217, 239)}${sp}${suffix}${RESET}${h.match_count ? DIM + ` (${h.match_count} matches)` + RESET : ""}`);
+          if (h.preview?.length) {
+            for (const child of h.preview.slice(0, 5)) {
+              const childSuffix = child.kind === "dir" ? "/" : "";
+              lines.push(`    ${DIM}${child.name}${childSuffix}${RESET}`);
+            }
+            if (h.preview_truncated) {
+              lines.push(`    ${DIM}...${RESET}`);
+            }
+          }
+          for (const m of (h.matches || []).slice(0, 5)) {
+            const lineNum = m.line ? `${DIM}${m.line}${UNDIM}` : "";
+            const lang = itemPath ? detectLang(itemPath) : "";
+            const hl = lang ? highlightLine(m.text || "", lang) : fg(248, 248, 242) + (m.text || "");
+            lines.push(`    ${fg(117, 113, 94)}${lineNum} ${RESET}${hl}${RESET}`);
+          }
         if (h.symbols && h.symbols.length > 0) {
           const symList = h.symbols.slice(0, 8).map(s =>
             typeof s === "string" ? s : (s.text || s.name || "")
@@ -994,7 +1626,6 @@ const parsed = JSON.parse(stdout);
 
       return {
         content: [{ type: "text", text: lines.join("\n") }],
-        structuredContent: parsed,
       };
       } catch (renderErr) {
         console.error("fs render error:", renderErr);
@@ -1003,6 +1634,92 @@ const parsed = JSON.parse(stdout);
     } catch (err) {
       return { content: [{ type: "text", text: `fs error: ${err.stderr || err.message || "unknown"}` }], isError: true };
     }
+  }
+);
+
+// ─── fls (thin ftree router for directory listing) ──────────────
+server.registerTool(
+  "fls",
+  {
+    title: coloredTitle("fls"),
+    description:
+      "Quick directory listing — thin ftree router. Use instead of bash ls. " +
+      "Default: list direct children. -t: shallow tree (depth 2). -r: recon with sizes/counts. " +
+      "Output is ftree's JSON contract — parse the same fields.",
+    inputSchema: z.object({
+      path: z.string().optional().describe("Directory to list (default: cwd)"),
+      mode: z.enum(["list", "tree", "recon"]).optional()
+        .describe("list (depth 1), tree (depth 2), or recon (sizes/counts). Default: list"),
+      output: z.enum(["pretty", "json"]).optional()
+        .describe("Output format. Default: pretty"),
+    }),
+  },
+  async ({ path, mode, output }) => {
+    const args = [];
+    if (mode === "tree") args.push("-t");
+    if (mode === "recon") args.push("-r");
+    if (output) args.push("-o", output);
+    if (path) args.push(path);
+    return cli("fls", args);
+  }
+);
+
+// ─── fbash ──────────────────────────────────────────────────────
+server.registerTool(
+  "fbash",
+  {
+    title: coloredTitle("fbash"),
+    description:
+      "Token-budgeted shell execution with session state. Runs any bash command with " +
+      "output capping, command classification, and fsuite smart routing. Tracks CWD across " +
+      "calls. Use for builds, tests, git, installs — anything that isn't file reading/editing " +
+      "(use fread/fedit for those). Returns next_hint when an fsuite tool would be better.",
+    inputSchema: z.object({
+      command: z.string().describe("Bash command to execute"),
+      max_lines: z.number().int().positive().optional()
+        .describe("Cap output lines (default: 200)"),
+      max_bytes: z.number().int().positive().optional()
+        .describe("Cap output bytes (default: 51200)"),
+      json: z.boolean().optional()
+        .describe("Parse output as JSON and return structured"),
+      cwd: z.string().optional()
+        .describe("Working directory (overrides session CWD, persists after execution)"),
+      timeout: z.number().int().positive().optional()
+        .describe("Timeout in seconds (auto-tuned by command class if omitted)"),
+      env: z.array(z.string()).optional()
+        .describe("Environment variable overrides as KEY=VALUE strings"),
+      filter: z.string().optional()
+        .describe("Regex filter for output lines"),
+      quiet: z.boolean().optional()
+        .describe("Suppress output, return only exit code + metadata"),
+      tag: z.string().optional()
+        .describe("Label for fcase event logging"),
+      background: z.boolean().optional()
+        .describe("Run in background, return job_id"),
+      tail: z.boolean().optional()
+        .describe("Keep tail instead of head when truncating"),
+    }),
+  },
+  async (params) => {
+    const args = [];
+    args.push("--command", params.command);
+    if (params.max_lines !== undefined) args.push("--max-lines", String(params.max_lines));
+    if (params.max_bytes !== undefined) args.push("--max-bytes", String(params.max_bytes));
+    if (params.json) args.push("--json");
+    if (params.cwd) args.push("--cwd", params.cwd);
+    if (params.timeout !== undefined) args.push("--timeout", String(params.timeout));
+    if (params.env) {
+      for (const entry of params.env) {
+        args.push("--env", entry);
+      }
+    }
+    if (params.filter) args.push("--filter", params.filter);
+    if (params.quiet) args.push("--quiet");
+    if (params.tag) args.push("--tag", params.tag);
+    if (params.background) args.push("--background");
+    if (params.tail) args.push("--tail");
+    args.push("-o", "json");
+    return cli("fbash", args);
   }
 );
 

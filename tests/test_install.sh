@@ -204,7 +204,8 @@ test_installed_fmetrics_finds_import_and_predict_helpers() {
     FSUITE_TELEMETRY=0 "${prefix}/bin/fmetrics" --self-check 2>&1
   )
 
-  if [[ "$output" == *"fmetrics-predict.py: found"* ]] && [[ "$output" == *"fmetrics-import.py: found"* ]]; then
+  if [[ "$output" == *"fmetrics-predict.py: found at ${prefix}/"* ]] && [[ "$output" == *"/share/fsuite/fmetrics-predict.py"* ]] && \
+     [[ "$output" == *"fmetrics-import.py: found at ${prefix}/"* ]] && [[ "$output" == *"/share/fsuite/fmetrics-import.py"* ]]; then
     pass "Installed fmetrics locates the import and predict helpers from the prefix"
   else
     fail "Installed fmetrics should find the import and predict helpers" "Got: $output"

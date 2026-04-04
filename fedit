@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="2.2.0"
+VERSION="3.1.0"
 
 # -------------------------
 # Source common library for tiered telemetry
@@ -187,6 +187,13 @@ BATCH_CANDIDATES=()
 BATCH_EXPECTED_SHAS=()
 BATCH_LOCK_FDS=()
 DEFER_ERRORS=0
+
+# Structural validation state (Layer 1)
+NO_VALIDATE=0
+VALIDATION_ERROR=""
+VALIDATION_FORMAT=""
+VALIDATION_HINT=""
+WARNINGS=()
 
 cleanup() {
   local tmp
@@ -377,6 +384,7 @@ CONTROL
   --dry-run                   Preview diff only (default)
   --create                    Create a new file (fails if file exists)
   --replace-file              Replace the entire target file from payload
+  --no-validate               Skip structural validation (escape hatch for JSONC, test fixtures)
   -o, --output FMT            pretty (default), json, paths
   --project-name NAME         Override telemetry project name
   --self-check                Verify dependencies
@@ -390,6 +398,8 @@ BEHAVIOR
   - --symbol scopes patch operations to the chosen fmap symbol block.
   - Symbol shortcuts are sugar: --function X equals --symbol X --symbol-type function.
   - Batch mode is preflighted all-or-nothing: all planning completes before writes.
+  - Structured files (JSON, YAML, TOML, XML) are validated before writing.
+  - Use --no-validate to bypass structural validation (e.g. JSONC with comments).
   - JSON output is intended for agent/harness consumption.
 
 HEADLESS / AI AGENT USAGE
@@ -506,6 +516,7 @@ render_diff() {
 }
 
 render_pretty() {
+  local _wi
   printf 'fedit %s %s\n' "$MODE" "$TARGET_PATH"
   if (( DRY_RUN == 1 )); then
     echo "status: dry-run"
@@ -516,6 +527,15 @@ render_pretty() {
     echo "$DIFF_OUTPUT"
   else
     echo "(no diff)"
+  fi
+  for (( _wi=0; _wi<${#WARNINGS[@]}; _wi++ )); do
+    echo "warning: ${WARNINGS[_wi]}"
+  done
+  if [[ -n "${VALIDATION_FORMAT:-}" ]]; then
+    echo "validation: $VALIDATION_FORMAT"
+  fi
+  if [[ -n "${VALIDATION_HINT:-}" ]]; then
+    echo "hint: $VALIDATION_HINT"
   fi
 }
 
@@ -544,10 +564,29 @@ render_json() {
     printf '"error_code":null,'
   fi
   if [[ -n "$ERROR_DETAIL" ]]; then
-    printf '"error_detail":"%s"' "$(json_escape_str "$ERROR_DETAIL")"
+    printf '"error_detail":"%s",' "$(json_escape_str "$ERROR_DETAIL")"
   else
-    printf '"error_detail":null'
+    printf '"error_detail":null,'
   fi
+  # Validation metadata (populated on structural_validation_failed)
+  if [[ -n "${VALIDATION_FORMAT:-}" ]]; then
+    printf '"validation_format":"%s",' "$(json_escape_str "$VALIDATION_FORMAT")"
+  else
+    printf '"validation_format":null,'
+  fi
+  if [[ -n "${VALIDATION_HINT:-}" ]]; then
+    printf '"hint":"%s",' "$(json_escape_str "$VALIDATION_HINT")"
+  else
+    printf '"hint":null,'
+  fi
+  # Warnings array
+  printf '"warnings":['
+  local _wi
+  for (( _wi=0; _wi<${#WARNINGS[@]}; _wi++ )); do
+    (( _wi > 0 )) && printf ','
+    printf '"%s"' "$(json_escape_str "${WARNINGS[_wi]}")"
+  done
+  printf ']'
   printf '}\n'
 }
 
@@ -734,6 +773,7 @@ splice_line_range() {
         local $/;
         my $replacement_text = <$rf>;
         print {$of} $replacement_text;
+        print {$of} "\n" if length($replacement_text) && substr($replacement_text, -1) ne "\n";
         $inserted = 1;
       }
       next if $line >= $start && $line <= $end;
@@ -1485,6 +1525,35 @@ process_batch() {
     exit 1
   fi
 
+  # Structural validation gate for batch — all-or-nothing
+  if (( ! NO_VALIDATE )); then
+    local i val_failed=0
+    for (( i=0; i<${#BATCH_PATHS[@]}; i++ )); do
+      [[ "${BATCH_STATES[i]:-skipped}" == "planned" ]] || continue
+      local saved_target="$TARGET_PATH"
+      TARGET_PATH="${BATCH_PATHS[i]}"
+      if ! validate_structure "${BATCH_CANDIDATES[i]}"; then
+        BATCH_STATES[i]="failed"
+        BATCH_ERROR_CODES[i]="structural_validation_failed"
+        local val_msg="Structural validation failed for ${BATCH_PATHS[i]##*/}"
+        [[ -n "${VALIDATION_ERROR:-}" ]] && val_msg+=": $VALIDATION_ERROR"
+        BATCH_ERROR_DETAILS[i]="$val_msg"
+        val_failed=1
+      fi
+      TARGET_PATH="$saved_target"
+    done
+    if (( val_failed )); then
+      ERROR_CODE="structural_validation_failed"
+      ERROR_DETAIL="One or more batch targets failed structural validation"
+      case "$OUTPUT" in
+        json) render_batch_json ;;
+        pretty) render_batch_pretty ;;
+        paths) render_batch_paths ;;
+      esac
+      exit 1
+    fi
+  fi
+
   if (( DRY_RUN == 0 )); then
     local apply_rc=0
     apply_batch || apply_rc=$?
@@ -1730,6 +1799,11 @@ parse_args() {
         usage
         exit 0
         ;;
+      --no-validate)
+        NO_VALIDATE=1
+        _TELEM_FLAGS+=" --no-validate"
+        shift
+        ;;
       --)
         shift
         break
@@ -1855,6 +1929,179 @@ validate_args() {
   [[ -z "$SYMBOL_TYPE" || -n "$SYMBOL_NAME" ]] || { ERROR_CODE="invalid_args"; die "--symbol-type requires --symbol"; }
 }
 
+# ─── Structural Validation (Layer 1) ─────────────────────────────
+# Validates candidate files for structural correctness before writing.
+# Returns 0 (valid) or 1 (invalid). Sets VALIDATION_ERROR on failure.
+
+validate_json() {
+  local file="$1"
+  if has jq; then
+    local err
+    err=$(jq . "$file" 2>&1 >/dev/null) || {
+      VALIDATION_ERROR="$err"
+      VALIDATION_FORMAT="json"
+      VALIDATION_HINT="Check syntax near the edited region — missing comma, bracket, or quote"
+      return 1
+    }
+  elif has python3; then
+    local err
+    err=$(python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$file" 2>&1) || {
+      VALIDATION_ERROR="$err"
+      VALIDATION_FORMAT="json"
+      VALIDATION_HINT="Check syntax near the edited region — missing comma, bracket, or quote"
+      return 1
+    }
+  else
+    # No validator available
+    if [[ "$NO_VALIDATE" == "1" ]]; then
+      return 0
+    fi
+    VALIDATION_ERROR="jq not installed"
+    VALIDATION_FORMAT="json"
+    VALIDATION_HINT="Install: apt install jq / brew install jq"
+    return 1
+  fi
+  return 0
+}
+
+validate_yaml() {
+  local file="$1"
+  if ! has python3; then
+    if [[ "$NO_VALIDATE" == "1" ]]; then
+      return 0
+    fi
+    VALIDATION_ERROR="python3 not installed"
+    VALIDATION_FORMAT="yaml"
+    VALIDATION_HINT="Install: apt install python3 / brew install python3"
+    return 1
+  fi
+  local err
+  err=$(python3 -c "
+import sys
+NO_VAL = \"$NO_VALIDATE\"
+try:
+    import yaml
+except ImportError:
+    if NO_VAL == \"1\":
+        sys.exit(0)
+    print(\"PyYAML not installed\", file=sys.stderr)
+    sys.exit(2)
+try:
+    with open(sys.argv[1]) as f:
+        list(yaml.safe_load_all(f))
+except yaml.YAMLError as e:
+    print(str(e), file=sys.stderr)
+    sys.exit(1)
+" "$file" 2>&1)
+  local pyrc=$?
+  if (( pyrc == 2 )); then
+    VALIDATION_ERROR="PyYAML not installed"
+    VALIDATION_FORMAT="yaml"
+    VALIDATION_HINT="Install: pip install pyyaml"
+    return 1
+  elif (( pyrc != 0 )); then
+    VALIDATION_ERROR="$err"
+    VALIDATION_FORMAT="yaml"
+    VALIDATION_HINT="Check indentation and structure near the edited region"
+    return 1
+  fi
+  return 0
+}
+
+validate_toml() {
+  local file="$1"
+  if ! has python3; then
+    if [[ "$NO_VALIDATE" == "1" ]]; then
+      return 0
+    fi
+    VALIDATION_ERROR="python3 not installed"
+    VALIDATION_FORMAT="toml"
+    VALIDATION_HINT="Install: apt install python3 / brew install python3"
+    return 1
+  fi
+  local err
+  err=$(python3 -c "
+import sys
+NO_VAL = \"$NO_VALIDATE\"
+try:
+    import tomllib
+except ImportError:
+    try:
+        import tomli as tomllib
+    except ImportError:
+        if NO_VAL == \"1\":
+            sys.exit(0)
+        print(\"tomllib/tomli not installed\", file=sys.stderr)
+        sys.exit(2)
+try:
+    with open(sys.argv[1], 'rb') as f:
+        tomllib.load(f)
+except Exception as e:
+    print(str(e), file=sys.stderr)
+    sys.exit(1)
+" "$file" 2>&1)
+  local pyrc=$?
+  if (( pyrc == 2 )); then
+    VALIDATION_ERROR="tomllib/tomli not installed"
+    VALIDATION_FORMAT="toml"
+    VALIDATION_HINT="Install: pip install tomli (or use Python 3.11+)"
+    return 1
+  elif (( pyrc != 0 )); then
+    VALIDATION_ERROR="$err"
+    VALIDATION_FORMAT="toml"
+    VALIDATION_HINT="Check TOML syntax near the edited region — invalid key, value, or table"
+    return 1
+  fi
+  return 0
+}
+
+validate_xml() {
+  local file="$1"
+  if ! has python3; then
+    if [[ "$NO_VALIDATE" == "1" ]]; then
+      return 0
+    fi
+    VALIDATION_ERROR="python3 not installed"
+    VALIDATION_FORMAT="xml"
+    VALIDATION_HINT="Install: apt install python3 / brew install python3"
+    return 1
+  fi
+  local err
+  err=$(python3 -c "
+import sys
+import xml.etree.ElementTree as ET
+try:
+    ET.parse(sys.argv[1])
+except ET.ParseError as e:
+    print(str(e), file=sys.stderr)
+    sys.exit(1)
+" "$file" 2>&1) || {
+      VALIDATION_ERROR="$err"
+      VALIDATION_FORMAT="xml"
+      VALIDATION_HINT="Check XML well-formedness near the edited region — unclosed tag or invalid syntax"
+      return 1
+    }
+    return 0
+}
+
+validate_structure() {
+  local file="$1"
+  local ext="${TARGET_PATH##*.}"
+  ext="${ext,,}"  # lowercase
+
+  VALIDATION_ERROR=""
+  VALIDATION_FORMAT=""
+  VALIDATION_HINT=""
+
+  case "$ext" in
+    json)     validate_json "$file" ;;
+    yaml|yml) validate_yaml "$file" ;;
+    toml)     validate_toml "$file" ;;
+    xml)      validate_xml "$file" ;;
+    *)        return 0 ;;  # unknown format, skip validation
+  esac
+}
+
 process_edit() {
   local original_file candidate_file
   original_file=$(make_temp)
@@ -1912,7 +2159,29 @@ process_edit() {
   [[ "$candidate_bytes" =~ ^[0-9]+$ ]] || candidate_bytes=0
   TOTAL_BYTES_READ=$(( TOTAL_BYTES_READ + candidate_bytes ))
 
+  # File growth warning (patch/lines modes only)
+  if [[ "$MODE" == "patch" || "$MODE" == "lines" ]]; then
+    local orig_bytes
+    orig_bytes=$(wc -c < "$original_file" | tr -d '[:space:]')
+    [[ "$orig_bytes" =~ ^[0-9]+$ ]] || orig_bytes=0
+    if (( orig_bytes > 0 && candidate_bytes > orig_bytes * 2 )); then
+      WARNINGS+=("File grew from ${orig_bytes} to ${candidate_bytes} bytes (${MODE} mode) — possible accidental duplication")
+    fi
+  fi
+
   render_diff "$original_file" "$candidate_file" "${TARGET_PATH} (old)" "${TARGET_PATH} (new)"
+
+  # Structural validation gate (Layer 1)
+  if (( ! NO_VALIDATE )); then
+    if ! validate_structure "$candidate_file"; then
+      local val_msg="Structural validation failed for ${TARGET_PATH##*/}"
+      [[ -n "${VALIDATION_ERROR:-}" ]] && val_msg+=": $VALIDATION_ERROR"
+      ERROR_CODE="structural_validation_failed"
+      ERROR_DETAIL="$val_msg"
+      die "$val_msg"
+    fi
+  fi
+
   apply_candidate "$candidate_file"
 }
 
