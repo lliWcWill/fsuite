@@ -856,99 +856,42 @@ function renderFbashResult(jsonStr) {
 
   const lines = [];
 
-  // Header: class badge + exit code + duration
-  const classBadge = {
-    build: fg(166, 226, 46),
-    test: fg(102, 217, 239),
-    git: fg(190, 132, 255),
-    install: fg(253, 151, 31),
-    service: fg(220, 90, 90),
-    query: fg(200, 200, 200),
-    search: fg(102, 217, 239),
-  };
-  const cc = classBadge[d.command_class] || fg(200, 200, 200);
-  const exitColor = d.exit_code == null ? DIM : d.exit_code === 0 ? fg(80, 200, 80) : fg(220, 90, 90);
-  lines.push(
-    `${cc}${BOLD}${d.command_class}${RESET} ` +
-    `${exitColor}exit=${d.exit_code}${RESET} ` +
-    `${DIM}${d.duration_ms}ms${RESET} ` +
-      `${DIM}cwd=${RESET}${colorPath(d.cwd)}`
-  );
-
-  // Truncation warning
-  if (d.truncated) {
-    lines.push(
-      `${fg(230, 219, 116)}  truncated: ${d.stdout_lines} of ${d.lines_total} lines ` +
-      `(${d.truncation_reason})${RESET}`
-    );
+  // Only show exit code on failure — exit=0 is noise
+  if (d.exit_code != null && d.exit_code !== 0) {
+    lines.push(`${fg(220, 90, 90)}exit=${d.exit_code}${RESET}`);
   }
 
-  // Routing suggestion
-  if (d.routing_suggestion && d.routing_suggestion.tool) {
-    lines.push(
-      `${fg(190, 132, 255)}  hint:${RESET} use ${fg(102, 217, 239)}${d.routing_suggestion.tool}${RESET} ` +
-      `${DIM}— ${d.routing_suggestion.reason}${RESET}`
-    );
-  }
-
-  lines.push("");
-
-// Output body — truncate to MAX_BASH_LINES visible lines
-const MAX_BASH_LINES = 30;
-if (d.stdout) {
-const stdoutLines = d.stdout.split("\n");
-const stdoutTotal = stdoutLines.length;
-if (stdoutTotal > MAX_BASH_LINES) {
-const hidden = stdoutTotal - MAX_BASH_LINES;
-lines.push(stdoutLines.slice(0, MAX_BASH_LINES).join("\n"));
-lines.push(`${DIM}  ... ${hidden} more lines${RESET}`);
-} else {
-lines.push(d.stdout);
-}
-}
-if (d.stderr) {
-lines.push(`${fg(220, 90, 90)}--- stderr ---${RESET}`);
-const stderrLines = d.stderr.split("\n");
-const stderrTotal = stderrLines.length;
-if (stderrTotal > MAX_BASH_LINES) {
-const hidden = stderrTotal - MAX_BASH_LINES;
-lines.push(stderrLines.slice(0, MAX_BASH_LINES).join("\n"));
-lines.push(`${DIM}  ... ${hidden} more lines${RESET}`);
-} else {
-lines.push(d.stderr);
-}
-}
-
-  // Warnings
-  if (d.warnings && Array.isArray(d.warnings) && d.warnings.length > 0) {
-    lines.push("");
-    for (const warning of d.warnings) {
-      lines.push(`${fg(230, 219, 116)}${BOLD}warning:${RESET} ${warning}`);
+  // stdout — the actual data
+  const MAX_BASH_LINES = 30;
+  if (d.stdout) {
+    const stdoutLines = d.stdout.split("\n");
+    if (stdoutLines.length > MAX_BASH_LINES) {
+      lines.push(stdoutLines.slice(0, MAX_BASH_LINES).join("\n"));
+      lines.push(`${DIM}... ${stdoutLines.length - MAX_BASH_LINES} more lines${RESET}`);
+    } else {
+      lines.push(d.stdout);
     }
   }
 
-  // Errors
-  if (d.errors && Array.isArray(d.errors) && d.errors.length > 0) {
-    lines.push("");
-    for (const error of d.errors) {
-      lines.push(`${fg(220, 90, 90)}${BOLD}error:${RESET} ${error}`);
+  // stderr — only if present
+  if (d.stderr) {
+    const stderrLines = d.stderr.split("\n");
+    if (stderrLines.length > 10) {
+      lines.push(`${fg(220, 90, 90)}stderr:${RESET} ${stderrLines.slice(0, 10).join("\n")}`);
+      lines.push(`${DIM}... ${stderrLines.length - 10} more stderr lines${RESET}`);
+    } else {
+      lines.push(`${fg(220, 90, 90)}stderr:${RESET} ${d.stderr}`);
     }
   }
 
-  // Metadata (background job ID)
+  // Background job ID — actionable, keep it
   if (d.metadata?.background_job_id) {
-    lines.push("");
     lines.push(`${fg(117, 113, 94)}background_job_id: ${d.metadata.background_job_id}${RESET}`);
   }
 
-  // next_hint
-  if (d.next_hint) {
-    lines.push("");
-    let hintText = d.next_hint;
-    if (typeof d.next_hint === "object") {
-      hintText = JSON.stringify(d.next_hint, null, 2);
-    }
-    lines.push(`${fg(190, 132, 255)}${BOLD}next ->${RESET} ${hintText}`);
+  // Empty output indicator
+  if (!d.stdout && !d.stderr) {
+    lines.push(`${DIM}(no output)${RESET}`);
   }
 
   return lines.join("\n");
@@ -997,6 +940,35 @@ function slimStructuredContent(obj) {
     "tool", "version", "mode", "backend",
     "budget_seconds", "budget_used_seconds", "budget_budget",
     "recon_depth", "ignored",
+    // fbash-specific bloat: all rendered in pretty text or useless to agent
+    "command",          // shown in pretty text header
+    "command_class",    // internal routing info
+    "cwd_changed",      // agent sees cwd in pretty header
+    "stdout_lines",     // agent can count
+    "stderr_lines",     // agent can count
+    "truncated",        // shown in pretty text warnings
+    "truncation_reason", // shown in pretty text
+    "lines_total",      // telemetry only
+    "bytes_total",      // telemetry only
+    "token_estimate",   // telemetry only
+    "routing_suggestion", // rendered as hint in pretty text
+    "metadata",         // internal — files_modified, background_job_id rendered in pretty text
+    "warnings",         // already rendered in pretty text
+    "errors",           // already rendered in pretty text
+    // fread-specific telemetry: rendered in pretty header or internal-only
+    "token_estimator",  // internal implementation detail
+    "bytes_emitted",    // telemetry only
+    "lines_emitted",    // agent can see content directly
+    "max_lines",        // budget config, not useful to agent
+    "max_bytes",        // budget config, not useful to agent
+    "token_budget",     // budget config, not useful to agent
+    "resolved_path",    // redundant with path inside files[]
+    "paths_tried",      // internal diagnostic
+    // fsearch internal diagnostics
+    "search_type",      // internal routing
+    "match_mode",       // internal routing
+    "preview_limit",    // internal config
+    "count_mode",       // internal config
   ]);
 
   // Keys to remove from nested objects only (keep top-level duration_ms)
