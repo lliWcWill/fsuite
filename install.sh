@@ -20,7 +20,7 @@ SKIP_MCP=0
 MCP_ONLY=0
 DO_UNINSTALL=0
 
-TOOLS=(fsuite ftree fsearch fcontent fmap fread fcase fedit fmetrics freplay fprobe fs fls)
+TOOLS=(fsuite ftree fsearch fcontent fmap fread fcase fedit fmetrics freplay fprobe fs fls fbash fpatch-claude-mcp)
 SHARE_FILES=(_fsuite_common.sh _fsuite_db.sh fmetrics-predict.py fmetrics-import.py fprobe-engine.py fs-engine.py)
 
 # ---------------------------------------------------------------------------

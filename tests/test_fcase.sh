@@ -522,6 +522,16 @@ main() {
   run_test test_evidence_import_handles_large_fread_json_file
   run_test test_target_import_rejects_wrong_tool_json
 
+  # --- subcommand --help dispatch tests ---
+  run_test test_note_help_shows_usage
+  run_test test_list_help_shows_usage
+  run_test test_status_help_shows_usage
+  run_test test_find_help_shows_usage
+  run_test test_note_h_flag_shows_usage
+  run_test test_list_h_flag_shows_usage
+  run_test test_status_h_flag_shows_usage
+  run_test test_find_h_flag_shows_usage
+
   echo ""
   echo "======================================"
   echo "  Test Results"
@@ -534,6 +544,120 @@ main() {
   else
     echo -e "${GREEN}All tests passed!${NC}"
     exit 0
+  fi
+}
+
+# --- subcommand --help dispatch regression tests ---
+
+test_note_help_shows_usage() {
+  local out rc=0
+  out=$(HOME="$TEST_HOME" "$FCASE" note --help 2>&1) || rc=$?
+  if (( rc != 0 )); then
+    fail "fcase note --help exited $rc" "$out"
+    return
+  fi
+  if [[ "$out" == *"fcase note"* && "$out" == *"--body"* ]]; then
+    pass "fcase note --help shows usage"
+  else
+    fail "fcase note --help output missing expected content" "$out"
+  fi
+}
+
+test_list_help_shows_usage() {
+  local out rc=0
+  out=$(HOME="$TEST_HOME" "$FCASE" list --help 2>&1) || rc=$?
+  if (( rc != 0 )); then
+    fail "fcase list --help exited $rc" "$out"
+    return
+  fi
+  if [[ "$out" == *"fcase list"* && "$out" == *"--status"* ]]; then
+    pass "fcase list --help shows usage"
+  else
+    fail "fcase list --help output missing expected content" "$out"
+  fi
+}
+
+test_status_help_shows_usage() {
+  local out rc=0
+  out=$(HOME="$TEST_HOME" "$FCASE" status --help 2>&1) || rc=$?
+  if (( rc != 0 )); then
+    fail "fcase status --help exited $rc" "$out"
+    return
+  fi
+  if [[ "$out" == *"fcase status"* && "$out" == *"<slug>"* ]]; then
+    pass "fcase status --help shows usage"
+  else
+    fail "fcase status --help output missing expected content" "$out"
+  fi
+}
+
+test_find_help_shows_usage() {
+  local out rc=0
+  out=$(HOME="$TEST_HOME" "$FCASE" find --help 2>&1) || rc=$?
+  if (( rc != 0 )); then
+    fail "fcase find --help exited $rc" "$out"
+    return
+  fi
+  if [[ "$out" == *"fcase find"* && "$out" == *"--deep"* ]]; then
+    pass "fcase find --help shows usage"
+  else
+    fail "fcase find --help output missing expected content" "$out"
+  fi
+}
+
+test_note_h_flag_shows_usage() {
+  local out rc=0
+  out=$(HOME="$TEST_HOME" "$FCASE" note -h 2>&1) || rc=$?
+  if (( rc != 0 )); then
+    fail "fcase note -h exited $rc" "$out"
+    return
+  fi
+  if [[ "$out" == *"fcase note"* ]]; then
+    pass "fcase note -h shows usage"
+  else
+    fail "fcase note -h output missing expected content" "$out"
+  fi
+}
+
+test_list_h_flag_shows_usage() {
+  local out rc=0
+  out=$(HOME="$TEST_HOME" "$FCASE" list -h 2>&1) || rc=$?
+  if (( rc != 0 )); then
+    fail "fcase list -h exited $rc" "$out"
+    return
+  fi
+  if [[ "$out" == *"fcase list"* ]]; then
+    pass "fcase list -h shows usage"
+  else
+    fail "fcase list -h output missing expected content" "$out"
+  fi
+}
+
+test_status_h_flag_shows_usage() {
+  local out rc=0
+  out=$(HOME="$TEST_HOME" "$FCASE" status -h 2>&1) || rc=$?
+  if (( rc != 0 )); then
+    fail "fcase status -h exited $rc" "$out"
+    return
+  fi
+  if [[ "$out" == *"fcase status"* ]]; then
+    pass "fcase status -h shows usage"
+  else
+    fail "fcase status -h output missing expected content" "$out"
+  fi
+}
+
+test_find_h_flag_shows_usage() {
+  local out rc=0
+  out=$(HOME="$TEST_HOME" "$FCASE" find -h 2>&1) || rc=$?
+  if (( rc != 0 )); then
+    fail "fcase find -h exited $rc" "$out"
+    return
+  fi
+  if [[ "$out" == *"fcase find"* ]]; then
+    pass "fcase find -h shows usage"
+  else
+    fail "fcase find -h output missing expected content" "$out"
   fi
 }
 

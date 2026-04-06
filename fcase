@@ -612,6 +612,17 @@ SQL
 }
 
 cmd_list() {
+  for _a in "$@"; do [[ "$_a" == "--help" || "$_a" == "-h" ]] && {
+    echo "fcase list [--status <csv|all>] [--include-shadow] [-o pretty|json]"
+    echo ""
+    echo "List cases filtered by status."
+    echo ""
+    echo "OPTIONS"
+    echo "  --status <csv|all>   Comma-separated status filter (default: open)"
+    echo "  --include-shadow     Include shadow cases"
+    echo "  -o pretty|json       Output format (default: pretty)"
+    exit 0
+  }; done
   local output="$DEFAULT_OUTPUT"
   local filter="open"  # default: show only open cases
   local include_shadow=false
@@ -703,6 +714,16 @@ SQL
 }
 
 cmd_status() {
+  for _a in "$@"; do [[ "$_a" == "--help" || "$_a" == "-h" ]] && {
+    echo "fcase status <slug> [-o pretty|json]"
+    echo ""
+    echo "Show full status of an open case including events, targets, and hypotheses."
+    echo ""
+    echo "OPTIONS"
+    echo "  <slug>           Case identifier"
+    echo "  -o pretty|json   Output format (default: pretty)"
+    exit 0
+  }; done
   local slug="${1:-}"
   shift || true
   [[ -n "$slug" ]] || die "status requires <slug>"
@@ -1271,6 +1292,16 @@ cmd_reject() {
 }
 
 cmd_note() {
+  for _a in "$@"; do [[ "$_a" == "--help" || "$_a" == "-h" ]] && {
+    echo "fcase note <slug> --body <text>"
+    echo ""
+    echo "Append a timestamped note to an open case."
+    echo ""
+    echo "OPTIONS"
+    echo "  <slug>          Case identifier"
+    echo "  --body <text>   Note content (required)"
+    exit 0
+  }; done
   local slug="${1:-}"
   shift || true
   [[ -n "$slug" ]] || die "note requires <slug>"
@@ -1400,6 +1431,18 @@ cmd_export() {
 }
 
 cmd_find() {
+  for _a in "$@"; do [[ "$_a" == "--help" || "$_a" == "-h" ]] && {
+    echo "fcase find <query> [--deep] [--status <csv|all>] [-o pretty|json]"
+    echo ""
+    echo "Search resolved and archived cases by keyword."
+    echo ""
+    echo "OPTIONS"
+    echo "  <query>              Search term"
+    echo "  --deep               Search evidence and hypotheses too"
+    echo "  --status <csv|all>   Status filter (default: resolved,archived)"
+    echo "  -o pretty|json       Output format (default: pretty)"
+    exit 0
+  }; done
   local query="${1:-}"
   shift || true
   [[ -n "$query" ]] || die "find requires <query>"
