@@ -197,7 +197,10 @@ OPTIONS
       Force language (auto-detect by default).
                    Supported: python, javascript, typescript, kotlin, swift, rust, go, java,
                    c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml, toml, ini, cuda,
-                   mojo, hcl, protobuf, graphql, csharp, zig, env, markdown
+                   mojo, hcl, protobuf, graphql, csharp, zig, env, compose, packagejson,
+                   gemfile, gomod, requirements, sql, css, html, xml, perl, rlang, elixir,
+                   scala, zsh, dart, objc, haskell, julia, powershell, groovy, ocaml,
+                   clojure, wasm, markdown
 
   -t, --type <type>
       Filter symbol types: function, class, import, type, export, constant
@@ -977,9 +980,9 @@ extract_symbols() {
     rlang)
       patterns=(
         "function:^[[:space:]]*[a-zA-Z_.][a-zA-Z0-9_.]*[[:space:]]*<-[[:space:]]*function"
-        "import:^[[:space:]]*library[[:space:]]*("
-        "import:^[[:space:]]*require[[:space:]]*("
-        "import:^[[:space:]]*source[[:space:]]*("
+        "import:^[[:space:]]*library[[:space:]]*\("
+        "import:^[[:space:]]*require[[:space:]]*\("
+        "import:^[[:space:]]*source[[:space:]]*\("
         "constant:^[[:space:]]*[A-Z][A-Z0-9_.]*[[:space:]]*<-"
       )
     ;;
