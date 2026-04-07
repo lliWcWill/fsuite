@@ -1707,7 +1707,7 @@ server.registerTool(
       "calls. Use for builds, tests, git, installs — anything that isn't file reading/editing " +
       "(use fread/fedit for those). Returns next_hint when an fsuite tool would be better.",
     inputSchema: z.object({
-      command: z.string().describe("Bash command to execute"),
+      command: z.string().optional().describe("Bash command to execute (required unless using poll or list_jobs)"),
       max_lines: z.number().int().positive().optional()
         .describe("Cap output lines (default: 200)"),
       max_bytes: z.number().int().positive().optional()
@@ -1728,11 +1728,25 @@ server.registerTool(
         .describe("Label for fcase event logging"),
       background: z.boolean().optional()
         .describe("Run in background, return job_id"),
+      poll: z.string().optional()
+        .describe("Poll a background job by job_id. Returns status, exit_code, and budgeted output."),
+      list_jobs: z.boolean().optional()
+        .describe("List all background jobs with status"),
       tail: z.boolean().optional()
         .describe("Keep tail instead of head when truncating"),
     }),
   },
   async (params) => {
+    // Poll and list_jobs route to internal commands, bypassing normal execution
+    if (params.poll) {
+      return cli("fbash", ["--command", `__fbash_poll ${params.poll}`, "-o", "json"]);
+    }
+    if (params.list_jobs) {
+      return cli("fbash", ["--command", "__fbash_jobs", "-o", "json"]);
+    }
+    if (!params.command) {
+      throw new Error("command is required unless using poll or list_jobs");
+    }
     const args = [];
     args.push("--command", params.command);
     if (params.max_lines !== undefined) args.push("--max-lines", String(params.max_lines));
