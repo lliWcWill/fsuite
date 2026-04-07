@@ -337,8 +337,8 @@ if [[ -n "$FILTER_TYPE" ]]; then
 fi
 if [[ -n "$FORCE_LANG" ]]; then
   case "$FORCE_LANG" in
-      python|javascript|typescript|kotlin|swift|rust|go|java|c|cpp|ruby|lua|php|bash|dockerfile|makefile|yaml|toml|ini|cuda|mojo|hcl|protobuf|graphql|csharp|zig|env|compose|packagejson|gemfile|gomod|requirements|markdown) ;;
-      *) die "Invalid --lang: $FORCE_LANG (valid: python, javascript, typescript, kotlin, swift, rust, go, java, c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml, toml, ini, cuda, mojo, hcl, protobuf, graphql, csharp, zig, env, compose, packagejson, gemfile, gomod, requirements, markdown)" ;;
+      python|javascript|typescript|kotlin|swift|rust|go|java|c|cpp|ruby|lua|php|bash|dockerfile|makefile|yaml|toml|ini|cuda|mojo|hcl|protobuf|graphql|csharp|zig|env|compose|packagejson|gemfile|gomod|requirements|sql|css|html|xml|markdown) ;;
+      *) die "Invalid --lang: $FORCE_LANG (valid: python, javascript, typescript, kotlin, swift, rust, go, java, c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml, toml, ini, cuda, mojo, hcl, protobuf, graphql, csharp, zig, env, compose, packagejson, gemfile, gomod, requirements, sql, css, html, xml, markdown)" ;;
   esac
   fi
 
@@ -904,6 +904,48 @@ extract_symbols() {
       # pip requirements.txt
       patterns=(
         "import:^[a-zA-Z][a-zA-Z0-9_.-]*"
+      )
+    ;;
+    sql)
+      patterns=(
+        "class:^[[:space:]]*(CREATE[[:space:]]+TABLE|CREATE[[:space:]]+VIEW|CREATE[[:space:]]+MATERIALIZED[[:space:]]+VIEW)[[:space:]]"
+        "function:^[[:space:]]*(CREATE[[:space:]]+(OR[[:space:]]+REPLACE[[:space:]]+)?(FUNCTION|PROCEDURE|TRIGGER))[[:space:]]"
+        "type:^[[:space:]]*(CREATE[[:space:]]+TYPE|CREATE[[:space:]]+ENUM|CREATE[[:space:]]+DOMAIN)[[:space:]]"
+        "class:^[[:space:]]*(CREATE[[:space:]]+INDEX|CREATE[[:space:]]+UNIQUE[[:space:]]+INDEX)[[:space:]]"
+        "class:^[[:space:]]*(CREATE[[:space:]]+SCHEMA|CREATE[[:space:]]+DATABASE)[[:space:]]"
+        "constant:^[[:space:]]*(ALTER[[:space:]]+TABLE)[[:space:]]"
+        "import:^[[:space:]]*(INSERT[[:space:]]+INTO)[[:space:]]"
+      )
+    ;;
+    css)
+      patterns=(
+        "class:^[[:space:]]*[.#][a-zA-Z_-][a-zA-Z0-9_-]*"
+        "class:^[[:space:]]*[a-zA-Z][a-zA-Z0-9-]*[[:space:]]*[,{]"
+        "function:^[[:space:]]*@media[[:space:]]"
+        "function:^[[:space:]]*@keyframes[[:space:]]"
+        "import:^[[:space:]]*@import[[:space:]]"
+        "import:^[[:space:]]*@use[[:space:]]"
+        "import:^[[:space:]]*@forward[[:space:]]"
+        "constant:^[[:space:]]*--[a-zA-Z_-][a-zA-Z0-9_-]*[[:space:]]*:"
+        "type:^[[:space:]]*@mixin[[:space:]]"
+        "function:^[[:space:]]*@include[[:space:]]"
+      )
+    ;;
+    html)
+      patterns=(
+        "class:^[[:space:]]*<(html|head|body|main|header|footer|nav|section|article|aside)[[:space:]>]"
+        "function:^[[:space:]]*<(form|table|ul|ol|dl|details|dialog|template)[[:space:]>]"
+        "import:^[[:space:]]*<(script|link|style)[[:space:]]"
+        "constant:^[[:space:]]*<[a-zA-Z][a-zA-Z0-9-]*[^>]*id=[\"'][^\"']*[\"']"
+        "constant:^[[:space:]]*<meta[[:space:]]"
+      )
+    ;;
+    xml)
+      patterns=(
+        "class:^[[:space:]]*<[a-zA-Z][a-zA-Z0-9_:-]*[[:space:]>]"
+        "constant:^[[:space:]]*<[a-zA-Z][a-zA-Z0-9_:-]*[^>]*name=[\"'][^\"']*[\"']"
+        "import:^[[:space:]]*<([?]xml|!DOCTYPE)[[:space:]]"
+        "import:^[[:space:]]*xmlns[[:space:]]*="
       )
     ;;
     markdown)
