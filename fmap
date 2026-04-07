@@ -337,8 +337,8 @@ if [[ -n "$FILTER_TYPE" ]]; then
 fi
 if [[ -n "$FORCE_LANG" ]]; then
   case "$FORCE_LANG" in
-      python|javascript|typescript|kotlin|swift|rust|go|java|c|cpp|ruby|lua|php|bash|dockerfile|makefile|yaml|toml|ini|cuda|mojo|hcl|protobuf|graphql|csharp|zig|env|compose|packagejson|gemfile|gomod|requirements|sql|css|html|xml|perl|rlang|elixir|scala|zsh|markdown) ;;
-      *) die "Invalid --lang: $FORCE_LANG (valid: python, javascript, typescript, kotlin, swift, rust, go, java, c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml, toml, ini, cuda, mojo, hcl, protobuf, graphql, csharp, zig, env, compose, packagejson, gemfile, gomod, requirements, sql, css, html, xml, perl, rlang, elixir, scala, zsh, markdown)" ;;
+      python|javascript|typescript|kotlin|swift|rust|go|java|c|cpp|ruby|lua|php|bash|dockerfile|makefile|yaml|toml|ini|cuda|mojo|hcl|protobuf|graphql|csharp|zig|env|compose|packagejson|gemfile|gomod|requirements|sql|css|html|xml|perl|rlang|elixir|scala|zsh|dart|objc|haskell|julia|powershell|groovy|ocaml|clojure|wasm|markdown) ;;
+      *) die "Invalid --lang: $FORCE_LANG" ;;
   esac
   fi
 
@@ -513,6 +513,7 @@ detect_language() {
     go.mod) echo "gomod"; return ;;
     requirements.txt|requirements-*.txt|requirements_*.txt) echo "requirements"; return ;;
     .zshrc|.zprofile|.zshenv|.zlogin|.zlogout) echo "zsh"; return ;;
+    Jenkinsfile|Jenkinsfile.*) echo "groovy"; return ;;
     esac
 
   if [[ "$file" == */res/layout/*.xml ]]; then
@@ -550,12 +551,21 @@ detect_language() {
     graphql|gql) echo "graphql"; return ;;
     cs) echo "csharp"; return ;;
     zig) echo "zig"; return ;;
-    env) echo "env"; return ;;
     pl|pm) echo "perl"; return ;;
     r|R|rmd) echo "rlang"; return ;;
     ex|exs) echo "elixir"; return ;;
     scala|sc) echo "scala"; return ;;
     zsh) echo "zsh"; return ;;
+    dart) echo "dart"; return ;;
+    m|mm) echo "objc"; return ;;
+    hs|lhs) echo "haskell"; return ;;
+    jl) echo "julia"; return ;;
+    ps1|psm1|psd1) echo "powershell"; return ;;
+    groovy|gradle|Jenkinsfile) echo "groovy"; return ;;
+    ml|mli) echo "ocaml"; return ;;
+    clj|cljs|cljc|edn) echo "clojure"; return ;;
+    wat|wast) echo "wasm"; return ;;
+    env) echo "env"; return ;;
     sql) echo "sql"; return ;;
     css|scss|sass|less) echo "css"; return ;;
     html|htm|svelte|vue) echo "html"; return ;;
@@ -1006,6 +1016,107 @@ extract_symbols() {
         "function:^[[:space:]]*autoload[[:space:]]"
         "function:^[[:space:]]*compdef[[:space:]]"
         "constant:^[[:space:]]*zstyle[[:space:]]"
+      )
+    ;;
+    dart)
+      patterns=(
+        "class:^[[:space:]]*(abstract[[:space:]]+)?(class|mixin|extension)[[:space:]]+[a-zA-Z_]"
+        "type:^[[:space:]]*enum[[:space:]]+[a-zA-Z_]"
+        "type:^[[:space:]]*typedef[[:space:]]"
+        "function:^[[:space:]]*(static[[:space:]]+)?[a-zA-Z_<>?][a-zA-Z0-9_<>?]*[[:space:]]+[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*\("
+        "import:^[[:space:]]*import[[:space:]]"
+        "import:^[[:space:]]*export[[:space:]]"
+        "import:^[[:space:]]*part[[:space:]]"
+      )
+    ;;
+    objc)
+      patterns=(
+        "class:^[[:space:]]*@interface[[:space:]]+[a-zA-Z_]"
+        "class:^[[:space:]]*@implementation[[:space:]]+[a-zA-Z_]"
+        "class:^[[:space:]]*@protocol[[:space:]]+[a-zA-Z_]"
+        "function:^[[:space:]]*[-+][[:space:]]*\("
+        "import:^[[:space:]]*#import[[:space:]]"
+        "import:^[[:space:]]*#include[[:space:]]"
+        "constant:^[[:space:]]*@property[[:space:]]"
+        "type:^[[:space:]]*typedef[[:space:]]"
+      )
+    ;;
+    haskell)
+      patterns=(
+        "class:^[[:space:]]*module[[:space:]]+[A-Z]"
+        "class:^[[:space:]]*(data|newtype)[[:space:]]+[A-Z]"
+        "type:^[[:space:]]*type[[:space:]]+[A-Z]"
+        "class:^[[:space:]]*class[[:space:]]+[A-Z]"
+        "function:^[[:space:]]*instance[[:space:]]"
+        "function:^[a-z_][a-zA-Z0-9_']*[[:space:]]*::"
+        "import:^[[:space:]]*import[[:space:]]"
+      )
+    ;;
+    julia)
+      patterns=(
+        "function:^[[:space:]]*(function|macro)[[:space:]]+[a-zA-Z_]"
+        "class:^[[:space:]]*(abstract[[:space:]]+type|struct|mutable[[:space:]]+struct)[[:space:]]+[a-zA-Z_]"
+        "class:^[[:space:]]*module[[:space:]]+[a-zA-Z_]"
+        "type:^[[:space:]]*const[[:space:]]+[a-zA-Z_]"
+        "import:^[[:space:]]*(using|import)[[:space:]]"
+        "export:^[[:space:]]*export[[:space:]]"
+      )
+    ;;
+    powershell)
+      patterns=(
+        "function:^[[:space:]]*(function|filter)[[:space:]]+[a-zA-Z_]"
+        "class:^[[:space:]]*class[[:space:]]+[a-zA-Z_]"
+        "type:^[[:space:]]*enum[[:space:]]+[a-zA-Z_]"
+        "import:^[[:space:]]*(Import-Module|using[[:space:]]+module)[[:space:]]"
+        "import:^[[:space:]]*\.[[:space:]]"
+        "constant:^[[:space:]]*\[Parameter"
+        "constant:^[[:space:]]*param[[:space:]]*\("
+      )
+    ;;
+    groovy)
+      patterns=(
+        "class:^[[:space:]]*(class|interface|trait|enum)[[:space:]]+[a-zA-Z_]"
+        "function:^[[:space:]]*(def|void|String|int|boolean|static)[[:space:]]+[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*\("
+        "class:^[[:space:]]*pipeline[[:space:]]*\{"
+        "function:^[[:space:]]*stage[[:space:]]*\("
+        "import:^[[:space:]]*import[[:space:]]"
+        "constant:^[[:space:]]*@[A-Z][a-zA-Z]*"
+      )
+    ;;
+    ocaml)
+      patterns=(
+        "class:^[[:space:]]*module[[:space:]]+[A-Z]"
+        "function:^[[:space:]]*let[[:space:]]+[a-z_][a-zA-Z0-9_']*"
+        "type:^[[:space:]]*type[[:space:]]+[a-z_]"
+        "import:^[[:space:]]*open[[:space:]]+[A-Z]"
+        "constant:^[[:space:]]*val[[:space:]]+[a-z_]"
+        "class:^[[:space:]]*class[[:space:]]+[a-z_]"
+      )
+    ;;
+    clojure)
+      patterns=(
+        "function:^[[:space:]]*\(defn[[:space:]]"
+        "function:^[[:space:]]*\(defn-[[:space:]]"
+        "constant:^[[:space:]]*\(def[[:space:]]"
+        "class:^[[:space:]]*\(ns[[:space:]]"
+        "function:^[[:space:]]*\(defmacro[[:space:]]"
+        "class:^[[:space:]]*\(defprotocol[[:space:]]"
+        "class:^[[:space:]]*\(defrecord[[:space:]]"
+        "type:^[[:space:]]*\(defmulti[[:space:]]"
+        "import:^[[:space:]]*\(require[[:space:]]"
+        "import:^[[:space:]]*\(use[[:space:]]"
+      )
+    ;;
+    wasm)
+      patterns=(
+        "class:^[[:space:]]*\(module"
+        "function:^[[:space:]]*\(func[[:space:]]"
+        "export:^[[:space:]]*\(export[[:space:]]"
+        "import:^[[:space:]]*\(import[[:space:]]"
+        "type:^[[:space:]]*\(type[[:space:]]"
+        "constant:^[[:space:]]*\(global[[:space:]]"
+        "constant:^[[:space:]]*\(memory[[:space:]]"
+        "constant:^[[:space:]]*\(table[[:space:]]"
       )
     ;;
     markdown)
