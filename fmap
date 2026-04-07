@@ -195,8 +195,9 @@ OPTIONS
 
   -L, --lang <lang>
       Force language (auto-detect by default).
-        Supported: python, javascript, typescript, kotlin, swift, rust, go, java,
-                   c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml, markdown
+                   Supported: python, javascript, typescript, kotlin, swift, rust, go, java,
+                   c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml, toml, ini, cuda,
+                   mojo, hcl, protobuf, graphql, csharp, zig, env, markdown
 
   -t, --type <type>
       Filter symbol types: function, class, import, type, export, constant
@@ -336,10 +337,10 @@ if [[ -n "$FILTER_TYPE" ]]; then
 fi
 if [[ -n "$FORCE_LANG" ]]; then
   case "$FORCE_LANG" in
-      python|javascript|typescript|kotlin|swift|rust|go|java|c|cpp|ruby|lua|php|bash|dockerfile|makefile|yaml|markdown) ;;
-      *) die "Invalid --lang: $FORCE_LANG (valid: python, javascript, typescript, kotlin, swift, rust, go, java, c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml, markdown)" ;;
+      python|javascript|typescript|kotlin|swift|rust|go|java|c|cpp|ruby|lua|php|bash|dockerfile|makefile|yaml|toml|ini|cuda|mojo|hcl|protobuf|graphql|csharp|zig|env|compose|packagejson|gemfile|gomod|requirements|markdown) ;;
+      *) die "Invalid --lang: $FORCE_LANG (valid: python, javascript, typescript, kotlin, swift, rust, go, java, c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml, toml, ini, cuda, mojo, hcl, protobuf, graphql, csharp, zig, env, compose, packagejson, gemfile, gomod, requirements, markdown)" ;;
   esac
-fi
+  fi
 
 has grep || die "grep is required. Run: fmap --install-hints"
 
@@ -505,7 +506,13 @@ detect_language() {
     AndroidManifest.xml) echo "android_manifest"; return ;;
     Dockerfile|Dockerfile.*|Containerfile|Containerfile.*|containerfile|containerfile.*) echo "dockerfile"; return ;;
     Makefile|makefile|GNUmakefile) echo "makefile"; return ;;
-  esac
+    docker-compose.yml|docker-compose.yaml|compose.yml|compose.yaml) echo "compose"; return ;;
+    .env|.env.*) echo "env"; return ;;
+    package.json) echo "packagejson"; return ;;
+    Gemfile) echo "gemfile"; return ;;
+    go.mod) echo "gomod"; return ;;
+    requirements.txt|requirements-*.txt|requirements_*.txt) echo "requirements"; return ;;
+    esac
 
   if [[ "$file" == */res/layout/*.xml ]]; then
     echo "android_layout"
@@ -533,8 +540,22 @@ detect_language() {
     dockerfile|Dockerfile|containerfile|Containerfile) echo "dockerfile"; return ;;
     mk) echo "makefile"; return ;;
     yml|yaml) echo "yaml"; return ;;
+    toml|tml) echo "toml"; return ;;
+    ini|cfg|conf) echo "ini"; return ;;
+    cu|cuh) echo "cuda"; return ;;
+    mojo) echo "mojo"; return ;;
+    tf|hcl) echo "hcl"; return ;;
+    proto) echo "protobuf"; return ;;
+    graphql|gql) echo "graphql"; return ;;
+    cs) echo "csharp"; return ;;
+    zig) echo "zig"; return ;;
+    env) echo "env"; return ;;
+    sql) echo "sql"; return ;;
+    css|scss|sass|less) echo "css"; return ;;
+    html|htm|svelte|vue) echo "html"; return ;;
+    xml|xsl|xslt|svg|xsd|csproj|fsproj|vbproj|props|targets|nuspec|pom) echo "xml"; return ;;
     md|markdown|mdx) echo "markdown"; return ;;
-  esac
+    esac
 
   # Shebang fallback for extensionless files
   if [[ -z "$ext" ]] && [[ -f "$file" ]]; then
@@ -757,7 +778,134 @@ extract_symbols() {
         "import:^[[:space:]]+extends:[[:space:]]"
         "constant:^[[:space:]]+[A-Z][A-Z0-9_]*:[[:space:]]"
       )
-      ;;
+    ;;
+    toml)
+      patterns=(
+        "class:^\[{1,2}[a-zA-Z_][a-zA-Z0-9_.\" -]*\]{1,2}[[:space:]]*$"
+        "constant:^[a-zA-Z_][a-zA-Z0-9_-]*[[:space:]]*="
+      )
+    ;;
+    ini)
+      patterns=(
+        "class:^\[[a-zA-Z_][a-zA-Z0-9_. -]*\][[:space:]]*$"
+        "constant:^[a-zA-Z_][a-zA-Z0-9_-]*[[:space:]]*="
+      )
+    ;;
+    cuda)
+      # CUDA extends C/C++ with GPU qualifiers
+      patterns=(
+        "function:^[[:space:]]*((__global__|__device__|__host__|__host__[[:space:]]+__device__)[[:space:]]+)?(void|int|float|double|auto|[a-zA-Z_][a-zA-Z0-9_]*)[[:space:]]+[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*\("
+        "class:^[[:space:]]*(class|struct|enum|union|namespace)[[:space:]]"
+        "constant:^[[:space:]]*(__constant__|__shared__|__managed__)[[:space:]]"
+        "import:^[[:space:]]*#include[[:space:]]"
+      )
+    ;;
+    mojo)
+      patterns=(
+        "function:^[[:space:]]*(fn|def)[[:space:]]+[a-zA-Z_]"
+        "class:^[[:space:]]*(struct|trait)[[:space:]]+[a-zA-Z_]"
+        "constant:^[[:space:]]*(alias|var|let)[[:space:]]+[a-zA-Z_]"
+        "import:^(from|import)[[:space:]]"
+        "type:^[[:space:]]*@[a-zA-Z_]"
+      )
+    ;;
+    hcl)
+      # Terraform / HCL
+      patterns=(
+        "class:^[[:space:]]*(resource|data)[[:space:]]+\"[^\"]*\"[[:space:]]+\"[^\"]*\""
+        "function:^[[:space:]]*(module|provider)[[:space:]]+\"[^\"]*\""
+        "constant:^[[:space:]]*(variable|output)[[:space:]]+\"[^\"]*\""
+        "type:^[[:space:]]*(terraform|locals)[[:space:]]*\{"
+      )
+    ;;
+    protobuf)
+      patterns=(
+        "class:^[[:space:]]*message[[:space:]]+[a-zA-Z_]"
+        "class:^[[:space:]]*service[[:space:]]+[a-zA-Z_]"
+        "function:^[[:space:]]*rpc[[:space:]]+[a-zA-Z_]"
+        "type:^[[:space:]]*enum[[:space:]]+[a-zA-Z_]"
+        "import:^[[:space:]]*import[[:space:]]+\""
+        "constant:^[[:space:]]*option[[:space:]]"
+        "constant:^[[:space:]]*package[[:space:]]"
+      )
+    ;;
+    graphql)
+      patterns=(
+        "class:^[[:space:]]*(type|interface|input)[[:space:]]+[a-zA-Z_]"
+        "type:^[[:space:]]*(enum|union|scalar)[[:space:]]+[a-zA-Z_]"
+        "function:^[[:space:]]*(extend[[:space:]]+type|directive)[[:space:]]"
+        "import:^[[:space:]]*fragment[[:space:]]+[a-zA-Z_]"
+      )
+    ;;
+    csharp)
+      patterns=(
+        "class:^[[:space:]]*(public[[:space:]]+|private[[:space:]]+|protected[[:space:]]+|internal[[:space:]]+|static[[:space:]]+|abstract[[:space:]]+|sealed[[:space:]]+|partial[[:space:]]+)*(class|interface|record|struct)[[:space:]]+[a-zA-Z_]"
+        "type:^[[:space:]]*(public[[:space:]]+|private[[:space:]]+|internal[[:space:]]+)?enum[[:space:]]+[a-zA-Z_]"
+        "class:^[[:space:]]*namespace[[:space:]]+[a-zA-Z_]"
+        "import:^[[:space:]]*using[[:space:]]+[a-zA-Z_]"
+        "constant:^[[:space:]]*(public[[:space:]]+|private[[:space:]]+|protected[[:space:]]+|internal[[:space:]]+)?(static[[:space:]]+)?(readonly[[:space:]]+)?delegate[[:space:]]"
+      )
+    ;;
+    zig)
+      patterns=(
+        "function:^[[:space:]]*(pub[[:space:]]+)?fn[[:space:]]+[a-zA-Z_]"
+        "class:^[[:space:]]*(pub[[:space:]]+)?const[[:space:]]+[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*=[[:space:]]*struct[[:space:]]*\{"
+        "type:^[[:space:]]*(pub[[:space:]]+)?const[[:space:]]+[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*=[[:space:]]*(enum|union)"
+        "constant:^[[:space:]]*(pub[[:space:]]+)?const[[:space:]]+[a-zA-Z_]"
+        "import:^[[:space:]]*const[[:space:]]+[a-zA-Z_][a-zA-Z0-9_]*[[:space:]]*=[[:space:]]*@import"
+        "function:^[[:space:]]*test[[:space:]]+\""
+      )
+    ;;
+    env)
+      patterns=(
+        "constant:^[a-zA-Z_][a-zA-Z0-9_]*="
+      )
+    ;;
+    compose)
+      # Docker Compose - service names, volumes, networks as structure
+      patterns=(
+        "class:^services:[[:space:]]*$"
+        "class:^volumes:[[:space:]]*$"
+        "class:^networks:[[:space:]]*$"
+        "class:^configs:[[:space:]]*$"
+        "class:^secrets:[[:space:]]*$"
+        "function:^[[:space:]]{2,4}[a-zA-Z_][a-zA-Z0-9_-]*:[[:space:]]*$"
+        "import:^[[:space:]]+image:[[:space:]]"
+        "export:^[[:space:]]+ports:[[:space:]]*$"
+        "constant:^[[:space:]]+environment:[[:space:]]*$"
+      )
+    ;;
+    packagejson)
+      # package.json - scripts, dependencies, devDependencies
+      patterns=(
+        "class:^[[:space:]]*\"(scripts|dependencies|devDependencies|peerDependencies|optionalDependencies)\"[[:space:]]*:"
+        "constant:^[[:space:]]*\"(name|version|description|main|module|type|license|author)\"[[:space:]]*:"
+        "function:^[[:space:]]*\"(start|dev|build|test|lint|preview|deploy|serve)\"[[:space:]]*:"
+        "import:^[[:space:]]*\"[a-zA-Z@][a-zA-Z0-9_./@-]*\"[[:space:]]*:[[:space:]]*\"[~^><=]*[0-9]"
+      )
+    ;;
+    gemfile)
+      patterns=(
+        "import:^[[:space:]]*gem[[:space:]]"
+        "class:^[[:space:]]*group[[:space:]]"
+        "constant:^[[:space:]]*source[[:space:]]"
+        "constant:^[[:space:]]*ruby[[:space:]]"
+      )
+    ;;
+    gomod)
+      patterns=(
+        "class:^module[[:space:]]"
+        "constant:^go[[:space:]]"
+        "class:^require[[:space:]]*("
+        "import:^[[:space:]]+[a-zA-Z][a-zA-Z0-9_./-]*[[:space:]]+v"
+      )
+    ;;
+    requirements)
+      # pip requirements.txt
+      patterns=(
+        "import:^[a-zA-Z][a-zA-Z0-9_.-]*"
+      )
+    ;;
     markdown)
       # ATX headings: allow 0-3 leading spaces, optional trailing #
       patterns=(
