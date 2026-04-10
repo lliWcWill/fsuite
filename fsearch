@@ -1065,7 +1065,11 @@ fi
 
 # pretty output
 if (( QUIET == 0 )); then
-  echo "Search(pattern: \"$PATTERN\" -> name \"$NAME_GLOB\", path: \"$SEARCH_PATH\")"
+  if [[ "$PATTERN" == "$NAME_GLOB" ]]; then
+    echo "Search(pattern: \"$PATTERN\", path: \"$SEARCH_PATH\")"
+  else
+    echo "Search(pattern: \"$PATTERN\" -> name \"$NAME_GLOB\", path: \"$SEARCH_PATH\")"
+  fi
   if [[ "$COUNT_MODE" == "exact" ]]; then
     echo "  ⎿ Found $TOTAL_FOUND results (backend: $BACKEND_BIN)"
   else
