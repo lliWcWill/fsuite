@@ -546,12 +546,10 @@ fi
 if (( QUIET == 0 )); then
   echo "ContentSearch(query: \"$QUERY\")"
   if (( FILES_FROM_STDIN == 1 )); then
-    echo "  ⎿ mode: stdin_files (max_files=$MAX_FILES)"
+    echo "  ⎿ matched_files: $TOTAL_FILES shown_matches: $SHOWN_MATCHES (cap=$MAX_MATCHES) mode: stdin_files (max_files=$MAX_FILES)"
   else
-    echo "  ⎿ mode: directory path=\"$SEARCH_PATH\""
+    echo "  ⎿ matched_files: $TOTAL_FILES shown_matches: $SHOWN_MATCHES (cap=$MAX_MATCHES) mode: directory path=\"$SEARCH_PATH\""
   fi
-  echo "  ⎿ matched_files: $TOTAL_FILES"
-  echo "  ⎿ shown_matches: $SHOWN_MATCHES (cap=$MAX_MATCHES)"
 fi
 if (( SHOWN_MATCHES == 0 )); then
   # Emit metacharacter warning to stderr (pretty mode)
