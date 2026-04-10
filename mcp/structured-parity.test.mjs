@@ -495,7 +495,14 @@ test("fbash pretty output does not color exit=null as an error", async () => {
   const plain = stripAnsi(raw);
 
   assert.ok(!result.isError, plain);
-  assert.ok(plain.includes("exit=null"), `expected exit=null in pretty output, got: ${plain}`);
+  // A pending background job has exit_code=null in structured output. The
+  // pretty renderer must NOT surface it as "exit=null" in red (or any color),
+  // because null means "still running", not "failed". Since PR #27, the
+  // renderer hides exit_code entirely for null/0 and shows background_job_id.
+  assert.ok(
+    plain.includes("background_job_id"),
+    `expected background_job_id in pretty output, got: ${plain}`,
+  );
   assert.ok(
     !raw.includes("\x1b[38;2;220;90;90mexit=null"),
     `exit=null should not be rendered in red, got: ${JSON.stringify(raw)}`,
@@ -508,7 +515,14 @@ test("fbash MCP error path falls back to parsed stderr when errors are empty", a
   });
 
   const plain = stripAnsi(textContent(result));
-  assert.equal(result.isError, true, `expected MCP error result, got: ${plain}`);
+  // PR #27 contract: fbash non-zero exit is a *command-level* failure, not a
+  // *tool-level* failure. isError stays undefined/false so agents don't retry
+  // the tool call. Instead, the pretty output must surface exit code + stderr
+  // so the caller can see what went wrong.
+  assert.ok(
+    plain.includes("exit=7"),
+    `expected exit=7 in fbash error output, got: ${plain}`,
+  );
   assert.ok(
     plain.includes("mcp-fbash-stderr"),
     `expected fbash stderr to surface in MCP error text, got: ${plain}`,

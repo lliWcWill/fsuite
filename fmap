@@ -341,7 +341,7 @@ fi
 if [[ -n "$FORCE_LANG" ]]; then
   case "$FORCE_LANG" in
       python|javascript|typescript|kotlin|swift|rust|go|java|c|cpp|ruby|lua|php|bash|dockerfile|makefile|yaml|toml|ini|cuda|mojo|hcl|protobuf|graphql|csharp|zig|env|compose|packagejson|gemfile|gomod|requirements|sql|css|html|xml|perl|rlang|elixir|scala|zsh|dart|objc|haskell|julia|powershell|groovy|ocaml|clojure|wasm|markdown) ;;
-      *) die "Invalid --lang: $FORCE_LANG" ;;
+      *) die "Invalid --lang: $FORCE_LANG (valid: python, javascript, typescript, kotlin, swift, rust, go, java, c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml, toml, ini, cuda, mojo, hcl, protobuf, graphql, csharp, zig, env, compose, packagejson, gemfile, gomod, requirements, sql, css, html, xml, perl, rlang, elixir, scala, zsh, dart, objc, haskell, julia, powershell, groovy, ocaml, clojure, wasm, markdown)" ;;
   esac
   fi
 
@@ -973,8 +973,8 @@ extract_symbols() {
         "class:^[[:space:]]*package[[:space:]]+[a-zA-Z_]"
         "import:^[[:space:]]*use[[:space:]]+[a-zA-Z_]"
         "import:^[[:space:]]*require[[:space:]]"
-        "constant:^[[:space:]]*our[[:space:]]+\\$[a-zA-Z_]"
-        "constant:^[[:space:]]*my[[:space:]]+\\$[a-zA-Z_]"
+        'constant:^[[:space:]]*our[[:space:]]+\$[a-zA-Z_]'
+        'constant:^[[:space:]]*my[[:space:]]+\$[a-zA-Z_]'
       )
     ;;
     rlang)

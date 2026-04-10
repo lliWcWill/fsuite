@@ -60,7 +60,9 @@ test("fcase MCP note succeeds without appending unsupported output flags", async
   });
 
   assert.ok(!noteResult.isError, textContent(noteResult));
-  assert.match(textContent(noteResult), new RegExp(`Added note to ${slug}`));
+  const noteText = textContent(noteResult);
+  assert.match(noteText, /Note saved/);
+  assert.match(noteText, new RegExp(slug));
 });
 
 test("fcase MCP export uses the CLI's required json output mode", async () => {

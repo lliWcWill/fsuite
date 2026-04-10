@@ -46,8 +46,12 @@ OPTIONS
 
   -L, --lang <lang>
       Force language (auto-detect by default).
-        Supported: python, javascript, typescript, kotlin, swift, rust, go, java,
-                   c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml, markdown
+                   Supported: python, javascript, typescript, kotlin, swift, rust, go, java,
+                   c, cpp, ruby, lua, php, bash, dockerfile, makefile, yaml, toml, ini, cuda,
+                   mojo, hcl, protobuf, graphql, csharp, zig, env, compose, packagejson,
+                   gemfile, gomod, requirements, sql, css, html, xml, perl, rlang, elixir,
+                   scala, zsh, dart, objc, haskell, julia, powershell, groovy, ocaml,
+                   clojure, wasm, markdown
 
   -t, --type <type>
       Filter symbol types: function, class, import, type, export, constant

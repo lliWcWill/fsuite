@@ -694,9 +694,11 @@ const fsearchHitSchema = z.object({
 function renderFcaseResult(jsonStr) {
   try {
     const d = JSON.parse(jsonStr);
-    // Only render case views — skip export (has .events) which needs raw JSON
+    // fcase export returns a full dump with .events — return raw JSON string so
+    // consumers can JSON.parse(textContent(result)) directly.
+    if (d.events) return jsonStr;
+    // Only render case views — everything else falls through (no render).
     if (!d.cases && !d.case) return null;
-    if (d.events) return null;
 
     // Single case view (status, note, init, resolve, etc.)
     if (d.case) {
