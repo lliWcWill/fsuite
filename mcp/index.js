@@ -860,47 +860,107 @@ function renderFbashResult(jsonStr) {
   const d = maybeParseJson(jsonStr);
   if (!d || d.tool !== "fbash") return null;
 
-  const lines = [];
+  // ── Palette (local aliases for readability) ──────────────────
+  const GOLD    = fg(255, 215, 0);     // 256:220 — fbash signature
+  const OK      = fg(80, 200, 80);     // exit=0
+  const ERR     = fg(255, 80, 80);     // non-zero exit / stderr label
+  const WARN    = fg(255, 200, 50);    // warnings
+  const INFO    = fg(102, 217, 238);   // duration / hints (royal-cyan so it stays readable on dark)
+  const MUTE    = fg(170, 160, 140);   // stderr body (muted warm — distinct from stdout without screaming)
+  const GRAY    = fg(150, 150, 150);   // dim labels
 
-  // Only show exit code on failure — exit=0 is noise
-  if (d.exit_code != null && d.exit_code !== 0) {
-    lines.push(`${fg(220, 90, 90)}exit=${d.exit_code}${RESET}`);
+  const MAX_STDOUT_LINES = 30;
+  const MAX_STDERR_LINES = 10;
+
+  const out = [];
+
+  // ── Header line ──────────────────────────────────────────────
+  // Format: [bold gold]fbash[reset]  class=general  12ms  exit=0
+  const headerParts = [`${BOLD}${GOLD}fbash${RESET}`];
+  if (d.command_class) {
+    headerParts.push(`${GRAY}class=${d.command_class}${RESET}`);
+  }
+  if (typeof d.duration_ms === "number") {
+    headerParts.push(`${INFO}${d.duration_ms}ms${RESET}`);
+  }
+  if (d.exit_code == null) {
+    // Background or still-running — no exit badge in header
+  } else if (d.exit_code === 0) {
+    headerParts.push(`${OK}exit=0${RESET}`);
+  } else {
+    headerParts.push(`${ERR}${BOLD}exit=${d.exit_code}${RESET}`);
+  }
+  out.push(headerParts.join("  "));
+
+  // ── Background job callout ───────────────────────────────────
+  // Background jobs have exit_code=null and metadata.background_job_id set.
+  // Skip stdout/stderr for bg jobs — they haven't produced final output yet.
+  const bgId = d.metadata?.background_job_id;
+  const bgStatus = d.metadata?.background_status;
+  const isBackgroundStart = bgId && d.exit_code == null && bgStatus !== "completed";
+  if (isBackgroundStart) {
+    const pollHint = d.next_hint ? ` ${DIM}· poll:${UNDIM} ${INFO}${d.next_hint}${RESET}` : "";
+    out.push(`${GRAY}[bg job ${bgId} started${d.command ? ` · ${d.command}` : ""}${pollHint}${GRAY}]${RESET}`);
+    return out.join("\n") + "\n";
   }
 
-  // stdout — the actual data
-  const MAX_BASH_LINES = 30;
-  if (d.stdout) {
-    const stdoutLines = d.stdout.split("\n");
-    if (stdoutLines.length > MAX_BASH_LINES) {
-      lines.push(stdoutLines.slice(0, MAX_BASH_LINES).join("\n"));
-      lines.push(`${DIM}... ${stdoutLines.length - MAX_BASH_LINES} more lines${RESET}`);
-    } else {
-      lines.push(d.stdout);
+  // ── stdout block ─────────────────────────────────────────────
+  const stdoutStr = typeof d.stdout === "string" ? d.stdout : "";
+  if (stdoutStr.length > 0) {
+    // Preserve whitespace; strip trailing newline for clean rendering.
+    const trimmed = stdoutStr.replace(/\n+$/, "");
+    const stdoutLines = trimmed.split("\n");
+    const shown = stdoutLines.slice(0, MAX_STDOUT_LINES);
+    for (const line of shown) out.push(`  ${line}`);
+    if (stdoutLines.length > MAX_STDOUT_LINES) {
+      const extra = stdoutLines.length - MAX_STDOUT_LINES;
+      out.push(`  ${DIM}... ${extra} more line${extra === 1 ? "" : "s"}${RESET}`);
     }
   }
 
-  // stderr — only if present
-  if (d.stderr) {
-    const stderrLines = d.stderr.split("\n");
-    if (stderrLines.length > 10) {
-      lines.push(`${fg(220, 90, 90)}stderr:${RESET} ${stderrLines.slice(0, 10).join("\n")}`);
-      lines.push(`${DIM}... ${stderrLines.length - 10} more stderr lines${RESET}`);
-    } else {
-      lines.push(`${fg(220, 90, 90)}stderr:${RESET} ${d.stderr}`);
+  // ── stderr block (only if non-empty) ────────────────────────
+  const stderrStr = typeof d.stderr === "string" ? d.stderr : "";
+  if (stderrStr.length > 0) {
+    const trimmed = stderrStr.replace(/\n+$/, "");
+    const stderrLines = trimmed.split("\n");
+    out.push(`${ERR}${BOLD}stderr${RESET}${GRAY}:${RESET}`);
+    const shown = stderrLines.slice(0, MAX_STDERR_LINES);
+    for (const line of shown) out.push(`  ${MUTE}${line}${RESET}`);
+    if (stderrLines.length > MAX_STDERR_LINES) {
+      const extra = stderrLines.length - MAX_STDERR_LINES;
+      out.push(`  ${DIM}... ${extra} more stderr line${extra === 1 ? "" : "s"}${RESET}`);
     }
   }
 
-  // Background job ID — actionable, keep it
-  if (d.metadata?.background_job_id) {
-    lines.push(`${fg(117, 113, 94)}background_job_id: ${d.metadata.background_job_id}${RESET}`);
+  // ── Silent-success / silent-failure indicator ───────────────
+  if (stdoutStr.length === 0 && stderrStr.length === 0) {
+    if (d.exit_code === 0) {
+      out.push(`  ${DIM}(silent success)${RESET}`);
+    } else if (d.exit_code != null && d.exit_code !== 0) {
+      out.push(`  ${DIM}(no output)${RESET}`);
+    }
   }
 
-  // Empty output indicator
-  if (!d.stdout && !d.stderr) {
-    lines.push(`${DIM}(no output)${RESET}`);
+  // ── Truncation note ─────────────────────────────────────────
+  if (d.truncated && d.truncation_reason) {
+    out.push(`${WARN}\u26a0 truncated:${RESET} ${DIM}${d.truncation_reason}${RESET}`);
   }
 
-  return lines.join("\n");
+  // ── Warnings ────────────────────────────────────────────────
+  const warnings = Array.isArray(d.warnings) ? d.warnings : [];
+  for (const w of warnings) {
+    out.push(`${WARN}\u26a0${RESET} ${DIM}${w}${RESET}`);
+  }
+
+  // ── Routing suggestion / next_hint (only one, prefer routing) ─
+  const routing = d.routing_suggestion;
+  if (routing && routing.tool) {
+    out.push(`${INFO}\u2192 hint: use ${BOLD}${routing.tool}${RESET}${INFO}${routing.reason ? ` — ${routing.reason}` : ""}${RESET}`);
+  } else if (d.next_hint && !isBackgroundStart) {
+    out.push(`${INFO}\u2192 next:${RESET} ${DIM}${d.next_hint}${RESET}`);
+  }
+
+  return out.join("\n") + "\n";
 }
 
 // Tool → renderer mapping

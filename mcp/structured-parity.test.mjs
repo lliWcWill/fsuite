@@ -497,11 +497,16 @@ test("fbash pretty output does not color exit=null as an error", async () => {
   assert.ok(!result.isError, plain);
   // A pending background job has exit_code=null in structured output. The
   // pretty renderer must NOT surface it as "exit=null" in red (or any color),
-  // because null means "still running", not "failed". Since PR #27, the
-  // renderer hides exit_code entirely for null/0 and shows background_job_id.
+  // because null means "still running", not "failed". The fbash structured
+  // renderer (fcase #359) hides the exit badge entirely for background starts
+  // and emits a "[bg job <id> started · ...]" callout instead.
   assert.ok(
-    plain.includes("background_job_id"),
-    `expected background_job_id in pretty output, got: ${plain}`,
+    /bg job\s+fbash_\d+_\d+/.test(plain),
+    `expected bg job callout with background_job_id in pretty output, got: ${plain}`,
+  );
+  assert.ok(
+    !plain.includes("exit=null"),
+    `exit=null should never appear in plain text, got: ${plain}`,
   );
   assert.ok(
     !raw.includes("\x1b[38;2;220;90;90mexit=null"),
