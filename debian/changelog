@@ -1,3 +1,10 @@
+fsuite (3.2.0-1) unstable; urgency=medium
+
+  * feat: add fbash CLI binary to package (token-budgeted shell execution)
+  * chore: add fbash to install.sh TOOLS array
+
+ -- Chess Williams <chess.w.williams@gmail.com>  Wed, 02 Apr 2026 22:00:00 -0500
+
 fsuite (3.1.0-1) unstable; urgency=medium
 
   * fix(fsearch): handle SIGPIPE from head-limited pipelines on CI
