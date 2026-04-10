@@ -2846,7 +2846,7 @@ test_yaml_github_actions_uses() {
 
 test_parse_yaml_exact() {
   local result
-  result=$(_validate_lang_json "${TEST_DIR}/src/compose.yml" "yaml" "class,function,import" 4)
+  result=$(_validate_lang_json "${TEST_DIR}/src/ci.yaml" "yaml" "class,function,import" 4)
   if [[ "$result" == "OK" ]]; then
     pass "YAML exact parse: all types found, no dupes, 4+ symbols"
   else
