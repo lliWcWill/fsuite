@@ -1306,31 +1306,40 @@ cmd_note() {
   shift || true
   [[ -n "$slug" ]] || die "note requires <slug>"
 
-  local body=""
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --body)
-        body="${2:-}"
-        shift 2
-        ;;
-      *)
-        die "Unknown option for note: $1"
-        ;;
-    esac
-  done
-  [[ -n "$body" ]] || die "note requires --body"
+local body=""
+local output="$DEFAULT_OUTPUT"
+while [[ $# -gt 0 ]]; do
+case "$1" in
+--body)
+body="${2:-}"
+shift 2
+;;
+-o|--output)
+output="${2:-}"
+shift 2
+;;
+*)
+die "Unknown option for note: $1"
+;;
+esac
+done
+[[ -n "$body" ]] || die "note requires --body"
 
-  ensure_db
-  local case_id session_id now payload
-  case_id="$(case_id_for_slug "$slug")"
-  [[ -n "$case_id" ]] || die "case not found: $slug"
-  session_id="$(latest_session_id_for_case "$case_id")"
-  now="$(now_utc)"
-  payload="$(printf '{"body":"%s"}' "$(printf '%s' "$body" | json_escape)")"
-  append_event "$case_id" "$session_id" "note" "$payload" "$now"
-  db_exec <<<"UPDATE cases SET updated_at = $(sql_quote "$now") WHERE id = $case_id;"
-  rebuild_fts_for_case "$case_id"
+ensure_db
+local case_id session_id now payload
+case_id="$(case_id_for_slug "$slug")"
+[[ -n "$case_id" ]] || die "case not found: $slug"
+session_id="$(latest_session_id_for_case "$case_id")"
+now="$(now_utc)"
+payload="$(printf '{"body":"%s"}' "$(printf '%s' "$body" | json_escape)")"
+append_event "$case_id" "$session_id" "note" "$payload" "$now"
+db_exec <<<"UPDATE cases SET updated_at = $(sql_quote "$now") WHERE id = $case_id;"
+rebuild_fts_for_case "$case_id"
+if [[ "$output" == "json" ]]; then
+  status_json "$slug" | jq --arg msg "Note saved" '. + {message: $msg}'
+else
   echo "Added note to ${slug}"
+fi
 }
 
 cmd_next() {

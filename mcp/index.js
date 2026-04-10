@@ -712,8 +712,12 @@ function renderFcaseResult(jsonStr) {
       if (c.goal) out += `${DIM}  ${c.goal}${UNDIM}\n`;
       if (c.resolution_summary) out += `${fg(80,200,80)}  ${c.resolution_summary}${RESET}\n`;
       if (c.next_move) out += `${fg(255,200,50)}  next: ${c.next_move}${RESET}\n`;
-      // Pass through any message from the action
-      if (d.message) out += `${DIM}${d.message}${UNDIM}\n`;
+      // Pass through any message from the action with contextual icon
+      if (d.message) {
+        const isError = /fail|error|denied/i.test(d.message);
+        const msgIcon = isError ? `${fg(255,80,80)}\u2718${RESET}` : `${fg(80,200,80)}\u2714${RESET}`;
+        out += `${msgIcon} ${DIM}${d.message}${UNDIM}\n`;
+      }
       return out;
     }
 
@@ -1366,7 +1370,8 @@ server.registerTool(
         status: "json",
         list: "json",
         next: "json",
-        handoff: "json",
+    note: "json",
+    handoff: "json",
         export: "json",
         resolve: "json",
         archive: "json",

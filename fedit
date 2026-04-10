@@ -599,7 +599,7 @@ render_paths() {
 ensure_target_parent() {
   local parent
   parent=$(dirname "$TARGET_PATH")
-  [[ -d "$parent" ]] || { ERROR_CODE="not_found"; die 1 "Parent directory does not exist: $parent"; }
+  [[ -d "$parent" ]] || mkdir -p "$parent" || { ERROR_CODE="not_found"; die 1 "Cannot create parent directory: $parent"; }
   [[ -w "$parent" ]] || { ERROR_CODE="permission"; die 1 "Parent directory is not writable: $parent"; }
 }
 
