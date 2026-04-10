@@ -103,7 +103,21 @@ The MCP adapter (`mcp/index.js`) is a stateless Node.js dispatcher built on `@mo
 
 ## Why This Exists: The Lightbulb Moment
 
-We shipped fsuite and thought it was done. Then we pointed Claude Code at the repo, told it to clone, study, and live-test the tools — and asked it to do a *Tony Stark autopsy*: compare fsuite against its own built-in toolkit and tell us honestly what it would change.
+**The honest version: fsuite was always supposed to be CLI-first. The MCP server, the hooks, the enforcement stack — those came later, in the wrong order, and we're still catching up to the lightbulb moment that probably should have come first.**
+
+Here's the sequence, for the record:
+
+1. **Built the fsuite CLI tools.** `fread`, `fedit`, `ftree`, `fs`, `fmap`, `fcase`, the whole stack. The core idea: give coding agents bounded, structured, token-budgeted alternatives to `grep`, `find`, `cat`, `sed`, and `bash`. CLI-first, always. That was the plan.
+2. **Built the MCP server.** Because even with fsuite installed, Claude would still reach for its native `Bash` tool to run `fread` instead of something structured. So we wrapped the whole suite in MCP to give it a cleaner call path. The thing picked up a color scheme (Monokai) along the way, which turned out to be the part we love the most about it.
+3. **Built `fbash`.** Because we realized we could replace the `Bash` tool too — token-budgeted, classified, session-aware. At this point fsuite had 14 tools and a whole MCP layer and we still thought we were doing the right thing.
+4. **Discovered Claude Code hooks.** *After* all of the above. It turns out you can just **block** native tools at the source and force agents to use fsuite instead. One `PreToolUse` hook per blocked tool. No MCP needed to enforce usage. If we'd known about hooks first, the MCP might not exist at all.
+5. **Tried to rely on hooks alone.** Couldn't. Hooks *block*, but they don't *route* — an agent can get blocked on `Read` but has no automatic translation to `fread`. So we defaulted back to the MCP as the "easy path" for agents to discover and invoke the suite. The two layers ended up complementary: hooks block the old tools, MCP exposes the new ones, agents have nowhere to land except on fsuite.
+
+**The recursion problem.** If you removed the MCP today, an agent would have to use its native `Bash` tool to call `fbash` to call `fread`. That's two hops, and it defeats the whole "use fsuite instead of Bash" thesis. The honest truth: without the MCP, the agent would just use its `Bash` tool to call `fread` directly — which still works, but you lose the Monokai-colored structured output the MCP layer renders. Which is the part we love the most about the MCP path. Which should probably just be on the CLI tools too. **Real TODO.** Not shipped yet.
+
+---
+
+So that's how we got here. Messy build order, three layers stacked on top of each other, and somewhere in the middle of the chaos the thing started to *work*. Don't take our word for it — we didn't believe it either until we pointed Claude Code at the repo, told it to clone, study, and live-test the tools, and asked it to do a *Tony Stark autopsy*: compare fsuite against its own built-in toolkit and tell us honestly what it would change.
 
 It didn't just say "nice tools." It wrote a full self-assessment. Unprompted conclusions. No instructions on what to find.
 
