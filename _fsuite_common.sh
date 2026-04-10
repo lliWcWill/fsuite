@@ -601,3 +601,55 @@ _fsuite_infer_project_name() {
   # Fallback: basename of original path
   basename "$start_path" | tr -cd '[:alnum:]. _-'
 }
+
+# ─── Canonical per-tool color palette ──────────────────────────────────────
+# 256-color ANSI codes, mirrored from mcp/index.js TOOL_PALETTE so that
+# CLI pretty output and MCP rendered output use the exact same per-tool
+# signature colors. Sourced by fmetrics, freplay, and any other tool that
+# wants to highlight tool names in its output.
+#
+#   fread / ftree / fls / freplay     46   neon green  — read / scout
+#   fedit / fwrite                    208  orange      — mutation
+#   fcontent / fsearch / fs           27   royal blue  — search
+#   fmap / fcase                      129  dark violet — structure / knowledge
+#   fprobe / fmetrics                 196  pure red    — diagnostic / recon
+#   fbash                             220  gold        — shell execution
+#   fsuite (meta)                     15   white       — guide
+_fsuite_tool_color_code() {
+  case "$1" in
+    fread|ftree|fls|freplay)       printf '1;38;5;46' ;;
+    fedit|fwrite)                  printf '1;38;5;208' ;;
+    fcontent|fsearch|fs)           printf '1;38;5;27' ;;
+    fmap|fcase)                    printf '1;38;5;129' ;;
+    fprobe|fmetrics)               printf '1;38;5;196' ;;
+    fbash)                         printf '1;38;5;220' ;;
+    fsuite|*)                      printf '1;38;5;15' ;;
+  esac
+}
+
+# Paint a tool name with its signature color.
+# Usage: _fsuite_paint_tool <tool_name> [<display_text>]
+# If display_text is given, colors that instead of the tool name
+# (useful for padded/formatted display strings).
+# Respects caller's COLOR_ENABLED variable if set, else checks NO_COLOR/TTY.
+_fsuite_paint_tool() {
+  local tool="$1"
+  local text="${2:-$tool}"
+  local code
+  code=$(_fsuite_tool_color_code "$tool")
+
+  local on=0
+  if [[ -n "${COLOR_ENABLED:-}" && "$COLOR_ENABLED" -eq 1 ]]; then
+    on=1
+  elif [[ -n "${FORCE_COLOR:-}" || -n "${FSUITE_FORCE_COLOR:-}" ]]; then
+    on=1
+  elif [[ -z "${NO_COLOR:-}" && -t 1 && "${TERM:-}" != "dumb" ]]; then
+    on=1
+  fi
+
+  if (( on )); then
+    printf '\033[%sm%s\033[0m' "$code" "$text"
+  else
+    printf '%s' "$text"
+  fi
+}

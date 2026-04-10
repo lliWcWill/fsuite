@@ -94,6 +94,57 @@ MAX_ERROR_EXCERPT=240
 DEFAULT_OUTPUT="pretty"
 
 # ---------------------------------------------------------------------------
+# Color theme (shares palette with fmetrics/mcp via _fsuite_common.sh)
+# ---------------------------------------------------------------------------
+COLOR_ENABLED=0
+if [[ -n "${FORCE_COLOR:-}" || -n "${FSUITE_FORCE_COLOR:-}" ]]; then
+  COLOR_ENABLED=1
+elif [[ -z "${NO_COLOR:-}" && -t 1 && "${TERM:-}" != "dumb" ]]; then
+  COLOR_ENABLED=1
+fi
+
+paint() {
+  local code="$1" text="$2"
+  if (( COLOR_ENABLED )); then
+    printf '\033[%sm%s\033[0m' "$code" "$text"
+  else
+    printf '%s' "$text"
+  fi
+}
+
+# Canonical semantic helpers — match fmetrics color vocab
+replay_title()  { paint '1;38;5;46'  "$1"; }  # neon green — freplay's signature
+replay_label()  { paint '1;38;5;129' "$1"; }  # dark violet — section labels
+replay_info()   { paint '1;38;5;27'  "$1"; }  # royal blue — neutral info
+replay_good()   { paint '1;38;5;46'  "$1"; }  # neon green — success / pass
+replay_warn()   { paint '1;38;5;208' "$1"; }  # orange — warning / partial
+replay_bad()    { paint '1;38;5;196' "$1"; }  # red — failure
+replay_rule()   { paint '38;5;240'   "$1"; }  # gray — dividers
+replay_dim()    { paint '38;5;245'   "$1"; }  # dim gray — timestamps
+
+# Color a replay status string with semantic meaning.
+# Respects padding (trim the trailing spaces before matching, paint the raw key,
+# then re-pad — keeps table alignment).
+paint_status() {
+  local raw="$1"
+  local key="${raw// /}"
+  local painted
+  case "$key" in
+    pass|success|ok|verified|active|canonical|promoted)
+      painted=$(replay_good "$raw") ;;
+    fail|failed|error|invalid|rejected)
+      painted=$(replay_bad "$raw") ;;
+    pending|partial|stale|archived|warn)
+      painted=$(replay_warn "$raw") ;;
+    draft|recorded|neutral)
+      painted=$(replay_info "$raw") ;;
+    *)
+      painted=$(printf '%s' "$raw") ;;
+  esac
+  printf '%s' "$painted"
+}
+
+# ---------------------------------------------------------------------------
 # Usage
 # ---------------------------------------------------------------------------
 
@@ -735,13 +786,28 @@ if rows_raw.strip():
 print(json.dumps({'replays': replays}, indent=2))
 " "$rows"
   else
-    # Pretty: header + rows
-    printf '%-6s  %-10s  %-10s  %-6s  %-20s  %s\n' 'ID' 'STATUS' 'ORIGIN' 'STEPS' 'CREATED_AT' 'LABEL'
-    printf '%-6s  %-10s  %-10s  %-6s  %-20s  %s\n' '------' '----------' '----------' '------' '--------------------' '-----'
+    # Pretty: header + rows with per-status coloring
+    echo "$(replay_title "freplay list — $slug")"
+    echo "$(replay_rule '───────────────────────────────────────────────────────────────')"
+    echo ""
+    printf '  %s  %s  %s  %s  %s  %s\n' \
+      "$(replay_label "$(printf '%-6s'  'ID')")" \
+      "$(replay_label "$(printf '%-10s' 'STATUS')")" \
+      "$(replay_label "$(printf '%-10s' 'ORIGIN')")" \
+      "$(replay_label "$(printf '%-6s'  'STEPS')")" \
+      "$(replay_label "$(printf '%-20s' 'CREATED_AT')")" \
+      "$(replay_label 'LABEL')"
+    echo "$(replay_rule '  ──────  ──────────  ──────────  ──────  ────────────────────  ─────')"
     if [[ -n "$rows" ]]; then
       while IFS='|' read -r rid rstatus rorigin rcount rcreated rlabel; do
-        printf '%-6s  %-10s  %-10s  %-6s  %-20s  %s\n' "$rid" "$rstatus" "$rorigin" "$rcount" "$rcreated" "$rlabel"
+        local rstatus_colored rcreated_colored
+        rstatus_colored=$(paint_status "$(printf '%-10s' "$rstatus")")
+        rcreated_colored=$(replay_dim "$(printf '%-20s' "$rcreated")")
+        printf '  %-6s  %s  %-10s  %-6s  %s  %s\n' \
+          "$rid" "$rstatus_colored" "$rorigin" "$rcount" "$rcreated_colored" "$rlabel"
       done <<<"$rows"
+    else
+      echo "  $(replay_dim '(no replays recorded for this case)')"
     fi
   fi
 }

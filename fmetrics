@@ -819,18 +819,30 @@ cmd_import() {
   if [[ "$OUTPUT" == "json" ]]; then
     echo "$import_output"
   else
-    echo "Importing telemetry data..."
-    echo "  Processed $total lines"
-    echo "  Inserted $inserted new records"
-    echo "  Skipped $skipped duplicates"
-    (( errors > 0 )) && echo "  Errors: $errors (malformed lines)"
-    (( cursor_reset > 0 )) && echo "  Import cursor reset (telemetry file changed)"
+    echo "$(metric_title 'fmetrics import')"
+    echo "$(metric_rule '============================================')"
+    echo ""
+    printf "  %s %s\n"   "$(metric_label 'Processed:')" "$(metric_info "$total lines")"
     if (( inserted > 0 )); then
-      echo "  Analytics marked dirty: run fmetrics rebuild now, or let combos/recommend rebuild on demand"
+      printf "  %s %s\n" "$(metric_label 'Inserted:')"  "$(metric_good "$inserted new records")"
+    else
+      printf "  %s %s\n" "$(metric_label 'Inserted:')"  "$inserted new records"
+    fi
+    printf "  %s %s\n"   "$(metric_label 'Skipped:')"   "$skipped duplicates"
+    if (( errors > 0 )); then
+      printf "  %s %s\n" "$(metric_label 'Errors:')"    "$(paint '1;38;5;196' "$errors malformed lines")"
+    fi
+    if (( cursor_reset > 0 )); then
+      printf "  %s %s\n" "$(metric_label 'Cursor:')"    "$(metric_warn 'reset (telemetry file changed)')"
+    fi
+    if (( inserted > 0 )); then
+      echo ""
+      echo "  $(metric_warn '⚠ Analytics marked dirty') — run $(_fsuite_paint_tool fmetrics 'fmetrics rebuild') to refresh combos/recommend."
     fi
     local db_size
     db_size=$(du -h "$DB_FILE" 2>/dev/null | cut -f1) || db_size="unknown"
-    echo "Database: $DB_FILE ($db_size)"
+    echo ""
+    printf "  %s %s %s\n" "$(metric_label 'Database:')" "$DB_FILE" "$(metric_info "($db_size)")"
   fi
 }
 
@@ -921,8 +933,20 @@ cmd_stats() {
       echo "$(metric_rule '  ----------------------------------------------------------')"
 
     while IFS='|' read -r t runs avg_ms min_ms max_ms sr; do
-      printf "  %-12s %6s %10s %10s %10s %8s%%\n" \
-        "$t" "$runs" "$(human_ms "$avg_ms")" "$(human_ms "$min_ms")" "$(human_ms "$max_ms")" "$sr"
+      # Color the tool name with its signature palette color
+      local t_padded t_colored sr_colored
+      t_padded=$(printf '%-12s' "$t")
+      t_colored=$(_fsuite_paint_tool "$t" "$t_padded")
+      # Color success rate: green >= 99, orange 90-98, red < 90
+      if awk -v x="$sr" 'BEGIN { exit !(x+0 >= 99) }'; then
+        sr_colored=$(metric_good "$(printf '%7s%%' "$sr")")
+      elif awk -v x="$sr" 'BEGIN { exit !(x+0 >= 90) }'; then
+        sr_colored=$(metric_warn "$(printf '%7s%%' "$sr")")
+      else
+        sr_colored=$(paint '1;38;5;196' "$(printf '%7s%%' "$sr")")
+      fi
+      printf "  %s %6s %10s %10s %10s %s\n" \
+        "$t_colored" "$runs" "$(human_ms "$avg_ms")" "$(human_ms "$min_ms")" "$(human_ms "$max_ms")" "$sr_colored"
     done < <(sqlite3 -separator '|' "$DB_FILE" "$stats_sql" 2>/dev/null)
 
     echo ""
