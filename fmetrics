@@ -1004,7 +1004,6 @@ cmd_history() {
     [[ -n "${FILTER_TOOL:-}" ]] && title="Recent $FILTER_TOOL Runs"
     [[ -n "${FILTER_PROJECT:-}" ]] && title="$title (project: $FILTER_PROJECT)"
       echo "$(metric_title "fmetrics history — $title (last $LIMIT)")"
-      echo "$(metric_rule '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')"
       printf "  %-20s %-12s %-12s %-12s %8s %6s %8s %6s\n" "Timestamp" "Tool" "Mode" "Project" "Time" "Items" "Bytes" "Exit"
       echo "$(metric_rule '  ─────────────────────────────────────────────────────────────────────────────────────────────')"
 
@@ -1225,7 +1224,6 @@ fi
     printf '],"total_combos":%s}\n' "$total_rows"
   else
     echo "$(metric_title 'fmetrics combos')"
-    echo "$(metric_rule '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')"
     printf "  %-30s %6s %6s %8s %10s %8s\n" "Combo" "Runs" "Clean" "Fault" "Avg Time" "Impact"
     echo "$(metric_rule '  ─────────────────────────────────────────────────────────────────────────────────────────────')"
     local combo_key step_count occurrences clean_runs faulted_runs avg_duration_ms
@@ -1460,7 +1458,6 @@ fi
     printf '],"total_historical_samples":%s}\n' "$total_samples"
   else
     echo "$(metric_title 'fmetrics recommend')"
-    echo "$(metric_rule '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')"
     printf "  %s %s\n" "$(metric_label 'Prefix:')" "$prefix_key"
     printf "  %-18s %8s %8s %10s %12s %8s\n" "Next Tool" "Support" "Faults" "Avg Time" "Confidence" "Impact"
     echo "$(metric_rule '  ─────────────────────────────────────────────────────────────────────────────────────────────')"
@@ -1656,8 +1653,6 @@ cmd_predict() {
         echo "$pred_json"
         else
             echo "$(metric_title "fmetrics predict -- $target")"
-            echo "$(metric_rule '============================================')"
-            echo ""
             echo "$(metric_label '  Project Characteristics:')"
           echo "    $(metric_info 'Items:') $total_items"
           echo "    $(metric_info 'Size:')  ${size_mb}MB"
@@ -1820,8 +1815,6 @@ PY
     echo "$predictions_json"
   else
       echo "$(metric_title "fmetrics predict -- $target")"
-      echo "$(metric_rule '============================================')"
-      echo ""
       echo "  $(metric_label 'Project:') $total_items entries, ${size_mb}MB"
       echo ""
       echo "$(metric_label '  Estimated Runtimes — based on historical averages:')"
@@ -1928,7 +1921,6 @@ cmd_profile() {
     cat "$profile_file"
   else
       echo "$(metric_title "Machine Profile ($profile_file)")"
-      echo "$(metric_rule '================================')"
       cat "$profile_file" | sed 's/[{}",]//g' | sed 's/^ */  /' | grep -v '^$'
   fi
 }
