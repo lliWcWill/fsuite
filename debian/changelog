@@ -1,3 +1,28 @@
+fsuite (3.3.0-1) unstable; urgency=medium
+
+  * feat(fmap): 50 programming language support — adds bash, cpp, cuda,
+    dart, elixir, haskell, julia, mojo, ocaml, protobuf, r, scala, swift,
+    wasm, zig, and many more (PR #27, c90f576..f978431)
+  * feat(fbash): MCP async jobs — poll and list_jobs exposed as native
+    MCP tool parameters for background job inspection (PR #27)
+  * feat(fwrite): new standalone atomic file writer CLI tool — supports
+    --content, --stdin, --from, --mkdir, --overwrite, --dry-run, --json,
+    --quiet. Replaces the MCP-only fwrite composite (d98fbed)
+  * feat(fpatch-claude-mcp): include the claude-mcp patch utility in the
+    package so users can patch Claude Code's MCP binary out of the box
+  * fix(fmap): escape $ in Perl regex patterns to prevent bash arithmetic
+    expansion — one root cause that cascaded into 11 failing test
+    assertions via stderr leak into JSON capture (PR #30)
+  * fix(fmap): --lang error message now enumerates valid languages (PR #30)
+  * fix(fcase): JSON output mode for cmd_note (was always text)
+  * fix(fcase MCP): pass raw JSON through renderer for export action
+    (was returning null + placeholder) (PR #30)
+  * fix(fedit): auto-create parent directory instead of hard-failing
+    when writing to a missing directory (improves fwrite composition)
+  * docs: full Starlight knowledge base at https://lliwcwill.github.io/fsuite/
+
+ -- player3vsgpt <domain112@yahoo.com>  Fri, 10 Apr 2026 13:55:00 -0500
+
 fsuite (3.2.0-1) unstable; urgency=medium
 
   * feat: add fbash CLI binary to package (token-budgeted shell execution)
