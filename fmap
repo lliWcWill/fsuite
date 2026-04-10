@@ -1734,26 +1734,21 @@ _mode_label="directory"
 (( SINGLE_FILE == 1 )) && _mode_label="single_file"
 
 if (( QUIET == 0 )); then
-  echo "fmap (${ABS_PATH:-stdin})"
-  echo "  mode: $_mode_label"
-  echo "  files_scanned: $TOTAL_FILES_SCANNED (cap=$MAX_FILES)"
-  if [[ -n "$NAME_QUERY" ]]; then
-    echo "  query: $NAME_QUERY"
-    echo "  symbols: $SHOWN_SYMBOLS matched (from $TOTAL_SYMBOLS total, cap=$MAX_SYMBOLS)"
-  else
-    echo "  symbols: $TOTAL_SYMBOLS (cap=$MAX_SYMBOLS)"
-  fi
-
-  # Languages line
+  # Build optional languages suffix
   _lang_line=""
   for _l in "${!LANG_COUNTS[@]}"; do
     [[ -n "$_lang_line" ]] && _lang_line+=" "
     _lang_line+="${_l}=${LANG_COUNTS[$_l]}"
   done
-  if [[ -n "$_lang_line" ]]; then
-    echo "  languages: $_lang_line"
+  _lang_suffix=""
+  [[ -n "$_lang_line" ]] && _lang_suffix=" languages: $_lang_line"
+
+  echo "fmap (${ABS_PATH:-stdin})"
+  if [[ -n "$NAME_QUERY" ]]; then
+    echo "  mode: $_mode_label files_scanned: $TOTAL_FILES_SCANNED (cap=$MAX_FILES) symbols: $SHOWN_SYMBOLS matched (from $TOTAL_SYMBOLS total, cap=$MAX_SYMBOLS) query: $NAME_QUERY$_lang_suffix"
+  else
+    echo "  mode: $_mode_label files_scanned: $TOTAL_FILES_SCANNED (cap=$MAX_FILES) symbols: $TOTAL_SYMBOLS (cap=$MAX_SYMBOLS)$_lang_suffix"
   fi
-  echo ""
 fi
 
 # truncation warning shown after symbols
