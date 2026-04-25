@@ -289,6 +289,29 @@ test_cwd_tracking() {
   fi
 }
 
+test_process_cwd_beats_stale_session_cwd() {
+  local process_dir stale_dir stdout cwd
+  process_dir="${TEST_DIR}/process-workspace"
+  stale_dir="${TEST_DIR}/stale-workspace"
+  mkdir -p "$process_dir" "$stale_dir"
+
+  "${FBASH}" --command 'pwd' --cwd "$stale_dir" -o json >/dev/null 2>&1 || true
+
+  pushd "$process_dir" >/dev/null
+  fbash_json --command 'pwd'
+  popd >/dev/null
+
+  stdout=$(jfield stdout)
+  cwd=$(jfield cwd)
+
+  if [[ "$stdout" == "$process_dir" && "$cwd" == "$process_dir" ]]; then
+    pass "process_cwd_beats_stale_session_cwd: used caller cwd"
+  else
+    fail "process_cwd_beats_stale_session_cwd: expected caller cwd" \
+      "stdout='$stdout' cwd='$cwd' process_dir='$process_dir' stale_dir='$stale_dir'"
+  fi
+}
+
 # ============================================================================
 # 12. Routing Suggestion — ls -> fls
 # ============================================================================
@@ -669,6 +692,7 @@ main() {
   echo ""
   echo "== CWD Tracking =="
   run_test "CWD tracking" test_cwd_tracking
+  run_test "Process CWD beats stale session CWD" test_process_cwd_beats_stale_session_cwd
 
   echo ""
   echo "== Smart Routing Suggestions =="

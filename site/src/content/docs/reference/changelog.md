@@ -9,6 +9,7 @@ sidebar:
 
 ## Recent highlights
 
+- **v3.3.0** — expanded language support, `fwrite`, `fpatch-claude-mcp`, MCP async jobs, and docs site
 - **v3.2.0** — `fbash` CLI binary added to Debian package
 - **v3.1.0** — `fsearch` SIGPIPE handling fix
 - **v3.0.x** — `fcase` lifecycle overhaul, `fs` unified search, `freplay` introduction

@@ -918,7 +918,15 @@ test_telemetry_recorded() {
   FSUITE_TELEMETRY=1 "${FREAD}" "${TEST_DIR}/sample.txt" --max-lines 5 >/dev/null 2>&1 || true
   local line
   line=$(tail -1 "$HOME/.fsuite/telemetry.jsonl" 2>/dev/null) || line=""
-  if [[ "$line" =~ \"tool\":\"fread\" ]] && [[ "$line" =~ \"run_id\":\"[0-9]+_[0-9]+\" ]]; then
+  if python3 - "$line" <<'PY' 2>/dev/null; then
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+run_id = payload.get("run_id", "")
+assert payload.get("tool") == "fread"
+assert isinstance(run_id, str) and len(run_id.split("_")) >= 2
+PY
     pass "Telemetry records fread with run_id"
   else
     fail "Telemetry should record tool=fread with run_id" "Got: $line"

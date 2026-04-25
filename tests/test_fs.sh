@@ -410,7 +410,7 @@ assert_eq "CLI --help documents config-only mode" "true" "$([[ "$help_out" == *"
 
 # CLI --version
 version_out=$("$FS" --version 2>/dev/null)
-assert_eq "CLI --version contains 3.1.0" "true" "$([[ "$version_out" == *"3.1.0"* ]] && echo true || echo false)"
+assert_eq "CLI --version contains 3.3.0" "true" "$([[ "$version_out" == *"3.3.0"* ]] && echo true || echo false)"
 
 # CLI pretty output should not show orphan preview ellipsis without visible children
 STUB_FS_DIR=$(mktemp -d)

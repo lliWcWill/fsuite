@@ -10,6 +10,24 @@ TEST_ROOT=""
 TESTS_RUN=0
 TESTS_PASSED=0
 TESTS_FAILED=0
+EXPECTED_TOOLS=(
+  fsuite
+  ftree
+  fsearch
+  fcontent
+  fmap
+  fread
+  fcase
+  fedit
+  fwrite
+  fmetrics
+  freplay
+  fprobe
+  fs
+  fls
+  fbash
+  fpatch-claude-mcp
+)
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -59,20 +77,11 @@ test_prefix_install_copies_tools_and_assets() {
   }
 
   local missing=0
-  local path
+  local tool path
+  for tool in "${EXPECTED_TOOLS[@]}"; do
+    [[ -x "${prefix}/bin/${tool}" ]] || missing=1
+  done
   for path in \
-    "${prefix}/bin/fsuite" \
-    "${prefix}/bin/ftree" \
-    "${prefix}/bin/fsearch" \
-    "${prefix}/bin/fcontent" \
-    "${prefix}/bin/fmap" \
-    "${prefix}/bin/fread" \
-    "${prefix}/bin/fcase" \
-    "${prefix}/bin/fedit" \
-    "${prefix}/bin/fmetrics" \
-    "${prefix}/bin/freplay" \
-    "${prefix}/bin/fprobe" \
-    "${prefix}/bin/fs" \
     "${prefix}/share/fsuite/_fsuite_common.sh" \
     "${prefix}/share/fsuite/fmetrics-predict.py" \
     "${prefix}/share/fsuite/fmetrics-import.py" \
@@ -82,9 +91,9 @@ test_prefix_install_copies_tools_and_assets() {
   done
 
   if (( missing == 0 )); then
-    pass "Prefix install copies tools and shared assets"
+    pass "Prefix install copies all tools and shared assets"
   else
-    fail "Prefix install should place tools and shared assets under the prefix"
+    fail "Prefix install should place all tools and shared assets under the prefix"
   fi
 }
 
@@ -95,37 +104,25 @@ test_prefix_install_versions_work() {
     return
   }
 
-  local output
-  output=$(
-    FSUITE_TELEMETRY=0 "${prefix}/bin/fsuite" --version
-    FSUITE_TELEMETRY=0 "${prefix}/bin/ftree" --version
-    FSUITE_TELEMETRY=0 "${prefix}/bin/fsearch" --version
-    FSUITE_TELEMETRY=0 "${prefix}/bin/fcontent" --version
-    FSUITE_TELEMETRY=0 "${prefix}/bin/fmap" --version
-    FSUITE_TELEMETRY=0 "${prefix}/bin/fread" --version
-    FSUITE_TELEMETRY=0 "${prefix}/bin/fcase" --version
-    FSUITE_TELEMETRY=0 "${prefix}/bin/fedit" --version
-    FSUITE_TELEMETRY=0 "${prefix}/bin/fmetrics" --version
-    FSUITE_TELEMETRY=0 "${prefix}/bin/freplay" --version
-    FSUITE_TELEMETRY=0 "${prefix}/bin/fprobe" --version
-    FSUITE_TELEMETRY=0 FSUITE_SHARE_DIR="${prefix}/share/fsuite" "${prefix}/bin/fs" --version
-  )
+  local failures=0 output tool suite_version expected
+  suite_version=$(FSUITE_TELEMETRY=0 "${prefix}/bin/fsuite" --version 2>/dev/null | awk '{print $2}') || suite_version=""
+  for tool in "${EXPECTED_TOOLS[@]}"; do
+    if [[ "$tool" == "fs" ]]; then
+      output=$(FSUITE_TELEMETRY=0 FSUITE_SHARE_DIR="${prefix}/share/fsuite" "${prefix}/bin/${tool}" --version 2>&1) || output=""
+    else
+      output=$(FSUITE_TELEMETRY=0 "${prefix}/bin/${tool}" --version 2>&1) || output=""
+    fi
+    expected="${tool} ${suite_version}"
+    if [[ -z "$suite_version" ]] || [[ "$output" != "$expected" ]]; then
+      failures=$((failures + 1))
+      echo "  Version failure: ${tool}: expected '${expected}', got '${output}'"
+    fi
+  done
 
-  if [[ "$output" =~ fsuite\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
-     [[ "$output" =~ ftree\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
-     [[ "$output" =~ fsearch\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
-     [[ "$output" =~ fcontent\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
-     [[ "$output" =~ fmap\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
-     [[ "$output" =~ fread\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
-     [[ "$output" =~ fcase\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
-     [[ "$output" =~ fedit\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
-     [[ "$output" =~ fmetrics\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
-     [[ "$output" =~ freplay\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
-     [[ "$output" =~ fprobe\ [0-9]+\.[0-9]+\.[0-9]+ ]] && \
-     [[ "$output" =~ fs\ [0-9]+\.[0-9]+\.[0-9]+ ]]; then
-    pass "Installed tools report versions from the prefix"
+  if (( failures == 0 )); then
+    pass "All installed tools report the suite version from the prefix"
   else
-    fail "Installed tools should be executable from the prefix" "Got: $output"
+    fail "Installed tools should all report the suite version" "failures=$failures suite_version=${suite_version:-<empty>}"
   fi
 }
 

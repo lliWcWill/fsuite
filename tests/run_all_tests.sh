@@ -71,6 +71,15 @@ main() {
     failed_suites+=("fcontent")
   fi
 
+  # Run fbash tests
+  echo ""
+  if run_test_suite "${SCRIPT_DIR}/test_fbash.sh" "fbash Test Suite"; then
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+  else
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+    failed_suites+=("fbash")
+  fi
+
   # Run fcase tests
   echo ""
   if run_test_suite "${SCRIPT_DIR}/test_fcase.sh" "fcase Test Suite"; then
@@ -125,6 +134,15 @@ main() {
     failed_suites+=("fread")
   fi
 
+  # Run fread symbol tests
+  echo ""
+  if run_test_suite "${SCRIPT_DIR}/test_fread_symbols.sh" "fread symbol resolution"; then
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+  else
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+    failed_suites+=("fread-symbols")
+  fi
+
   # Run fedit tests
   echo ""
   if run_test_suite "${SCRIPT_DIR}/test_fedit.sh" "fedit Test Suite"; then
@@ -132,6 +150,15 @@ main() {
   else
     TOTAL_FAILED=$((TOTAL_FAILED + 1))
     failed_suites+=("fedit")
+  fi
+
+  # Run fedit validation tests
+  echo ""
+  if run_test_suite "${SCRIPT_DIR}/test_fedit_validation.sh" "fedit validation"; then
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+  else
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+    failed_suites+=("fedit-validation")
   fi
 
   # Run freplay tests
@@ -188,6 +215,15 @@ main() {
     failed_suites+=("install")
   fi
 
+  # Run installer automation tests
+  echo ""
+  if run_test_suite "${SCRIPT_DIR}/test_install_automation.sh" "install automation"; then
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+  else
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+    failed_suites+=("install-automation")
+  fi
+
   # Run telemetry tests
   echo ""
   if run_test_suite "${SCRIPT_DIR}/test_telemetry.sh" "Telemetry Test Suite"; then
@@ -195,6 +231,15 @@ main() {
   else
     TOTAL_FAILED=$((TOTAL_FAILED + 1))
     failed_suites+=("telemetry")
+  fi
+
+  # Run regression bucket tests
+  echo ""
+  if run_test_suite "${SCRIPT_DIR}/test_coderabbit_fixes.sh" "CodeRabbit regression bucket"; then
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+  else
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+    failed_suites+=("coderabbit-fixes")
   fi
 
   TOTAL_TESTS=$((TOTAL_PASSED + TOTAL_FAILED))

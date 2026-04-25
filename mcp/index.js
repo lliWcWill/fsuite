@@ -1160,7 +1160,7 @@ async function cli(tool, args, renderAs, renderContext) {
 }
 
 // ─── Server ──────────────────────────────────────────────────────
-const server = new McpServer({ name: "fsuite", version: "3.1.0" });
+const server = new McpServer({ name: "fsuite", version: "3.3.0" });
 
 // ─── ftree ───────────────────────────────────────────────────────
 server.registerTool(

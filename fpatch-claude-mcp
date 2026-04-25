@@ -7,6 +7,7 @@
 # Usage:
 #   fpatch-claude-mcp [--dry-run] [--color COLOR] [--binary PATH]
 #   fpatch-claude-mcp --restore
+#   fpatch-claude-mcp --version
 #
 # Colors: cyan green yellow magenta bold_cyan bold_green (default: bold_cyan)
 
@@ -14,6 +15,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(realpath "$0" 2>/dev/null || readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
 FPROBE="${SCRIPT_DIR}/fprobe"
+VERSION="3.3.0"
 
 # Defaults
 _CLAUDE_VERSIONS_DIR="${HOME}/.local/share/claude/versions"
@@ -38,6 +40,7 @@ USAGE
   fpatch-claude-mcp --color green       Use green instead of bold_cyan
   fpatch-claude-mcp --binary PATH       Patch a specific binary
   fpatch-claude-mcp --restore           Restore from backup
+  fpatch-claude-mcp --version           Print version
 
 COLORS
   cyan  green  yellow  magenta  bold_cyan  bold_green
@@ -58,6 +61,7 @@ while [[ $# -gt 0 ]]; do
     --restore)   RESTORE=1; shift ;;
     --color)     [[ -n "${2:-}" ]] || die "--color requires an argument"; COLOR="$2"; shift 2 ;;
     --binary)    [[ -n "${2:-}" ]] || die "--binary requires an argument"; CLAUDE_BINARY="$2"; shift 2 ;;
+    --version|-V) echo "fpatch-claude-mcp $VERSION"; exit 0 ;;
     -h|--help)   usage; exit 0 ;;
     *)           die "Unknown option: $1" ;;
   esac

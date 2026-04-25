@@ -9,6 +9,7 @@ FSUITE_DIR="${SCRIPT_DIR}/.."
 FCONTENT="${FSUITE_DIR}/fcontent"
 FSEARCH="${FSUITE_DIR}/fsearch"
 FTREE="${FSUITE_DIR}/ftree"
+FBASH="${FSUITE_DIR}/fbash"
 FMETRICS="${FSUITE_DIR}/fmetrics"
 FMETRICS_PREDICT="${FSUITE_DIR}/fmetrics-predict.py"
 
@@ -685,10 +686,10 @@ test_schema_migration_idempotent() {
   local cols
   cols=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT sql FROM sqlite_master WHERE name='telemetry';" 2>/dev/null || true)
 
-  if [[ "$cols" == *"cpu_temp_mc"* ]] && [[ "$cols" == *"load_avg_1m"* ]] && [[ "$cols" == *"run_id"* ]] && ([[ "$cols" == *"UNIQUE(run_id, tool, path_hash)"* ]] || [[ "$cols" == *"UNIQUE(run_id,tool,path_hash)"* ]]); then
+  if [[ "$cols" == *"cpu_temp_mc"* ]] && [[ "$cols" == *"load_avg_1m"* ]] && [[ "$cols" == *"run_id"* ]] && [[ "$cols" == *"model_id"* ]] && [[ "$cols" == *"agent_id"* ]] && [[ "$cols" == *"session_id"* ]] && ([[ "$cols" == *"UNIQUE(run_id, tool, path_hash)"* ]] || [[ "$cols" == *"UNIQUE(run_id,tool,path_hash)"* ]]); then
     pass "Schema migration is idempotent"
   else
-    fail "Schema should have hardware columns after migration" "Got: $cols"
+    fail "Schema should have hardware and attribution columns after migration" "Got: $cols"
   fi
 }
 
@@ -697,10 +698,219 @@ test_run_id_in_jsonl() {
   FSUITE_TELEMETRY=1 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
   local line
   line=$(tail -1 "$HOME/.fsuite/telemetry.jsonl" 2>/dev/null) || line=""
-  if [[ "$line" =~ \"run_id\":\"[0-9]+_[0-9]+\" ]]; then
+  if python3 - "$line" <<'PY' 2>/dev/null; then
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+run_id = payload.get("run_id", "")
+assert isinstance(run_id, str) and len(run_id.split("_")) >= 2
+PY
     pass "Telemetry JSONL includes run_id"
   else
     fail "Telemetry JSONL should include run_id" "Got: $line"
+  fi
+}
+
+test_attribution_env_in_jsonl() {
+  rm -f "$HOME/.fsuite/telemetry.jsonl"
+  FSUITE_TELEMETRY=1 \
+    FSUITE_MODEL_ID="codex-gpt-5.5" \
+    FSUITE_AGENT_ID="codex-cli" \
+    FSUITE_SESSION_ID="session-attribution-jsonl" \
+    "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
+
+  local line
+  line=$(tail -1 "$HOME/.fsuite/telemetry.jsonl" 2>/dev/null) || line=""
+  if python3 - "$line" <<'PY' 2>/dev/null; then
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+assert payload["model_id"] == "codex-gpt-5.5"
+assert payload["agent_id"] == "codex-cli"
+assert payload["session_id"] == "session-attribution-jsonl"
+PY
+    pass "Telemetry JSONL includes env-provided model, agent, and session attribution"
+  else
+    fail "Telemetry JSONL should include env-provided attribution" "Got: $line"
+  fi
+}
+
+test_attribution_import_persists_env_fields() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "Attribution import test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+  FSUITE_TELEMETRY=1 \
+    FSUITE_MODEL_ID="claude-sonnet-4.5" \
+    FSUITE_AGENT_ID="claude-code" \
+    FSUITE_SESSION_ID="bench-session-42" \
+    "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
+
+  run_fmetrics import >/dev/null 2>&1 || {
+    fail "Import with attribution fields should succeed"
+    return
+  }
+
+  local row
+  row=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT model_id || '|' || agent_id || '|' || session_id FROM telemetry WHERE tool='ftree' LIMIT 1;" 2>/dev/null) || row=""
+  if [[ "$row" == "claude-sonnet-4.5|claude-code|bench-session-42" ]]; then
+    pass "fmetrics import persists model, agent, and session attribution"
+  else
+    fail "fmetrics import should persist attribution columns" "Got: ${row:-<empty>}"
+  fi
+}
+
+test_fmetrics_surfaces_attribution_dimensions() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "Attribution analytics test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+
+  FSUITE_TELEMETRY=1 \
+    FSUITE_MODEL_ID="codex-gpt-5.5" \
+    FSUITE_AGENT_ID="codex-cli" \
+    FSUITE_SESSION_ID="codex-session-a" \
+    "${FTREE}" --project-name "AttributionProj" "${TEST_DIR}" >/dev/null 2>&1 || true
+  FSUITE_TELEMETRY=1 \
+    FSUITE_MODEL_ID="claude-sonnet-4.5" \
+    FSUITE_AGENT_ID="claude-code" \
+    FSUITE_SESSION_ID="claude-session-b" \
+    "${FSEARCH}" --project-name "AttributionProj" "*.txt" "${TEST_DIR}" >/dev/null 2>&1 || true
+
+  run_fmetrics import >/dev/null 2>&1 || {
+    fail "Import before attribution analytics should succeed"
+    return
+  }
+
+  local stats_output history_output
+  stats_output=$(run_fmetrics stats -o json 2>&1) || true
+  history_output=$(run_fmetrics history --model codex-gpt-5.5 --agent codex-cli -o json 2>&1) || true
+
+  if python3 - "$stats_output" "$history_output" <<'PY' 2>/dev/null; then
+import json
+import sys
+
+stats = json.loads(sys.argv[1])
+history = json.loads(sys.argv[2])
+
+models = {row["name"]: row["runs"] for row in stats["top_models"]}
+agents = {row["name"]: row["runs"] for row in stats["top_agents"]}
+assert models["codex-gpt-5.5"] == 1
+assert models["claude-sonnet-4.5"] == 1
+assert agents["codex-cli"] == 1
+assert agents["claude-code"] == 1
+
+runs = history["runs"]
+assert len(runs) == 1
+run = runs[0]
+assert run["model_id"] == "codex-gpt-5.5"
+assert run["agent_id"] == "codex-cli"
+assert run["session_id"] == "codex-session-a"
+PY
+    pass "fmetrics stats and history surface model/agent attribution dimensions"
+  else
+    fail "fmetrics should surface attribution dimensions in stats/history" "Stats: $stats_output ; History: $history_output"
+  fi
+}
+
+test_fbash_child_tools_share_run_id_for_combo_edges() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "fbash child run_id combo test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+
+  FSUITE_TELEMETRY=1 "${FBASH}" \
+    --command "\"${FSEARCH}\" -o paths '*.txt' \"${TEST_DIR}\" | \"${FCONTENT}\" -o paths hello" \
+    --cwd "${TEST_DIR}" \
+    --max-lines 20 \
+    --max-bytes 10000 \
+    >/dev/null 2>&1 || true
+
+  run_fmetrics import >/dev/null 2>&1 || {
+    fail "Import after fbash child pipeline should succeed"
+    return
+  }
+  run_fmetrics rebuild >/dev/null 2>&1 || {
+    fail "Rebuild after fbash child pipeline should succeed"
+    return
+  }
+
+  local edge shared_run_id wrapper_edge
+  edge=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM combo_next_stats_v1 WHERE prefix_key='fsearch' AND next_tool='fcontent';" 2>/dev/null || echo "0")
+  shared_run_id=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT run_id FROM telemetry WHERE tool IN ('fsearch','fcontent') GROUP BY run_id HAVING COUNT(DISTINCT tool)=2 LIMIT 1;" 2>/dev/null || true)
+  wrapper_edge=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM combo_next_stats_v1 WHERE next_tool='fbash' AND prefix_key LIKE 'fsearch%';" 2>/dev/null || echo "0")
+
+  if [[ "$edge" == "1" && -n "$shared_run_id" && "$wrapper_edge" == "0" ]]; then
+    pass "fbash propagates run_id so child fsuite tools form combo edges"
+  else
+    fail "fbash child fsuite tools should share a run_id and produce clean child combo edges" "edge=$edge shared_run_id=${shared_run_id:-<empty>} wrapper_edge=$wrapper_edge"
+  fi
+}
+
+test_rebuild_timestamps_ignore_fbash_wrapper_when_child_steps_exist() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "fbash wrapper timestamp test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+  cat > "$HOME/.fsuite/telemetry.jsonl" <<'EOF'
+{"timestamp":"2026-03-07T00:00:00Z","tool":"fbash","version":"3.3.0","mode":"general","path_hash":"wrapper","project_name":"ComboProj","duration_ms":20,"exit_code":0,"depth":-1,"items_scanned":-1,"bytes_scanned":-1,"flags":"pipeline","backend":"bash","run_id":"wrapper-run"}
+{"timestamp":"2026-03-07T00:00:01Z","tool":"fsearch","version":"3.3.0","mode":"path","path_hash":"search","project_name":"ComboProj","duration_ms":8,"exit_code":0,"depth":-1,"items_scanned":1,"bytes_scanned":0,"flags":"*.txt","backend":"find","run_id":"wrapper-run"}
+{"timestamp":"2026-03-07T00:00:02Z","tool":"fcontent","version":"3.3.0","mode":"stdin_files","path_hash":"content","project_name":"ComboProj","duration_ms":6,"exit_code":0,"depth":-1,"items_scanned":1,"bytes_scanned":32,"flags":"hello","backend":"rg","run_id":"wrapper-run"}
+EOF
+
+  run_fmetrics import >/dev/null 2>&1 || {
+    fail "Import for wrapper timestamp regression should succeed"
+    return
+  }
+  run_fmetrics rebuild >/dev/null 2>&1 || {
+    fail "Rebuild for wrapper timestamp regression should succeed"
+    return
+  }
+
+  local row
+  row=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT first_timestamp || '|' || last_timestamp || '|' || tool_sequence FROM run_facts_v1 WHERE run_id='wrapper-run';" 2>/dev/null) || row=""
+  if [[ "$row" == "2026-03-07T00:00:01Z|2026-03-07T00:00:02Z|fsearch>fcontent" ]]; then
+    pass "Rebuild derives run timestamps from child combo steps, not fbash wrapper rows"
+  else
+    fail "Rebuild should ignore fbash wrapper timestamps when child fsuite steps exist" "Got: ${row:-<empty>}"
+  fi
+}
+
+test_fbash_child_tools_inherit_attribution() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "fbash child attribution test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+
+  FSUITE_TELEMETRY=1 \
+    FSUITE_MODEL_ID="codex-gpt-5.5" \
+    FSUITE_AGENT_ID="codex-cli" \
+    FSUITE_SESSION_ID="pipeline-session-7" \
+    "${FBASH}" \
+      --command "\"${FSEARCH}\" -o paths '*.txt' \"${TEST_DIR}\" | \"${FCONTENT}\" -o paths hello" \
+      --cwd "${TEST_DIR}" \
+      --max-lines 20 \
+      --max-bytes 10000 \
+      >/dev/null 2>&1 || true
+
+  run_fmetrics import >/dev/null 2>&1 || {
+    fail "Import after attributed fbash child pipeline should succeed"
+    return
+  }
+
+  local child_rows
+  child_rows=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM telemetry WHERE tool IN ('fsearch','fcontent') AND model_id='codex-gpt-5.5' AND agent_id='codex-cli' AND session_id='pipeline-session-7';" 2>/dev/null || echo "0")
+  if [[ "$child_rows" == "2" ]]; then
+    pass "fbash child fsuite tools inherit model, agent, and session attribution"
+  else
+    fail "fbash child fsuite tools should inherit attribution" "child_rows=$child_rows"
   fi
 }
 
@@ -710,15 +920,16 @@ test_burst_runs_not_dropped() {
     return 0
   fi
   rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
-  FSUITE_TELEMETRY=1 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
-  FSUITE_TELEMETRY=1 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
+  env -u FSUITE_TELEMETRY_RUN_ID FSUITE_TELEMETRY=1 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
+  env -u FSUITE_TELEMETRY_RUN_ID FSUITE_TELEMETRY=1 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
   run_fmetrics import >/dev/null 2>&1 || true
-  local count
+  local count run_ids
   count=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM telemetry WHERE tool='ftree';" 2>/dev/null) || count=0
-  if [[ "$count" =~ ^[0-9]+$ ]] && (( count >= 2 )); then
+  run_ids=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(DISTINCT run_id) FROM telemetry WHERE tool='ftree';" 2>/dev/null) || run_ids=0
+  if [[ "$count" =~ ^[0-9]+$ ]] && [[ "$run_ids" =~ ^[0-9]+$ ]] && (( count >= 2 )) && (( run_ids >= 2 )); then
     pass "Burst runs are not dropped by dedupe"
   else
-    fail "Expected at least 2 ftree rows after burst import" "Got count=$count"
+    fail "Expected at least 2 ftree rows with distinct run_ids after burst import" "Got count=$count run_ids=$run_ids"
   fi
 }
 
@@ -738,6 +949,25 @@ EOF
     pass "Legacy JSONL import backfills run_id"
   else
     fail "Legacy JSONL import should backfill run_id"
+  fi
+}
+
+test_legacy_import_backfills_attribution_defaults() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "Legacy attribution backfill test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+  cat > "$HOME/.fsuite/telemetry.jsonl" <<'EOF'
+{"timestamp":"2026-03-07T00:00:00Z","tool":"fcontent","version":"1.6.2","mode":"directory","path_hash":"legacyattr1","project_name":"legacyproj","duration_ms":33,"exit_code":0,"depth":1,"items_scanned":2,"bytes_scanned":512,"flags":"hello","backend":"rg","run_id":"legacy-attribution-run"}
+EOF
+  run_fmetrics import >/dev/null 2>&1 || true
+  local row
+  row=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT model_id || '|' || agent_id || '|' || session_id FROM telemetry WHERE tool='fcontent' LIMIT 1;" 2>/dev/null) || row=""
+  if [[ "$row" == "unknown|unknown|" ]]; then
+    pass "Legacy JSONL import backfills attribution defaults"
+  else
+    fail "Legacy JSONL import should backfill attribution defaults" "Got: ${row:-<empty>}"
   fi
 }
 
@@ -1414,8 +1644,15 @@ main() {
   echo "== Schema Migration =="
   run_test "Schema migration is idempotent" test_schema_migration_idempotent
   run_test "Telemetry JSONL includes run_id" test_run_id_in_jsonl
+  run_test "Telemetry JSONL includes caller attribution" test_attribution_env_in_jsonl
+  run_test "fmetrics import persists caller attribution" test_attribution_import_persists_env_fields
+    run_test "fmetrics surfaces caller attribution dimensions" test_fmetrics_surfaces_attribution_dimensions
+    run_test "fbash child tools share run_id for combo edges" test_fbash_child_tools_share_run_id_for_combo_edges
+    run_test "Rebuild timestamps ignore fbash wrapper rows" test_rebuild_timestamps_ignore_fbash_wrapper_when_child_steps_exist
+    run_test "fbash child tools inherit caller attribution" test_fbash_child_tools_inherit_attribution
   run_test "Burst runs are not dropped" test_burst_runs_not_dropped
   run_test "Legacy import backfills run_id" test_legacy_import_backfill_run_id
+  run_test "Legacy import backfills caller attribution" test_legacy_import_backfills_attribution_defaults
   run_test "Migration rollback on failure preserves data" test_migration_atomicity
   run_test "Import marks analytics dirty without rebuild" test_import_marks_analytics_dirty_without_rebuild
   run_test "Rebuild populates run_facts_v1 analytics" test_rebuild_populates_run_facts_after_import

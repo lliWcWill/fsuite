@@ -37,10 +37,13 @@ OPTIONS (global)
   --self-check       Verify dependencies
   --install-hints    Print install commands for missing dependencies
 
-  OPTIONS (history)
-    --tool <name>      Filter by tool (ftree, fsearch, fcontent)
-    --project <name>   Filter by project name
-    --limit <N>        Max rows (default 20)
+    OPTIONS (history)
+      --tool <name>      Filter by tool (ftree, fsearch, fcontent)
+      --project <name>   Filter by project name
+      --model <id>       Filter by model_id
+      --agent <id>       Filter by agent_id
+      --session <id>     Filter by session_id
+      --limit <N>        Max rows (default 20)
 
   OPTIONS (combos)
     --project <name>           Filter by project name
@@ -63,12 +66,16 @@ OPTIONS (clean)
 
 ENVIRONMENT
   FSUITE_TELEMETRY=0  Disable telemetry collection in fsuite tools
+  FSUITE_MODEL_ID     Model identifier to store with telemetry
+  FSUITE_AGENT_ID     Agent/runtime identifier to store with telemetry
+  FSUITE_SESSION_ID   Session/thread identifier to store with telemetry
 
 EXAMPLES
     fmetrics import              Import telemetry data into SQLite
 fmetrics stats               Show usage dashboard
 fmetrics stats -o json       Machine-readable stats
 fmetrics history --tool ftree --limit 10
+fmetrics history --model codex-gpt-5.5 --agent codex-cli -o json
 fmetrics combos --project fsuite -o json
 fmetrics recommend --after ftree,fsearch --project fsuite
 fmetrics predict /project    Estimate runtimes for /project
