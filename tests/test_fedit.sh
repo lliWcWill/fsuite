@@ -439,7 +439,14 @@ test_json_error_output() {
   local output rc=0
   reset_fixture "single.py"
   output=$(FSUITE_TELEMETRY=0 "${FEDIT}" -o json "${TEST_DIR}/single.py" --replace 'missing target' --with 'x' 2>/dev/null) || rc=$?
-  if (( rc != 0 )) && printf '%s' "$output" | python3 -m json.tool >/dev/null 2>&1 && [[ "$output" == *'"error_code":"replace_missing"'* ]]; then
+  if (( rc != 0 )) && python3 - "$output" <<'PY' >/dev/null 2>&1; then
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+assert payload["error_code"] == "replace_missing"
+assert "fread" in payload["next_hint"]
+PY
     pass "JSON mode still renders structured output on failure"
   else
     fail "JSON mode should render machine-readable errors" "rc=$rc output=$output"

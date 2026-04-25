@@ -548,6 +548,42 @@ render_pretty() {
   fi
 }
 
+next_hint_for_error() {
+  local code="${1:-}"
+  case "$code" in
+    replace_missing)
+      printf 'Re-read the target with fread --around or fmap, then retry with an exact --replace block.'
+      ;;
+    anchor_missing)
+      printf 'Re-read the target with fread --around, then retry with an exact --after/--before anchor.'
+      ;;
+    replace_ambiguous|anchor_ambiguous)
+      printf 'Use fread --around to inspect every match, narrow with --symbol or --lines, or add --allow-multiple only when all matches are intended.'
+      ;;
+    symbol_missing)
+      printf 'Run fmap -o json on the target and retry with the exact --symbol name or use --lines from fread.'
+      ;;
+    symbol_ambiguous)
+      printf 'Run fmap -o json on the target and retry with --symbol-type, a more exact symbol name, or --lines from fread.'
+      ;;
+    precondition_failed)
+      printf 'Re-read the target with fread and refresh --expect or --expect-sha256 before retrying.'
+      ;;
+    structural_validation_failed)
+      printf 'Fix the payload so the structured file remains valid, or use --no-validate only for intentional non-standard syntax.'
+      ;;
+    not_found)
+      printf 'Verify the path with fsearch -o paths or create the file with fedit --create.'
+      ;;
+    not_regular|permission)
+      printf 'Check the target path and permissions before retrying.'
+      ;;
+    invalid_args|empty_targets|plan_failed|apply_failed|rename_failed)
+      printf 'Run fedit --help and retry with one explicit operation, payload source, and target selection.'
+      ;;
+  esac
+}
+
 render_json() {
   printf '{'
   printf '"tool":"fedit",'
@@ -576,6 +612,13 @@ render_json() {
     printf '"error_detail":"%s",' "$(json_escape_str "$ERROR_DETAIL")"
   else
     printf '"error_detail":null,'
+  fi
+  local next_hint=""
+  next_hint=$(next_hint_for_error "$ERROR_CODE")
+  if [[ -n "$next_hint" ]]; then
+    printf '"next_hint":"%s",' "$(json_escape_str "$next_hint")"
+  else
+    printf '"next_hint":null,'
   fi
   # Validation metadata (populated on structural_validation_failed)
   if [[ -n "${VALIDATION_FORMAT:-}" ]]; then
@@ -1466,9 +1509,16 @@ render_batch_json() {
     printf '"error_code":null,'
   fi
   if [[ -n "$ERROR_DETAIL" ]]; then
-    printf '"error_detail":"%s"' "$(json_escape_str "$ERROR_DETAIL")"
+    printf '"error_detail":"%s",' "$(json_escape_str "$ERROR_DETAIL")"
   else
-    printf '"error_detail":null'
+    printf '"error_detail":null,'
+  fi
+  local next_hint=""
+  next_hint=$(next_hint_for_error "$ERROR_CODE")
+  if [[ -n "$next_hint" ]]; then
+    printf '"next_hint":"%s"' "$(json_escape_str "$next_hint")"
+  else
+    printf '"next_hint":null'
   fi
   printf '}\n'
 }
