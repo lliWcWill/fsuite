@@ -1,0 +1,536 @@
+---
+title: Cheat Sheet
+description: Every fsuite command, every flag, every canonical chain — copy-paste ready and agent-scrapeable.
+sidebar:
+  order: 1
+---
+
+import { Card } from '@astrojs/starlight/components';
+
+> Copy-paste ready. Every command runs headless (no prompts, no TTY needed) unless marked **Interactive**. Agents: this page is the canonical scrape target. Section anchors match tool names.
+
+<div class="fs-cheat-nav">
+  <a href="#fs">fs</a>
+  <a href="#ftree">ftree</a>
+  <a href="#fls">fls</a>
+  <a href="#fsearch">fsearch</a>
+  <a href="#fcontent">fcontent</a>
+  <a href="#fmap">fmap</a>
+  <a href="#fread">fread</a>
+  <a href="#fedit">fedit</a>
+  <a href="#fwrite">fwrite</a>
+  <a href="#fbash">fbash</a>
+  <a href="#fcase">fcase</a>
+  <a href="#freplay">freplay</a>
+  <a href="#fprobe">fprobe</a>
+  <a href="#fmetrics">fmetrics</a>
+</div>
+
+## How to read this page
+
+Each tool block has three parts: **drone profile** (one-line role · classification · chain position), **commands table** (every canonical invocation), and **terminal sample** (Monokai-print of real output as the agent sees it).
+
+<div class="fs-mcp-note">
+  <h4>⚠ MCP CALLERS — READ THIS FIRST</h4>
+  <p>If you call fsuite tools <b>through the MCP server</b>, every call is <b>sequential</b> — the MCP protocol does not pipe. You'll get correct results, but you'll lose the parallelism that makes Unix pipes fast.</p>
+  <p>For full performance, install fsuite as a native CLI (Debian package or shell scripts) and pipe directly: <code>fsearch -o paths '*.py' | fmap -o json</code>. You can keep <code>fbash</code> as your MCP entry point and have the agent call other fsuite tools through it via shell — that's how you unlock combination calls instead of being trapped in sequential MCP.</p>
+</div>
+
+---
+
+## fs
+
+<div class="fs-drone">
+  <div class="fs-drone-head">
+    <span class="fs-drone-call">fs</span>
+    <span class="fs-drone-tagline">Unified search orchestrator · the front door</span>
+  </div>
+  <div class="fs-drone-meta">
+    <div><b>Role</b><span class="role-recon">RECON</span></div>
+    <div><b>Chain position</b><span>1 (entry)</span></div>
+    <div><b>Auto-routes to</b><span>fsearch · fcontent · fmap</span></div>
+    <div><b>MCP</b><span>structured output</span></div>
+  </div>
+</div>
+
+| Call | What it does |
+|------|-------------|
+| `fs "authenticate"` | Unified search — scouts, finds, maps, returns ranked results in one call |
+| `fs "error handler" --scope '**/*.py'` | Narrow the search surface to a glob |
+| `fs "class AuthHandler" --intent symbol` | Force symbol-name intent over auto-detection |
+| `fs "TODO" --intent content` | Force in-file text content intent |
+| `fs "*.log" --intent file` | Force file-name pattern intent |
+| `fs "def authenticate" -o json` | JSON with ranked hits, tool breakdown, confidence |
+
+<div class="fs-term">
+  <div class="fs-term-bar"><b>fs(teleport)</b> · symbol intent · <span class="fs-term-cost">328ms · ~80 tokens</span></div>
+<pre><span class="tk-dot">●</span> Now let me find the teleport code and the Telegram agent:
+<span class="tk-mut">·</span>
+<span class="tk-tool">fs</span>(teleport | path: <span class="tk-str">"/home/user/Projects/nightfox/src"</span> | intent: <span class="tk-str">"symbol"</span> | scope: <span class="tk-str">"*.ts"</span>)
+  <span class="tk-arrow">└─</span> symbol (high) via fsearch <span class="tk-arrow">→</span> fcontent <span class="tk-arrow">→</span> fmap
+     explicit intent=symbol
+     <span class="tk-num">50</span> candidates, <span class="tk-num">1</span> enriched, <span class="tk-num">328</span>ms
+<span class="tk-mut">·</span>
+     nightfox/src/claude/command-parser.ts <span class="tk-com">(1 matches)</span>
+       <span class="tk-num">50</span>  · <span class="tk-str">'/teleport'</span>  <span class="tk-com">// Move session to terminal (forked)</span>
+<span class="tk-mut">·</span>
+     <span class="tk-cyan">next</span> <span class="tk-arrow">→</span> fread(path: <span class="tk-str">"/home/user/.../command-parser.ts"</span>, around: teleport)
+<span class="tk-mut">·</span></pre>
+</div>
+
+---
+
+## ftree
+
+<div class="fs-drone">
+  <div class="fs-drone-head">
+    <span class="fs-drone-call">ftree</span>
+    <span class="fs-drone-tagline">Territory scout · directory recon</span>
+  </div>
+  <div class="fs-drone-meta">
+    <div><b>Role</b><span class="role-recon">RECON</span></div>
+    <div><b>Chain position</b><span>2 (scout)</span></div>
+    <div><b>Pipe</b><span>not chainable (arg-based)</span></div>
+    <div><b>Output</b><span>pretty · paths · json</span></div>
+  </div>
+</div>
+
+| Command | What it does |
+|---------|-------------|
+| `ftree /project` | Tree view, depth 3, default excludes, 200-line cap |
+| `ftree --recon /project` | Recon: per-dir item counts and sizes |
+| `ftree -L5 /project/src` | Deeper tree (depth 5) of a subdir |
+| `ftree -o json /project` | Structured JSON tree with metadata envelope |
+| `ftree -o paths /project` | Flat file list, one per line |
+| `ftree --recon -o json /project` | Recon JSON: per-dir inventory |
+| `ftree --snapshot /project` | Recon inventory + tree excerpt in one output |
+| `ftree --snapshot -o json /project` | Snapshot JSON: recon + tree, agent-ready |
+| `ftree --recon --hide-excluded /project` | Clean recon, no excluded summaries |
+| `ftree --include .git /project` | Show `.git` even though normally ignored |
+| `ftree -I 'docs\|*.md' /project` | Exclude additional patterns |
+| `ftree --no-default-ignore /project` | Disable built-in ignore list |
+| `ftree --self-check` | Verify tree availability |
+
+---
+
+## fls
+
+<div class="fs-drone">
+  <div class="fs-drone-head">
+    <span class="fs-drone-call">fls</span>
+    <span class="fs-drone-tagline">Structured directory listing · ls replacement with recon mode</span>
+  </div>
+  <div class="fs-drone-meta">
+    <div><b>Role</b><span class="role-recon">RECON</span></div>
+    <div><b>Chain position</b><span>specialist</span></div>
+    <div><b>Pipe</b><span>not chainable</span></div>
+    <div><b>Output</b><span>pretty · json</span></div>
+  </div>
+</div>
+
+| Command | What it does |
+|---------|-------------|
+| `fls /project` | Structured listing with type, size, language hints |
+| `fls /project --recon` | Adds per-entry recon data — sizes + counts |
+| `fls /project -o json` | JSON for programmatic decisions |
+| `fls /project --depth 1` | Limit recursion depth |
+
+<div class="fs-term">
+  <div class="fs-term-bar"><b>fls(/project/src/telegram)</b> · recon mode</div>
+<pre><span class="tk-tool">fls</span>(<span class="tk-str">"/home/user/Projects/nightfox/src/telegram"</span> | mode: <span class="tk-str">"recon"</span>)
+  <span class="tk-arrow">└─</span> Recon(/home/user/Projects/nightfox/src/telegram, depth=1)
+     <span class="tk-num">7</span> entries (7 visible, <span class="tk-num">0</span> default-excluded)
+<span class="tk-mut">·</span>
+     message-sender.ts          —    <span class="tk-num">17.9K</span>
+     telegraph.ts               —    <span class="tk-num">12K</span>
+     terminal-renderer.ts       —    <span class="tk-num">10.3K</span>
+     markdown.ts                —    <span class="tk-num">6.7K</span>
+     terminal-settings.ts       —    <span class="tk-num">2.8K</span>
+     session-lane.ts            —    <span class="tk-num">1.2K</span>
+     deduplication.ts           —    <span class="tk-num">1005</span>
+<span class="tk-mut">·</span></pre>
+</div>
+
+---
+
+## fsearch
+
+<div class="fs-drone">
+  <div class="fs-drone-head">
+    <span class="fs-drone-call">fsearch</span>
+    <span class="fs-drone-tagline">Filename / path search · fd-aware</span>
+  </div>
+  <div class="fs-drone-meta">
+    <div><b>Role</b><span class="role-recon">NARROW</span></div>
+    <div><b>Chain position</b><span>3 (narrow files)</span></div>
+    <div><b>Pipe</b><span>producer (-o paths)</span></div>
+    <div><b>Output</b><span>pretty · paths · json</span></div>
+  </div>
+</div>
+
+| Command | What it does |
+|---------|-------------|
+| `fsearch '*.log' /var/log` | Find all `.log` files (pretty output) |
+| `fsearch log /var/log` | Bare word `log` auto-expands to `*.log` |
+| `fsearch 'upscale*' /home/user` | Files starting with `upscale` |
+| `fsearch '*progress*' /home/user` | Files containing `progress` |
+| `fsearch --output paths '*.py' /project` | One path per line — pipe currency |
+| `fsearch --output json '*.conf' /etc` | JSON with `total_found`, `results[]`, `backend` |
+| `fsearch --include 'src' --exclude '*test*' '*.py' /project` | Scope to source, skip tests |
+| `fsearch --max 10 '*.py' /project` | Limit to first 10 results |
+| `fsearch --backend fd '*.rs' /src` | Force `fd` backend (faster) |
+| `fsearch --self-check` | Show available backends |
+
+---
+
+## fcontent
+
+<div class="fs-drone">
+  <div class="fs-drone-head">
+    <span class="fs-drone-call">fcontent</span>
+    <span class="fs-drone-tagline">Bounded content search · token-capped ripgrep</span>
+  </div>
+  <div class="fs-drone-meta">
+    <div><b>Role</b><span class="role-recon">NARROW</span></div>
+    <div><b>Chain position</b><span>3 (narrow content)</span></div>
+    <div><b>Pipe</b><span>producer + consumer</span></div>
+    <div><b>Output</b><span>pretty · paths · json</span></div>
+  </div>
+</div>
+
+| Command | What it does |
+|---------|-------------|
+| `fcontent "ERROR" /var/log` | Search for `ERROR` inside files |
+| `fcontent "TODO" /project` | Find every `TODO` in a project tree |
+| `fcontent --output paths "ERROR" /var/log` | Only file paths that matched |
+| `fcontent --output json "ERROR" /var/log` | JSON with `matches[]`, counts |
+| `fcontent -m 20 "debug" /project` | Cap output to 20 match lines |
+| `fcontent -n 50 "debug" /project` | Cap to 50 files searched |
+| `fcontent --rg-args "-i" "error" /var/log` | Case-insensitive |
+| `fcontent --rg-args "-w" "main" /project` | Whole-word match |
+
+---
+
+## fmap
+
+<div class="fs-drone">
+  <div class="fs-drone-head">
+    <span class="fs-drone-call">fmap</span>
+    <span class="fs-drone-tagline">Symbol cartography · the keystone — the gap native CLI doesn't fill</span>
+  </div>
+  <div class="fs-drone-meta">
+    <div><b>Role</b><span class="role-keystone">KEYSTONE</span></div>
+    <div><b>Chain position</b><span>4 (bridge to read)</span></div>
+    <div><b>Pipe</b><span>consumer (stdin paths)</span></div>
+    <div><b>Languages</b><span>50+</span></div>
+  </div>
+</div>
+
+| Command | What it does |
+|---------|-------------|
+| `fmap /project` | Map all source files (pretty output) |
+| `fmap /project/src/auth.py` | Map a single file |
+| `fmap -o json /project` | JSON output with symbol metadata |
+| `fmap --name authenticate -o json /project` | Filter by symbol-name match |
+| `fmap -o paths /project` | File paths that contain symbols |
+| `fmap -t function /project` | Functions only |
+| `fmap -t class /project` | Classes only |
+| `fmap --no-imports /project` | Skip import lines |
+| `fmap -L bash /project/scripts` | Force language |
+| `fmap -m 50 /project` | Cap shown symbols |
+| `fsearch -o paths '*.py' /project \| fmap -o json` | Pipeline: find then map |
+
+<div class="fs-term">
+  <div class="fs-term-bar"><b>fmap(reconciler.ts)</b> · 27 symbols · typescript <span class="fs-term-cost">~98K tokens saved vs cat</span></div>
+<pre><span class="tk-tool">fmap</span>(path: <span class="tk-str">"/home/user/Projects/brane-code/src/ink/reconciler.ts"</span>)
+  [ <span class="tk-num">27</span> symbols | typescript ]
+     <span class="tk-num">3</span>    <span class="tk-key">import</span>     <span class="tk-key">import</span> \{ appendFileSync \} <span class="tk-key">from</span> <span class="tk-str">'fs'</span>
+     <span class="tk-num">4</span>    <span class="tk-key">import</span>     <span class="tk-key">import</span> createReconciler <span class="tk-key">from</span> <span class="tk-str">'react-reconciler'</span>
+     <span class="tk-num">5</span>    <span class="tk-key">import</span>     <span class="tk-key">import</span> \{ getYogaCounters \} <span class="tk-key">from</span> <span class="tk-str">'src/native-ts/yoga-layout/index'</span>
+     <span class="tk-num">24</span>   <span class="tk-key">import</span>     <span class="tk-key">import</span> \{ Dispatcher \} <span class="tk-key">from</span> <span class="tk-str">'./events/dispatcher.js'</span>
+     <span class="tk-num">28</span>   <span class="tk-key">import</span>     <span class="tk-key">import</span> applyStyles, \{ <span class="tk-key">type</span> Styles, <span class="tk-key">type</span> TextStyles \} <span class="tk-key">from</span> <span class="tk-str">'./styles'</span>
+     <span class="tk-num">60</span>   <span class="tk-key">type</span>       <span class="tk-key">type</span> AnyObject = Record<span class="tk-purple">&lt;</span>string, unknown<span class="tk-purple">&gt;</span>
+     <span class="tk-num">92</span>   <span class="tk-key">function</span>   <span class="tk-key">const</span> diff = (before: AnyObject, after: AnyObject): AnyObject
+     <span class="tk-num">95</span>   <span class="tk-key">function</span>   <span class="tk-key">const</span> cleanupYogaNode = (node: DOMElement | TextNode): <span class="tk-key">void</span>
+     <span class="tk-num">114</span>  <span class="tk-key">function</span>   <span class="tk-key">function</span> setEventHandler(node: DOMElement, key: string, value: <span class="tk-key">unknown</span>)
+     <span class="tk-num">158</span>  <span class="tk-key">function</span>   <span class="tk-key">export function</span> getOwnerChain(fiber: unknown): string[] \{
+     <span class="tk-num">191</span>  <span class="tk-key">constant</span>   <span class="tk-key">const</span> COMMIT_LOG = process.env.<span class="tk-fn">CLAUDE_CODE_COMMIT_LOG</span>
+     <span class="tk-num">205</span>  <span class="tk-key">export</span>     <span class="tk-key">export function</span> recordYogaMs(ms: number): <span class="tk-key">void</span>
+     <span class="tk-num">217</span>  <span class="tk-key">function</span>   <span class="tk-key">export function</span> resetProfileCounters(): <span class="tk-key">void</span>
+<span class="tk-mut">·</span></pre>
+</div>
+
+---
+
+## fread
+
+<div class="fs-drone">
+  <div class="fs-drone-head">
+    <span class="fs-drone-call">fread</span>
+    <span class="fs-drone-tagline">Budgeted reading · symbol &amp; line-range resolution · PDF + image media</span>
+  </div>
+  <div class="fs-drone-meta">
+    <div><b>Role</b><span class="role-recon">READ</span></div>
+    <div><b>Chain position</b><span>5 (read)</span></div>
+    <div><b>Pipe</b><span>consumer (--from-stdin)</span></div>
+    <div><b>Media</b><span>PDF · image · diff</span></div>
+  </div>
+</div>
+
+| Command | What it does |
+|---------|-------------|
+| `fread /path/to/file.py` | Read a file with default caps |
+| `fread /path/to/file.py -r 120:220` | Precise inclusive line range |
+| `fread /path/to/file.py --head 50` | First 50 lines |
+| `fread /path/to/file.py --tail 40` | Last 40 lines |
+| `fread /path/to/file.py --around-line 150 -B 5 -A 15` | Context around line 150 |
+| `fread /path/to/file.py --around "def authenticate" -B 5 -A 20` | Context around literal pattern |
+| `fread /path/to/file.py --symbol authenticate -o json` | One exact symbol block |
+| `fread /project/src --symbol authenticate -o json` | Resolve & read symbol from a directory |
+| `fread /path/to/file.py --max-lines 80 --max-bytes 12000` | Hard output budgets |
+| `fread /path/to/file.py --token-budget 2000 -o json` | Cap by estimated tokens |
+| `fsearch -o paths '*.py' /p \| fread --from-stdin --stdin-format=paths --max-files 5` | Read first 5 from a pipeline |
+| `git diff \| fread --from-stdin --stdin-format=unified-diff -B 3 -A 10` | Read context around hunks |
+| `fread screenshot.png` | Read image with auto-resize |
+| `fread invoice.pdf` | Extract PDF text |
+| `fread paper.pdf --render --pages 1:5` | Rasterize PDF pages |
+| `fread big.pdf --meta-only` | PDF metadata only |
+
+<div class="fs-term">
+  <div class="fs-term-bar"><b>fread(--around teleport)</b> · 66 lines · -829 tokens vs full read</div>
+<pre><span class="tk-tool">fread</span>(/home/user/Projects/nightfox/src/discord/commands/teleport.ts | head: <span class="tk-num">80</span>)
+  [ <span class="tk-num">66</span> lines | <span class="tk-warn">-829 tokens</span> ]
+     <span class="tk-line">1</span>  <span class="tk-key">import</span> \{ ChatInputCommandInteraction \} <span class="tk-key">from</span> <span class="tk-str">'discord.js'</span>;
+     <span class="tk-line">2</span>  <span class="tk-key">import</span> \{ discordChatId \} <span class="tk-key">from</span> <span class="tk-str">'../id-mapper.js'</span>;
+     <span class="tk-line">3</span>  <span class="tk-key">import</span> \{ sessionManager \} <span class="tk-key">from</span> <span class="tk-str">'../../claude/session-manager.js'</span>;
+     <span class="tk-line">4</span>  <span class="tk-key">import</span> \{ config \} <span class="tk-key">from</span> <span class="tk-str">'../../config.js'</span>;
+     <span class="tk-line">5</span>  <span class="tk-key">import</span> path <span class="tk-key">from</span> <span class="tk-str">'path'</span>;
+     <span class="tk-line">6</span>
+     <span class="tk-line">7</span>  <span class="tk-key">export async function</span> <span class="tk-fn">handleTeleport</span>(interaction: ChatInputCommandInteraction): Promise<span class="tk-purple">&lt;</span><span class="tk-key">void</span><span class="tk-purple">&gt;</span> \{
+     <span class="tk-line">8</span>     <span class="tk-key">const</span> chatId = <span class="tk-fn">discordChatId</span>(interaction.user.id);
+     <span class="tk-line">9</span>
+     <span class="tk-line">10</span> <span class="tk-com">// Try active in-memory session first, then fall back to most recent from history</span>
+     <span class="tk-line">11</span> <span class="tk-key">let</span> session = sessionManager.<span class="tk-fn">getSession</span>(chatId);
+     <span class="tk-line">12</span> <span class="tk-key">if</span> (!session) \{
+     <span class="tk-line">13</span>    session = sessionManager.<span class="tk-fn">resumeLastSession</span>(chatId) ?? <span class="tk-key">undefined</span>;
+     <span class="tk-line">14</span> \}
+<span class="tk-mut">·</span></pre>
+</div>
+
+---
+
+## fedit
+
+<div class="fs-drone">
+  <div class="fs-drone-head">
+    <span class="fs-drone-call">fedit</span>
+    <span class="fs-drone-tagline">Surgical patches · line-range · symbol-scoped · anchor-based</span>
+  </div>
+  <div class="fs-drone-meta">
+    <div><b>Role</b><span class="role-edit">PATCH</span></div>
+    <div><b>Chain position</b><span>7 (act)</span></div>
+    <div><b>Default</b><span>dry-run (CLI)</span></div>
+    <div><b>Guard</b><span>--expect · --expect-sha256</span></div>
+  </div>
+</div>
+
+| Command | What it does |
+|---------|-------------|
+| `fedit /path/file.py --replace 'old' --with 'new'` | Preview exact replacement (dry-run) |
+| `fedit /path/file.py --replace 'old' --with 'new' --apply` | Apply the replacement |
+| `fedit /path/file.py --lines 71:73 --with "    return deny()\n"` | Replace a specific line range |
+| `fedit /path/file.py --after 'def authenticate(user):' --content-file patch.txt` | Insert after anchor |
+| `fedit /path/file.py --before 'return True' --stdin --apply` | Insert from stdin before anchor |
+| `fedit /path/file.py --symbol authenticate --replace 'X' --with 'Y'` | Symbol-scoped patch |
+| `fedit /path/file.py --function authenticate --replace 'X' --with 'Y'` | Function-scoped (no --symbol-type needed) |
+| `fedit /path/file.py --class AuthHandler --after '...' --with '...'` | Class-block scoped |
+| `printf '/a.py\n/b.py\n' \| fedit --targets-file - --targets-format paths --replace 'x' --with 'y'` | Batch from stdin |
+| `fedit --targets-file map.json --targets-format fmap-json --function auth --replace 'X' --with 'Y' --apply` | Symbol-scoped batch via fmap JSON |
+| `fedit /path/file.py --expect 'def authenticate' --replace 'X' --with 'Y'` | Require expected text first |
+| `fedit /path/file.py --expect-sha256 HASH --replace 'X' --with 'Y' --apply` | Guard with content hash |
+| `fedit --create /path/new.py --content-file body.txt --apply` | Create new file from payload |
+| `fedit --replace-file /path/file.py --content-file rewrite.txt --apply` | Replace entire file |
+
+---
+
+## fwrite
+
+<div class="fs-drone">
+  <div class="fs-drone-head">
+    <span class="fs-drone-call">fwrite</span>
+    <span class="fs-drone-tagline">Atomic file creation · MCP-only</span>
+  </div>
+  <div class="fs-drone-meta">
+    <div><b>Role</b><span class="role-edit">PATCH</span></div>
+    <div><b>Available</b><span>MCP only (no CLI)</span></div>
+    <div><b>Use for</b><span>create or full rewrite</span></div>
+    <div><b>Use fedit for</b><span>surgical changes</span></div>
+  </div>
+</div>
+
+> MCP-only tool. Not available as a CLI binary. Call via the fsuite MCP server. Writes or overwrites a file from a string payload. Use `fedit` for surgical patches; `fwrite` for complete file creation or full rewrites.
+
+---
+
+## fbash
+
+<div class="fs-drone">
+  <div class="fs-drone-head">
+    <span class="fs-drone-call">fbash</span>
+    <span class="fs-drone-tagline">Token-budgeted shell · classification · session state · MCP entry point</span>
+  </div>
+  <div class="fs-drone-meta">
+    <div><b>Role</b><span class="role-edit">EXEC</span></div>
+    <div><b>Chain position</b><span>specialist</span></div>
+    <div><b>MCP advantage</b><span>shells out to all CLI tools</span></div>
+    <div><b>Output</b><span>budgeted · classified</span></div>
+  </div>
+</div>
+
+> **The MCP escape hatch.** When you're calling fsuite through MCP and feel sequential limits biting, route through `fbash` and run real Unix pipes inside it: `fbash "fsearch -o paths '*.py' src | fmap -o json"`. You get pipe-speed inside an MCP-friendly tool.
+
+---
+
+## fcase
+
+<div class="fs-drone">
+  <div class="fs-drone-head">
+    <span class="fs-drone-call">fcase</span>
+    <span class="fs-drone-tagline">Investigation continuity ledger · cross-session state machine</span>
+  </div>
+  <div class="fs-drone-meta">
+    <div><b>Role</b><span class="role-state">STATE</span></div>
+    <div><b>Chain position</b><span>wraps every chain</span></div>
+    <div><b>Lifecycle</b><span>init → note → handoff → resolve</span></div>
+    <div><b>Storage</b><span>~/.fsuite/fcase.db</span></div>
+  </div>
+</div>
+
+| Command | What it does |
+|---------|-------------|
+| `fcase init auth-seam --goal "Trace authenticate flow"` | Create a new investigation |
+| `fcase list -o json` | List known cases |
+| `fcase status auth-seam -o json` | Read current case state |
+| `fcase note auth-seam --body "Focused on denial branch"` | Append a note |
+| `fcase target add auth-seam --path /p/src/auth.py --symbol authenticate --symbol-type function --state active` | Mark a seam as active |
+| `fcase evidence auth-seam --tool fread --path /p --lines 40:72 --summary "..."` | Store structured proof |
+| `fcase hypothesis add auth-seam --body "Cleanup bug in cancellation"` | Track a hypothesis |
+| `fcase reject auth-seam --hypothesis-id 1 --reason "..."` | Reject a hypothesis |
+| `fmap -o json /p \| fcase target import auth-seam` | Import mapped symbols as targets |
+| `fread -o json /p --around "def auth" -A 20 \| fcase evidence import auth-seam` | Import bounded reads |
+| `fcase next auth-seam --body "Patch denial branch next"` | Update next best move |
+| `fcase handoff auth-seam -o json` | Emit handoff packet |
+| `fcase export auth-seam -o json` | Export full envelope |
+
+---
+
+## freplay
+
+<div class="fs-drone">
+  <div class="fs-drone-head">
+    <span class="fs-drone-call">freplay</span>
+    <span class="fs-drone-tagline">Derivation chain replay · deterministic rerun</span>
+  </div>
+  <div class="fs-drone-meta">
+    <div><b>Role</b><span class="role-state">REPLAY</span></div>
+    <div><b>Chain position</b><span>specialist</span></div>
+    <div><b>Pairs with</b><span>fcase</span></div>
+    <div><b>Use for</b><span>post-mortems · regression</span></div>
+  </div>
+</div>
+
+| Command | What it does |
+|---------|-------------|
+| `freplay record auth-seam --purpose "Traced denial" -- fread /p --around 'def auth'` | Record a derivation step |
+| `freplay record auth-seam -- fcontent -o paths "auth" src` | Record without purpose annotation |
+| `freplay show auth-seam` | Show full replay chain |
+| `freplay show auth-seam -o json` | Machine-readable chain w/ timestamps |
+| `freplay list` | List cases with replay chains |
+| `freplay list -o json` | JSON list with step counts |
+
+---
+
+## fprobe
+
+<div class="fs-drone">
+  <div class="fs-drone-head">
+    <span class="fs-drone-call">fprobe</span>
+    <span class="fs-drone-tagline">Binary / bundle inspection + patching · text tools can't reach</span>
+  </div>
+  <div class="fs-drone-meta">
+    <div><b>Role</b><span class="role-binary">BINARY</span></div>
+    <div><b>Chain position</b><span>specialist branch</span></div>
+    <div><b>Use when</b><span>target is compiled or obfuscated</span></div>
+    <div><b>Subcommands</b><span>strings · scan · window · patch</span></div>
+  </div>
+</div>
+
+| Command | What it does |
+|---------|-------------|
+| `fprobe strings /path/to/binary` | Extract printable strings |
+| `fprobe strings /path --min-len 8` | Strings 8+ chars |
+| `fprobe strings /path --filter "http"` | Strings containing literal substring |
+| `fprobe scan /path --pattern "userFacingName"` | Find literal byte pattern (offset + context) |
+| `fprobe scan /path --pattern "x" --context 200 -o json` | JSON with offset, hex, surrounding bytes |
+| `fprobe window /path --offset 0x100 --after 256` | Read 256 bytes after offset |
+| `fprobe window /path --offset 0x100 --before 64 --after 256` | Read bytes before + after |
+| `fprobe window /path --offset 0x100 --after 256 --decode hex` | Hex dump |
+
+---
+
+## fmetrics
+
+<div class="fs-drone">
+  <div class="fs-drone-head">
+    <span class="fs-drone-call">fmetrics</span>
+    <span class="fs-drone-tagline">Telemetry analytics · tool-chain prediction</span>
+  </div>
+  <div class="fs-drone-meta">
+    <div><b>Role</b><span class="role-state">LEARN</span></div>
+    <div><b>Chain position</b><span>specialist</span></div>
+    <div><b>Storage</b><span>SQLite</span></div>
+    <div><b>Use for</b><span>predict best next step</span></div>
+  </div>
+</div>
+
+| Command | What it does |
+|---------|-------------|
+| `fmetrics import` | Import `telemetry.jsonl` into SQLite |
+| `fmetrics stats` | Aggregate runtime + reliability dashboard |
+| `fmetrics stats -o json` | Machine-readable stats |
+| `fmetrics history --tool ftree --limit 10` | Recent runs for one tool |
+| `fmetrics history --project MyApp` | Filter by project |
+| `fmetrics combos --project fsuite` | Evidence-backed combo patterns |
+| `fmetrics combos --starts-with ftree,fsearch --contains fmap -o json` | Filter combo analytics |
+| `fmetrics recommend --after ftree,fsearch --project fsuite` | Suggest the strongest next step |
+| `fmetrics predict /project` | Estimate runtimes |
+| `fmetrics profile` | Show machine profile |
+| `fmetrics clean --days 30` | Prune old telemetry |
+
+---
+
+## Canonical pipelines
+
+| Workflow | Command chain |
+|----------|--------------|
+| **Full scout** | `ftree --snapshot -o json /project` |
+| **Find + map** | `fsearch -o paths '*.py' /p \| fmap -o json` |
+| **Find + grep** | `fsearch -o paths '*.log' /var/log \| fcontent "ERROR"` |
+| **Find + read** | `fsearch -o paths '*.py' /p \| fread --from-stdin --stdin-format=paths --max-files 5 -o json` |
+| **Map + read** | `fmap --name auth -o json /p \| fread --symbol auth -o json` |
+| **Binary recon** | `fprobe scan /bin && fprobe strings /bin --filter "http"` |
+| **Investigation** | `fcase init seam --goal "..." && fmap -o json /p \| fcase target import seam && fcase handoff seam -o json` |
+| **Batch patch** | `fsearch -o paths '*.py' /p \| fedit --targets-file - --targets-format paths --replace 'x' --with 'y' --apply` |
+| **Git diff read** | `git diff \| fread --from-stdin --stdin-format=unified-diff -o json` |
+
+---
+
+## MCP vs CLI — pipe semantics
+
+| Mode | Pipe behavior | Performance |
+|------|---------------|-------------|
+| **CLI (Debian / shell)** | Real Unix pipes, parallel where possible | Fastest |
+| **CLI inside `fbash` (MCP)** | Real pipes inside the budgeted shell | Fast — MCP escape hatch |
+| **Pure MCP tool calls** | Sequential, agent constructs chain by hand | Correct, slower |
+
+The MCP adapter handles `-o json` automatically — agents always get structured JSON back regardless of mode.

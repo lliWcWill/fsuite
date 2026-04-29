@@ -1172,3 +1172,212 @@ starlight-tabs [role="tab"][aria-selected="true"] {
   .fs-fcase { flex-direction: column; }
   .fs-fcase .fs-arr { transform: rotate(90deg); margin: 0 auto; }
 }
+
+/* ============================================================
+   fsuite — ROUND 3 components appendix
+   APPEND to bottom of site/src/styles/custom.css
+   (after the round-2 appendix you already pasted)
+   ============================================================ */
+
+/* ---------- 30. MONOKAI TERMINAL BLOCK ---------- */
+.fs-term {
+  margin: 16px 0 24px;
+  border: 1px solid var(--sl-color-hairline-light);
+  border-radius: 8px;
+  background: #1e1f1c;
+  overflow: hidden;
+  box-shadow: 0 1px 0 0 rgba(255,255,255,0.04) inset, 0 8px 28px -10px rgba(0,0,0,0.5);
+}
+.fs-term-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 14px;
+  background: #14150f;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  font-family: var(--sl-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: #75715e;
+}
+.fs-term-bar::before {
+  content: "● ● ●";
+  color: #49483e;
+  letter-spacing: 0.22em;
+  margin-right: 6px;
+}
+.fs-term-bar b { color: #f8f8f2; font-weight: 500; }
+.fs-term-bar .fs-term-cost {
+  margin-left: auto;
+  color: #a6e22e;
+  font-weight: 600;
+}
+.fs-term pre {
+  margin: 0 !important;
+  padding: 14px 18px !important;
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  font-family: var(--sl-font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: #f8f8f2;
+  overflow-x: auto;
+}
+/* Monokai token classes — match the screenshots exactly */
+.tk-dot     { color: #a6e22e; font-weight: 700; }              /* the green ● before agent steps */
+.tk-tool    { color: #a6e22e; font-weight: 600; }              /* fread, fmap, fs etc. */
+.tk-key     { color: #f92672; }                                /* keywords, function, class */
+.tk-fn      { color: #66d9ef; }                                /* function names */
+.tk-str     { color: #e6db74; }                                /* strings */
+.tk-num     { color: #fd971f; }                                /* numbers, line numbers */
+.tk-com     { color: #75715e; font-style: italic; }            /* comments */
+.tk-mut     { color: #75715e; }                                /* muted info, paths */
+.tk-arrow   { color: #66d9ef; font-weight: 600; }              /* next →, └─ */
+.tk-ok      { color: #a6e22e; font-weight: 600; }              /* ✓ */
+.tk-warn    { color: #fd971f; }                                /* ⚠ */
+.tk-err     { color: #f92672; font-weight: 600; }              /* ✗ */
+.tk-cyan    { color: #66d9ef; }                                /* import paths, types */
+.tk-purple  { color: #ae81ff; }                                /* operators, special */
+.tk-line    { color: #75715e; padding-right: 10px; user-select: none; } /* gutter line numbers */
+
+/* ---------- 31. DRONE PROFILE CARD ---------- */
+.fs-drone {
+  margin: 0 0 28px;
+  padding: 18px 20px;
+  border: 1px solid var(--sl-color-hairline-light);
+  border-radius: 10px;
+  background:
+    linear-gradient(180deg, rgba(58, 255, 157, 0.04), transparent 50%),
+    var(--sl-color-bg);
+  position: relative;
+  overflow: hidden;
+}
+.fs-drone::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--fs-accent), transparent);
+  opacity: 0.6;
+}
+.fs-drone-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 14px;
+  margin-bottom: 12px;
+}
+.fs-drone-call {
+  font-family: var(--sl-font-mono);
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--fs-accent);
+  letter-spacing: -0.01em;
+}
+.fs-drone-tagline {
+  font-family: var(--sl-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.10em;
+  text-transform: uppercase;
+  color: var(--sl-color-gray-2);
+}
+.fs-drone-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 6px;
+}
+.fs-drone-meta > div {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 8px 12px;
+  background: var(--sl-color-gray-7);
+  border: 1px solid var(--sl-color-hairline);
+  border-radius: 5px;
+}
+.fs-drone-meta b {
+  font-family: var(--sl-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--sl-color-gray-3);
+  font-weight: 500;
+}
+.fs-drone-meta span {
+  font-family: var(--sl-font-mono);
+  font-size: 13px;
+  color: var(--sl-color-white);
+}
+.fs-drone-meta span.role-recon  { color: var(--fs-info); }
+.fs-drone-meta span.role-keystone { color: var(--fs-accent); font-weight: 600; }
+.fs-drone-meta span.role-edit { color: var(--fs-warn); }
+.fs-drone-meta span.role-state { color: var(--fs-accent); }
+.fs-drone-meta span.role-binary { color: var(--fs-warn); }
+
+/* ---------- 32. CHEAT SHEET QUICK NAV ---------- */
+.fs-cheat-nav {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 6px;
+  margin: 16px 0 32px;
+  padding: 14px;
+  border: 1px solid var(--sl-color-hairline-light);
+  border-radius: 8px;
+  background: var(--sl-color-gray-7);
+}
+.fs-cheat-nav a {
+  font-family: var(--sl-font-mono);
+  font-size: 12.5px;
+  text-decoration: none;
+  color: var(--sl-color-gray-1);
+  padding: 6px 10px;
+  border: 1px solid var(--sl-color-hairline);
+  border-radius: 4px;
+  text-align: center;
+  background: var(--sl-color-bg);
+}
+.fs-cheat-nav a:hover {
+  border-color: var(--fs-accent);
+  color: var(--fs-accent);
+}
+
+/* ---------- 33. MCP-LIMITATION CALLOUT ---------- */
+.fs-mcp-note {
+  margin: 24px 0;
+  padding: 16px 20px;
+  border: 1px solid color-mix(in oklab, var(--fs-warn) 35%, var(--sl-color-hairline-shade));
+  border-left: 3px solid var(--fs-warn);
+  border-radius: 6px;
+  background: color-mix(in oklab, var(--fs-warn) 5%, var(--sl-color-bg));
+}
+.fs-mcp-note h4 {
+  margin: 0 0 6px;
+  font-family: var(--sl-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fs-warn);
+}
+.fs-mcp-note p {
+  margin: 0 0 8px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--sl-color-gray-1);
+}
+.fs-mcp-note p:last-child { margin: 0; }
+.fs-mcp-note code {
+  background: color-mix(in oklab, var(--fs-warn) 10%, transparent);
+  color: var(--fs-warn);
+}
+
+/* ---------- 34. FOOTER STATUS BAR (optional, for layout override) ---------- */
+.fs-footer-status {
+  margin-top: 60px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--sl-color-hairline);
+  display: flex; flex-wrap: wrap;
+  justify-content: space-between; align-items: center;
+  gap: 14px;
+  font-family: var(--sl-font-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--sl-color-gray-3);
+}
+.fs-footer-status .fs-fd-live { color: var(--fs-accent); }
