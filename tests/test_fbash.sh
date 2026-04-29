@@ -260,6 +260,28 @@ test_fread_word_in_argument_does_not_disable_output_budgets() {
   fi
 }
 
+test_fread_word_in_heredoc_does_not_disable_output_budgets() {
+  local bigfile="${TEST_DIR}/fbash-fread-heredoc.txt"
+  local stdout truncated stdout_lines command
+  for i in $(seq 1 260); do
+    echo "heredoc budget line $i"
+  done > "$bigfile"
+
+  command=$(printf "cat <<'EOF' >/dev/null\nfread\nEOF\ncat %q\n" "$bigfile")
+  fbash_json --command "$command"
+
+  truncated=$(jraw truncated)
+  stdout=$(jfield stdout)
+  stdout_lines=$(jraw stdout_lines)
+
+  if [[ "$truncated" == "true" ]] && [[ "$stdout_lines" == "200" ]] && [[ "$stdout" != *"heredoc budget line 260"* ]]; then
+    pass "fbash ignores fread text inside heredoc bodies"
+  else
+    fail "fbash should keep output budgets when fread appears only inside a heredoc body" \
+         "Got truncated=$truncated, stdout_lines=$stdout_lines, stdout_tail='${stdout: -120}'"
+  fi
+}
+
 # ============================================================================
 # 8. Tail Mode
 # ============================================================================
@@ -927,6 +949,7 @@ main() {
   run_test "No truncate overrides output budgets" test_no_truncate_overrides_output_budgets
   run_test "Fread command uncapped by default" test_fread_command_is_uncapped_by_default
   run_test "Fread argument keeps output budgets" test_fread_word_in_argument_does_not_disable_output_budgets
+  run_test "Fread heredoc body keeps output budgets" test_fread_word_in_heredoc_does_not_disable_output_budgets
   run_test "Tail mode" test_tail_mode
   run_test "Filter" test_filter
   run_test "Quiet mode" test_quiet_mode

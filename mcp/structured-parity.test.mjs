@@ -674,6 +674,29 @@ test("fbash MCP keeps budgets when fread is only an argument", async () => {
   }
 });
 
+test("fbash MCP keeps budgets when fread is only in a heredoc body", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "fsuite-mcp-fbash-fread-heredoc-"));
+  const filePath = join(dir, "fbash-fread-heredoc.txt");
+  writeFileSync(
+    filePath,
+    Array.from({ length: 260 }, (_, i) => `mcp heredoc budget line ${i + 1}`).join("\n") + "\n",
+    "utf8",
+  );
+
+  try {
+    const result = await callTool("fbash", {
+      command: `cat <<'EOF' >/dev/null\nfread\nEOF\ncat "${filePath}"`,
+    });
+    const plain = stripAnsi(textContent(result));
+
+    assert.ok(!result.isError, plain);
+    assert.ok(!plain.includes("mcp heredoc budget line 260"), `expected default fbash cap to hide final line, got: ${plain}`);
+    assert.ok(plain.includes("more line"), `expected default fbash cap to render more-lines marker, got: ${plain}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("fbash MCP error path falls back to parsed stderr when errors are empty", async () => {
   const result = await callTool("fbash", {
     command: "printf 'mcp-fbash-stderr\\n' >&2; exit 7",

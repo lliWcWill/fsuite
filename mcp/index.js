@@ -280,8 +280,114 @@ function shellSegmentTokens(segment) {
   return tokens;
 }
 
+function stripLeadingTabs(value) {
+  return String(value || "").replace(/^\t+/, "");
+}
+
+function extractHeredocDelimiters(line) {
+  const input = String(line || "");
+  const delimiters = [];
+  let quote = "";
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+    if (quote) {
+      if (quote === "'" && ch === "'") {
+        quote = "";
+      } else if (quote === '"') {
+        if (ch === "\\" && i + 1 < input.length) {
+          i += 1;
+        } else if (ch === '"') {
+          quote = "";
+        }
+      }
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch === "\\") {
+      if (i + 1 < input.length) i += 1;
+      continue;
+    }
+    if (ch !== "<" || input[i - 1] === "<" || input[i + 1] !== "<" || input[i + 2] === "<") continue;
+
+    i += 2;
+    let stripTabs = false;
+    if (input[i] === "-") {
+      stripTabs = true;
+      i += 1;
+    }
+    while (i < input.length && /\s/.test(input[i])) i += 1;
+
+    let delimiter = "";
+    let wordQuote = "";
+    for (; i < input.length; i += 1) {
+      const wordChar = input[i];
+      if (wordQuote) {
+        if (wordQuote === "'" && wordChar === "'") {
+          wordQuote = "";
+          continue;
+        }
+        if (wordQuote === '"') {
+          if (wordChar === '"') {
+            wordQuote = "";
+            continue;
+          }
+          if (wordChar === "\\" && i + 1 < input.length) {
+            i += 1;
+            delimiter += input[i];
+            continue;
+          }
+        }
+        delimiter += wordChar;
+        continue;
+      }
+
+      if (wordChar === "'" || wordChar === '"') {
+        wordQuote = wordChar;
+      } else if (wordChar === "\\") {
+        if (i + 1 < input.length) {
+          i += 1;
+          delimiter += input[i];
+        }
+      } else if (/\s/.test(wordChar) || [";", "|", "&", "(", ")", "<", ">"].includes(wordChar)) {
+        break;
+      } else {
+        delimiter += wordChar;
+      }
+    }
+
+    if (delimiter) delimiters.push({ delimiter, stripTabs });
+  }
+
+  return delimiters;
+}
+
+function stripHeredocBodies(command) {
+  const lines = String(command || "").split("\n");
+  const pending = [];
+  const kept = [];
+
+  for (const line of lines) {
+    if (pending.length > 0) {
+      const current = pending[0];
+      const compareLine = current.stripTabs ? stripLeadingTabs(line) : line;
+      if (compareLine === current.delimiter) pending.shift();
+      continue;
+    }
+
+    kept.push(line);
+    pending.push(...extractHeredocDelimiters(line));
+  }
+
+  return kept.join("\n");
+}
+
 function commandInvokesTool(command, tool) {
-  for (const segment of shellSegments(command)) {
+  for (const segment of shellSegments(stripHeredocBodies(command))) {
     let skipRedirectionTarget = false;
     let skipTimeoutArg = false;
     for (const token of shellSegmentTokens(segment)) {

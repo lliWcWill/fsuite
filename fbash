@@ -495,9 +495,152 @@ command_segment_invokes_tool() {
   return 1
 }
 
+strip_leading_tabs() {
+  local value="$1"
+  while [[ "$value" == $'\t'* ]]; do
+    value="${value#$'\t'}"
+  done
+  printf '%s' "$value"
+}
+
+append_heredoc_delims_from_line() {
+  local line="$1"
+  local len=${#line} i ch quote="" next next2 strip_tabs
+  local j ch2 word_quote="" delim
+
+  for (( i=0; i<len; i++ )); do
+    ch="${line:i:1}"
+    if [[ -n "$quote" ]]; then
+      if [[ "$quote" == "'" && "$ch" == "'" ]]; then
+        quote=""
+      elif [[ "$quote" == '"' ]]; then
+        if [[ "$ch" == "\\" && $(( i + 1 )) -lt $len ]]; then
+          i=$(( i + 1 ))
+        elif [[ "$ch" == '"' ]]; then
+          quote=""
+        fi
+      fi
+      continue
+    fi
+
+    case "$ch" in
+      "'")
+        quote="'"
+        continue
+        ;;
+      '"')
+        quote='"'
+        continue
+        ;;
+      "\\")
+        (( i + 1 < len )) && i=$(( i + 1 ))
+        continue
+        ;;
+    esac
+
+    [[ "$ch" == "<" ]] || continue
+    if (( i > 0 )) && [[ "${line:i-1:1}" == "<" ]]; then
+      continue
+    fi
+    next="${line:i+1:1}"
+    next2="${line:i+2:1}"
+    [[ "$next" == "<" && "$next2" != "<" ]] || continue
+
+    i=$(( i + 2 ))
+    strip_tabs=0
+    if [[ "${line:i:1}" == "-" ]]; then
+      strip_tabs=1
+      i=$(( i + 1 ))
+    fi
+    while (( i < len )) && [[ "${line:i:1}" =~ [[:space:]] ]]; do
+      i=$(( i + 1 ))
+    done
+
+    delim=""
+    word_quote=""
+    for (( j=i; j<len; j++ )); do
+      ch2="${line:j:1}"
+      if [[ -n "$word_quote" ]]; then
+        if [[ "$word_quote" == "'" && "$ch2" == "'" ]]; then
+          word_quote=""
+          continue
+        fi
+        if [[ "$word_quote" == '"' ]]; then
+          if [[ "$ch2" == '"' ]]; then
+            word_quote=""
+            continue
+          fi
+          if [[ "$ch2" == "\\" && $(( j + 1 )) -lt $len ]]; then
+            j=$(( j + 1 ))
+            delim+="${line:j:1}"
+            continue
+          fi
+        fi
+        delim+="$ch2"
+        continue
+      fi
+
+      case "$ch2" in
+        "'" )
+          word_quote="'"
+          ;;
+        '"' )
+          word_quote='"'
+          ;;
+        "\\")
+          if (( j + 1 < len )); then
+            j=$(( j + 1 ))
+            delim+="${line:j:1}"
+          fi
+          ;;
+        [[:space:]]|";"|"|"|"&"|"("|")"|"<"|">")
+          break
+          ;;
+        *)
+          delim+="$ch2"
+          ;;
+      esac
+    done
+
+    if [[ -n "$delim" ]]; then
+      HEREDOC_DELIMS+=("$delim")
+      HEREDOC_STRIP_TABS+=("$strip_tabs")
+    fi
+    i=$j
+  done
+}
+
+command_without_heredoc_bodies() {
+  local cmd="$1" line compare_line output=""
+  local -a HEREDOC_DELIMS=()
+  local -a HEREDOC_STRIP_TABS=()
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if (( ${#HEREDOC_DELIMS[@]} > 0 )); then
+      compare_line="$line"
+      if [[ "${HEREDOC_STRIP_TABS[0]}" == "1" ]]; then
+        compare_line="$(strip_leading_tabs "$compare_line")"
+      fi
+      if [[ "$compare_line" == "${HEREDOC_DELIMS[0]}" ]]; then
+        HEREDOC_DELIMS=("${HEREDOC_DELIMS[@]:1}")
+        HEREDOC_STRIP_TABS=("${HEREDOC_STRIP_TABS[@]:1}")
+      fi
+      continue
+    fi
+
+    output+="$line"$'\n'
+    append_heredoc_delims_from_line "$line"
+  done <<< "$cmd"
+
+  printf '%s' "$output"
+}
+
 command_invokes_tool() {
   local cmd="$1" tool="$2"
   local len=${#cmd} i ch quote="" segment=""
+
+  cmd="$(command_without_heredoc_bodies "$cmd")"
+  len=${#cmd}
 
   for (( i=0; i<len; i++ )); do
     ch="${cmd:i:1}"

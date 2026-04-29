@@ -1200,7 +1200,7 @@ SQL
   pre_count=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM telemetry;" 2>/dev/null)
 
   # Run fmetrics import — ensure_db triggers migration, which should fail
-  # at RENAME (telemetry_old already exists), and .bail on + BEGIN IMMEDIATE
+  # at RENAME (telemetry_old already exists), and the single transaction
   # should cause SQLite to roll back, leaving original table intact.
   rm -f "$HOME/.fsuite/telemetry.jsonl"
   echo '{}' > "$HOME/.fsuite/telemetry.jsonl"

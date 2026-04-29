@@ -598,8 +598,8 @@ SQL
     _model_expr=$(legacy_column_expr model_id "COALESCE(model_id,'unknown')" "'unknown'")
     _agent_expr=$(legacy_column_expr agent_id "COALESCE(agent_id,'unknown')" "'unknown'")
     _session_expr=$(legacy_column_expr session_id "COALESCE(session_id,'')" "''")
-    sqlite3 "$DB_FILE" <<SQL >/dev/null 2>&1 || die "telemetry schema migration failed"
-.bail on
+    local _migration_sql
+    read -r -d '' _migration_sql <<SQL || true
 BEGIN IMMEDIATE;
 ALTER TABLE telemetry RENAME TO telemetry_old;
 CREATE TABLE telemetry (
@@ -648,6 +648,7 @@ CREATE INDEX IF NOT EXISTS idx_agent ON telemetry(agent_id);
 CREATE INDEX IF NOT EXISTS idx_session ON telemetry(session_id);
 COMMIT;
 SQL
+    sqlite3 "$DB_FILE" "$_migration_sql" >/dev/null 2>&1 || die "telemetry schema migration failed"
   else
     # Schema backfill for existing DBs that predate newer telemetry columns.
     ensure_column telemetry cpu_temp_mc "ALTER TABLE telemetry ADD COLUMN cpu_temp_mc INTEGER DEFAULT -1;" || true
