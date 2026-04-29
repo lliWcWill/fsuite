@@ -1547,6 +1547,39 @@ fail "PDF poppler backend: wrong output" "$result"
 fi
 }
 
+# L2. Poppler pdfinfo failures are surfaced as backend errors
+test_media_poppler_pdfinfo_failure() {
+if ! command -v pdftotext >/dev/null 2>&1 || ! command -v pdftoppm >/dev/null 2>&1; then
+echo "  SKIP: test_media_poppler_pdfinfo_failure - poppler tools not installed"
+TESTS_PASSED=$((TESTS_PASSED + 1))
+return
+fi
+local shim_dir output rc=0
+shim_dir="$(mktemp -d)"
+cat > "${shim_dir}/pdfinfo" <<'SH'
+#!/usr/bin/env bash
+echo "pdfinfo forced failure" >&2
+exit 7
+SH
+chmod +x "${shim_dir}/pdfinfo"
+output=$(PATH="${shim_dir}:$PATH" FSUITE_TELEMETRY=0 FSUITE_MEMORY_INGEST=0 \
+  FREAD_MEDIA_FORCE_BACKEND=poppler "${FREAD}" "${MEDIA_FIXTURES}/sample.pdf" -o json 2>&1) || rc=$?
+rm -rf "$shim_dir"
+if (( rc == 0 )); then
+fail "Poppler pdfinfo failure should exit non-zero" "$output"
+return
+fi
+if [[ "$output" != *"PDF_BACKEND_ERROR"* ]] || [[ "$output" != *"pdfinfo failed"* ]]; then
+fail "Poppler pdfinfo failure should surface PDF_BACKEND_ERROR" "$output"
+return
+fi
+if [[ "$output" == *'"type":"pdf-text"'* ]]; then
+fail "Poppler pdfinfo failure should not emit empty pdf-text payload" "$output"
+return
+fi
+pass "Poppler pdfinfo failure surfaces PDF_BACKEND_ERROR"
+}
+
 # M. PDF invalid backend
 test_media_backend_force_invalid() {
 local rc=0 combined
@@ -1910,6 +1943,7 @@ run_test "PDF invalid pages" test_media_pdf_invalid_pages
 run_test "Media error files[].status" test_media_error_populates_files_status
 run_test "PDF encrypted" test_media_pdf_encrypted
 run_test "PDF backend fallback (poppler)" test_media_backend_fallback
+run_test "Poppler pdfinfo failure" test_media_poppler_pdfinfo_failure
 run_test "PDF invalid backend" test_media_backend_force_invalid
 run_test "No-ingest flag" test_media_no_ingest_flag
 run_test "Ingest helper failure status log" test_media_ingest_logs_helper_failure_status

@@ -258,6 +258,8 @@ class PopplerBackend:
             raise RuntimeError(
                 f"pdfinfo failed: {e.stderr.decode('utf-8', errors='replace')[:200] if isinstance(e.stderr, (bytes, bytearray)) else str(e.stderr or '')[:200]}"
             )
+        except OSError as e:
+            raise RuntimeError(f"pdfinfo failed to start: {e}") from e
 
     def _is_encrypted(self, path: str) -> bool:
         try:
@@ -281,19 +283,15 @@ class PopplerBackend:
             raise RuntimeError("PDF is encrypted and requires a password")
 
     def page_count(self, path: str) -> int:
-        try:
-            out = subprocess.check_output(
-                ["pdfinfo", path],
-                stderr=subprocess.PIPE,
-                text=True,
-                timeout=30,
-            )
-            for line in out.splitlines():
-                if line.startswith("Pages:"):
-                    return int(line.split(":", 1)[1].strip())
-        except Exception:
-            pass
-        return 0
+        out = self._pdfinfo(path)
+        for line in out.splitlines():
+            if line.startswith("Pages:"):
+                value = line.split(":", 1)[1].strip()
+                try:
+                    return int(value)
+                except ValueError as exc:
+                    raise RuntimeError(f"pdfinfo returned invalid Pages value: {value!r}") from exc
+        raise RuntimeError("pdfinfo output did not include a Pages field")
 
     def extract_text(self, path: str, pages: list) -> list:
         self._check_encrypted(path)
@@ -808,18 +806,25 @@ def cmd_pdf(args):
 
     backend, backend_name = get_pdf_backend()
     size = os.path.getsize(path)
-    total_pages = backend.page_count(path)
 
-    # Early encryption check for PopplerBackend: page_count silently returns 0
-    # on encrypted PDFs because pdfinfo refuses, so we'd otherwise mislead the
-    # caller. PyMuPDF backend raises inside extract_text/render_page/metadata.
-    if isinstance(backend, PopplerBackend) and backend._is_encrypted(path):
-        err("PDF is encrypted and requires a password", "PDF_ENCRYPTED")
     def _surface_runtime(exc: Exception):
         msg = str(exc)
-        if "encrypted" in msg.lower():
+        lowered = msg.lower()
+        if "encrypted" in lowered or "password" in lowered:
             err(msg, "PDF_ENCRYPTED")
+        if isinstance(backend, PopplerBackend) and "pdfinfo" in lowered:
+            err(msg, "PDF_BACKEND_ERROR")
         raise exc
+
+    try:
+        total_pages = backend.page_count(path)
+    except RuntimeError as exc:
+        _surface_runtime(exc)
+
+    # Early encryption check for PopplerBackend so subsequent pdftotext/pdftoppm
+    # calls do not surface password failures as generic backend errors.
+    if isinstance(backend, PopplerBackend) and backend._is_encrypted(path):
+        err("PDF is encrypted and requires a password", "PDF_ENCRYPTED")
 
     # ── meta-only ──────────────────────────────────────────────────────────────
     if args.meta_only:
