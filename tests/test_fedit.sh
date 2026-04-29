@@ -439,10 +439,40 @@ test_json_error_output() {
   local output rc=0
   reset_fixture "single.py"
   output=$(FSUITE_TELEMETRY=0 "${FEDIT}" -o json "${TEST_DIR}/single.py" --replace 'missing target' --with 'x' 2>/dev/null) || rc=$?
-  if (( rc != 0 )) && printf '%s' "$output" | python3 -m json.tool >/dev/null 2>&1 && [[ "$output" == *'"error_code":"replace_missing"'* ]]; then
+  if (( rc != 0 )) && python3 - "$output" <<'PY' >/dev/null 2>&1; then
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+assert payload["error_code"] == "replace_missing"
+assert "fread" in payload["next_hint"]
+PY
     pass "JSON mode still renders structured output on failure"
   else
     fail "JSON mode should render machine-readable errors" "rc=$rc output=$output"
+  fi
+}
+
+test_json_lines_out_of_range_hint() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    pass "JSON lines-out-of-range test skipped (python3 not available)"
+    return 0
+  fi
+  local output rc=0
+  reset_fixture "single.py"
+  output=$(FSUITE_TELEMETRY=0 "${FEDIT}" -o json "${TEST_DIR}/single.py" --lines 999:1000 --with 'replacement' 2>/dev/null) || rc=$?
+  if (( rc != 0 )) && python3 - "$output" <<'PY' >/dev/null 2>&1; then
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+assert payload["error_code"] == "lines_out_of_range"
+assert "fread" in payload["next_hint"]
+assert "--lines" in payload["next_hint"]
+PY
+    pass "JSON mode gives a next_hint for lines_out_of_range"
+  else
+    fail "JSON mode should hint for lines_out_of_range errors" "rc=$rc output=$output"
   fi
 }
 
@@ -718,17 +748,18 @@ test_tier3_telemetry() {
     return 0
   fi
   reset_fixture "single.py"
-  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
-  FSUITE_TELEMETRY=3 "${FEDIT}" "${TEST_DIR}/single.py" --replace 'return False' --with 'return deny()' >/dev/null 2>&1 || {
+  local telemetry_home="${TEST_DIR}/telemetry-home"
+  mkdir -p "$telemetry_home"
+  HOME="$telemetry_home" FSUITE_TELEMETRY=3 "${FEDIT}" "${TEST_DIR}/single.py" --replace 'return False' --with 'return deny()' >/dev/null 2>&1 || {
     fail "Tier 3 telemetry dry-run should succeed"
     return
   }
-  FSUITE_TELEMETRY=0 "${FMETRICS}" import >/dev/null 2>&1 || {
+  HOME="$telemetry_home" FSUITE_TELEMETRY=0 "${FMETRICS}" import >/dev/null 2>&1 || {
     fail "fmetrics import should ingest fedit telemetry"
     return
   }
   local stats
-  stats=$(FSUITE_TELEMETRY=0 "${FMETRICS}" stats -o json 2>/dev/null || true)
+  stats=$(HOME="$telemetry_home" FSUITE_TELEMETRY=0 "${FMETRICS}" stats -o json 2>/dev/null || true)
   if [[ "$stats" == *'"name":"fedit"'* ]]; then
     pass "Tier 3 telemetry is recorded and imported for fedit"
   else
@@ -1242,6 +1273,7 @@ main() {
   run_test "Replace-file apply" test_replace_file_apply
   run_test "JSON parseability" test_json_output_parseable
   run_test "JSON error output" test_json_error_output
+  run_test "JSON lines out of range hint" test_json_lines_out_of_range_hint
   run_test "JSON not_found" test_json_not_found_error
   run_test "JSON not_regular" test_json_not_regular_error
   run_test "JSON permission" test_json_permission_error

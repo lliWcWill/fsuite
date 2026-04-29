@@ -180,8 +180,258 @@ function detectLang(filePath) {
   return map[ext] || ext || "";
 }
 
+function shellSegments(command) {
+  const input = String(command || "");
+  const segments = [];
+  let segment = "";
+  let quote = "";
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+    if (quote) {
+      segment += ch;
+      if (quote === "'" && ch === "'") {
+        quote = "";
+      } else if (quote === '"') {
+        if (ch === "\\" && i + 1 < input.length) {
+          i += 1;
+          segment += input[i];
+        } else if (ch === '"') {
+          quote = "";
+        }
+      }
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      segment += ch;
+    } else if (ch === "\\") {
+      segment += ch;
+      if (i + 1 < input.length) {
+        i += 1;
+        segment += input[i];
+      }
+    } else if (ch === "\n" || ch === ";" || ch === "|" || ch === "&" || ch === "(" || ch === ")") {
+      segments.push(segment);
+      segment = "";
+    } else {
+      segment += ch;
+    }
+  }
+
+  segments.push(segment);
+  return segments;
+}
+
+function shellSegmentTokens(segment) {
+  const input = String(segment || "");
+  const tokens = [];
+  let token = "";
+  let quote = "";
+
+  const pushToken = () => {
+    if (token) {
+      tokens.push(token);
+      token = "";
+    }
+  };
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+    if (quote) {
+      if (quote === "'" && ch === "'") {
+        quote = "";
+        continue;
+      }
+      if (quote === '"') {
+        if (ch === '"') {
+          quote = "";
+          continue;
+        }
+        if (ch === "\\" && i + 1 < input.length) {
+          i += 1;
+          token += input[i];
+          continue;
+        }
+      }
+      token += ch;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+    } else if (ch === "\\") {
+      if (i + 1 < input.length) {
+        i += 1;
+        token += input[i];
+      }
+    } else if (/\s/.test(ch)) {
+      pushToken();
+    } else if (ch === "<" || ch === ">") {
+      pushToken();
+      tokens.push(ch);
+    } else {
+      token += ch;
+    }
+  }
+
+  pushToken();
+  return tokens;
+}
+
+function stripLeadingTabs(value) {
+  return String(value || "").replace(/^\t+/, "");
+}
+
+function extractHeredocDelimiters(line) {
+  const input = String(line || "");
+  const delimiters = [];
+  let quote = "";
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+    if (quote) {
+      if (quote === "'" && ch === "'") {
+        quote = "";
+      } else if (quote === '"') {
+        if (ch === "\\" && i + 1 < input.length) {
+          i += 1;
+        } else if (ch === '"') {
+          quote = "";
+        }
+      }
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    if (ch === "\\") {
+      if (i + 1 < input.length) i += 1;
+      continue;
+    }
+    if (ch !== "<" || input[i - 1] === "<" || input[i + 1] !== "<" || input[i + 2] === "<") continue;
+
+    i += 2;
+    let stripTabs = false;
+    if (input[i] === "-") {
+      stripTabs = true;
+      i += 1;
+    }
+    while (i < input.length && /\s/.test(input[i])) i += 1;
+
+    let delimiter = "";
+    let wordQuote = "";
+    for (; i < input.length; i += 1) {
+      const wordChar = input[i];
+      if (wordQuote) {
+        if (wordQuote === "'" && wordChar === "'") {
+          wordQuote = "";
+          continue;
+        }
+        if (wordQuote === '"') {
+          if (wordChar === '"') {
+            wordQuote = "";
+            continue;
+          }
+          if (wordChar === "\\" && i + 1 < input.length) {
+            i += 1;
+            delimiter += input[i];
+            continue;
+          }
+        }
+        delimiter += wordChar;
+        continue;
+      }
+
+      if (wordChar === "'" || wordChar === '"') {
+        wordQuote = wordChar;
+      } else if (wordChar === "\\") {
+        if (i + 1 < input.length) {
+          i += 1;
+          delimiter += input[i];
+        }
+      } else if (/\s/.test(wordChar) || [";", "|", "&", "(", ")", "<", ">"].includes(wordChar)) {
+        break;
+      } else {
+        delimiter += wordChar;
+      }
+    }
+
+    if (delimiter) delimiters.push({ delimiter, stripTabs });
+  }
+
+  return delimiters;
+}
+
+function stripHeredocBodies(command) {
+  const lines = String(command || "").split("\n");
+  const pending = [];
+  const kept = [];
+
+  for (const line of lines) {
+    if (pending.length > 0) {
+      const current = pending[0];
+      const compareLine = current.stripTabs ? stripLeadingTabs(line) : line;
+      if (compareLine === current.delimiter) pending.shift();
+      continue;
+    }
+
+    kept.push(line);
+    pending.push(...extractHeredocDelimiters(line));
+  }
+
+  return kept.join("\n");
+}
+
+function commandInvokesTool(command, tool) {
+  for (const segment of shellSegments(stripHeredocBodies(command))) {
+    let skipRedirectionTarget = false;
+    let skipTimeoutArg = false;
+    for (const token of shellSegmentTokens(segment)) {
+      if (!token) continue;
+      if (skipRedirectionTarget) {
+        skipRedirectionTarget = false;
+        continue;
+      }
+      if (token === "<" || token === ">") {
+        skipRedirectionTarget = true;
+        continue;
+      }
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) continue;
+      const base = token.split("/").pop();
+      if (["env", "command", "builtin", "exec", "time"].includes(base)) continue;
+      if (base === "timeout") {
+        skipTimeoutArg = true;
+        continue;
+      }
+      if (skipTimeoutArg) {
+        if (token.startsWith("-")) continue;
+        skipTimeoutArg = false;
+        continue;
+      }
+      if (base === tool) return true;
+      break;
+    }
+  }
+  return false;
+}
+
 const run = promisify(execFile);
-const TOOL_TIMEOUT = 30_000;
+function readTimeoutMs(name, defaultMs) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === "") return defaultMs;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return defaultMs;
+  return parsed;
+}
+
+const TOOL_TIMEOUT = readTimeoutMs("FSUITE_MCP_TOOL_TIMEOUT_MS", 30_000);
+// fbash owns command timeouts itself. A zero execFile timeout prevents the MCP
+// wrapper from killing long foreground calls or background job startup/polls.
+const FBASH_TOOL_TIMEOUT = readTimeoutMs("FSUITE_MCP_FBASH_TIMEOUT_MS", 0);
 const MAX_BUFFER = 1024 * 1024 * 5; // 5MB
 
 // Resolve tools from source tree (sibling of mcp/).
@@ -198,7 +448,15 @@ function resolveTool(name) {
 }
 
 // FSUITE_TELEMETRY=3: full telemetry (timing, args, results) for fmetrics import
-const EXEC_OPTS = { timeout: TOOL_TIMEOUT, maxBuffer: MAX_BUFFER, env: { ...process.env, FSUITE_TELEMETRY: "3" } };
+const EXEC_ENV = { ...process.env, FSUITE_TELEMETRY: "3" };
+
+function execOptsFor(tool) {
+  return {
+    timeout: tool === "fbash" ? FBASH_TOOL_TIMEOUT : TOOL_TIMEOUT,
+    maxBuffer: MAX_BUFFER,
+    env: EXEC_ENV,
+  };
+}
 
 // ─── Per-tool color palette (256-color ANSI for Claude Code tool headers) ────
 // Binary patch v2 passes _.annotations?.title through as-is.
@@ -404,19 +662,21 @@ function renderFreadResult(jsonStr, ctx = {}) {
 
     const lang = detectLang(d.symbol_resolution?.path || d.files?.[0]?.path || "");
 
-// Cap pretty output at 8 lines — user can Ctrl+O to see full output
-const MAX_PRETTY_LINES = ctx.maxLines ?? 8;
-let lineCount = 0;
-let totalLines = 0;
-for (const chunk of (d.chunks || [])) {
-totalLines += chunk.content?.length || 0;
-}
+    // MCP fread should mirror CLI fread: uncapped unless the caller asks for a cap.
+    const MAX_PRETTY_LINES = (ctx.full || ctx.maxLines === undefined || ctx.maxLines === 0)
+      ? Number.POSITIVE_INFINITY
+      : ctx.maxLines;
+    let lineCount = 0;
+    let totalLines = 0;
+    for (const chunk of (d.chunks || [])) {
+      totalLines += chunk.content?.length || 0;
+    }
 
-for (const chunk of (d.chunks || [])) {
-for (const rawLine of chunk.content) {
-if (lineCount >= MAX_PRETTY_LINES) {
-const remaining = totalLines - MAX_PRETTY_LINES;
-out += `${DIM}  ... ${remaining} more lines${RESET}` + "\n";
+    for (const chunk of (d.chunks || [])) {
+      for (const rawLine of chunk.content) {
+        if (lineCount >= MAX_PRETTY_LINES) {
+          const remaining = totalLines - MAX_PRETTY_LINES;
+          out += `${DIM}  ... ${remaining} more lines${RESET}` + "\n";
           lineCount = -1; // sentinel to break outer loop
           break;
         }
@@ -869,8 +1129,10 @@ function renderFbashResult(jsonStr, ctx = {}) {
   const MUTE    = fg(170, 160, 140);   // stderr body (muted warm — distinct from stdout without screaming)
   const GRAY    = fg(150, 150, 150);   // dim labels
 
-  const MAX_STDOUT_LINES = ctx.maxLines ?? 30;
-  const MAX_STDERR_LINES = ctx.maxLines != null ? Math.max(Math.round(ctx.maxLines / 3), 10) : 10;
+  const MAX_STDOUT_LINES = ctx.full ? Number.POSITIVE_INFINITY : (ctx.maxLines ?? 30);
+  const MAX_STDERR_LINES = ctx.full
+    ? Number.POSITIVE_INFINITY
+    : (ctx.maxLines != null ? Math.max(Math.round(ctx.maxLines / 3), 10) : 10);
 
   const out = [];
 
@@ -1081,7 +1343,7 @@ function slimStructuredContent(obj) {
 // ─── Helper: run CLI tool, pretty-render if possible ─────────────
 async function cli(tool, args, renderAs, renderContext) {
   try {
-    const opts = tool === "fbash" ? { ...EXEC_OPTS, timeout: 120_000 } : EXEC_OPTS;
+    const opts = execOptsFor(tool);
     const { stdout, stderr } = await run(resolveTool(tool), args, opts);
     const raw = stdout || stderr || "(no output)";
     const parsed = slimStructuredContent(normalizeStructuredContent(maybeParseJson(raw)));
@@ -1160,7 +1422,7 @@ async function cli(tool, args, renderAs, renderContext) {
 }
 
 // ─── Server ──────────────────────────────────────────────────────
-const server = new McpServer({ name: "fsuite", version: "3.1.0" });
+const server = new McpServer({ name: "fsuite", version: "3.3.0" });
 
 // ─── ftree ───────────────────────────────────────────────────────
 server.registerTool(
@@ -1220,11 +1482,15 @@ server.registerTool(
       after: z.number().optional().describe("Lines of context after match (default 10)"),
       head: z.number().optional().describe("Read first N lines"),
       tail: z.number().optional().describe("Read last N lines"),
-      max_lines: z.number().optional().describe("Cap total lines emitted (default 200)"),
-    }),
-  },
-  async ({ path, paths, symbol, lines, around, around_line, before, after, head, tail, max_lines }) => {
-    const args = [];
+        max_lines: z.number().int().nonnegative().optional().describe("Cap total lines emitted (0/default = uncapped)"),
+        max_bytes: z.number().int().nonnegative().optional().describe("Cap total bytes emitted (0/default = uncapped)"),
+        token_budget: z.number().int().nonnegative().optional().describe("Cap by estimated tokens"),
+        full: z.boolean().optional().describe("Disable fread budgets and MCP preview truncation"),
+        no_truncate: z.boolean().optional().describe("Alias for full; disable fread budgets and MCP preview truncation"),
+      }),
+    },
+    async ({ path, paths, symbol, lines, around, around_line, before, after, head, tail, max_lines, max_bytes, token_budget, full, no_truncate }) => {
+      const args = [];
     if (paths && paths.length > 0) {
       args.push("--paths", paths.map((p) => p.replace(/,/g, "\\,")).join(","));
     } else if (path) {
@@ -1238,13 +1504,17 @@ server.registerTool(
     if (around_line !== undefined) args.push("--around-line", String(around_line));
     if (before !== undefined) args.push("-B", String(before));
     if (after !== undefined) args.push("-A", String(after));
-    if (head !== undefined) args.push("--head", String(head));
-    if (tail !== undefined) args.push("--tail", String(tail));
-    if (max_lines !== undefined) args.push("--max-lines", String(max_lines));
-    args.push("-o", "json");
-    return cli("fread", args, undefined, { maxLines: max_lines });
-  }
-);
+      if (head !== undefined) args.push("--head", String(head));
+      if (tail !== undefined) args.push("--tail", String(tail));
+      if (max_lines !== undefined) args.push("--max-lines", String(max_lines));
+      if (max_bytes !== undefined) args.push("--max-bytes", String(max_bytes));
+      if (token_budget !== undefined) args.push("--token-budget", String(token_budget));
+      const wantsFull = Boolean(full || no_truncate);
+      if (wantsFull) args.push("--no-truncate");
+      args.push("-o", "json");
+      return cli("fread", args, undefined, { maxLines: max_lines, full: wantsFull });
+    }
+  );
 
 // ─── fcontent ────────────────────────────────────────────────────
 server.registerTool(
@@ -1297,7 +1567,7 @@ server.registerTool(
     args.push(query);
     if (path) args.push(path);
     try {
-      const { stdout } = await run(resolveTool("fsearch"), args, EXEC_OPTS);
+      const { stdout } = await run(resolveTool("fsearch"), args, execOptsFor("fsearch"));
       try {
         const parsed = JSON.parse(stdout);
         const rendered = renderFsearchStructured(parsed);
@@ -1670,7 +1940,7 @@ server.registerTool(
     if (intent && intent !== "auto") args.push("--intent", intent);
     if (compact) args.push("--compact");
     try {
-      const { stdout } = await run(resolveTool("fs"), args, EXEC_OPTS);
+      const { stdout } = await run(resolveTool("fs"), args, execOptsFor("fs"));
       try {
 const parsed = JSON.parse(stdout);
 
@@ -1779,12 +2049,16 @@ server.registerTool(
         .describe("Cap output lines (default: 200)"),
       max_bytes: z.number().int().positive().optional()
         .describe("Cap output bytes (default: 51200)"),
+      full: z.boolean().optional()
+        .describe("Disable fbash output caps and MCP preview truncation"),
+      no_truncate: z.boolean().optional()
+        .describe("Alias for full; disable fbash output caps and MCP preview truncation"),
       json: z.boolean().optional()
         .describe("Parse output as JSON and return structured"),
       cwd: z.string().optional()
         .describe("Working directory (overrides session CWD, persists after execution)"),
-      timeout: z.number().int().positive().optional()
-        .describe("Timeout in seconds (auto-tuned by command class if omitted)"),
+      timeout: z.number().int().nonnegative().optional()
+        .describe("Timeout in seconds (auto-tuned by command class if omitted; 0 disables the command timeout)"),
       env: z.array(z.string()).optional()
         .describe("Environment variable overrides as KEY=VALUE strings"),
       filter: z.string().optional()
@@ -1806,7 +2080,11 @@ server.registerTool(
   async (params) => {
     // Poll and list_jobs route to internal commands, bypassing normal execution
     if (params.poll) {
-      return cli("fbash", ["--command", `__fbash_poll ${params.poll}`, "-o", "json"]);
+      const wantsFull = Boolean(params.full || params.no_truncate);
+      const pollArgs = ["--command", `__fbash_poll ${params.poll}`];
+      if (wantsFull) pollArgs.push("--no-truncate");
+      pollArgs.push("-o", "json");
+      return cli("fbash", pollArgs, undefined, { full: wantsFull });
     }
     if (params.list_jobs) {
       return cli("fbash", ["--command", "__fbash_jobs", "-o", "json"]);
@@ -1814,10 +2092,17 @@ server.registerTool(
     if (!params.command) {
       throw new Error("command is required unless using poll or list_jobs");
     }
+    const hasExplicitOutputCap = params.max_lines !== undefined || params.max_bytes !== undefined;
+    const wantsFull = Boolean(
+      params.full ||
+      params.no_truncate ||
+      (!hasExplicitOutputCap && commandInvokesTool(params.command, "fread")),
+    );
     const args = [];
     args.push("--command", params.command);
     if (params.max_lines !== undefined) args.push("--max-lines", String(params.max_lines));
     if (params.max_bytes !== undefined) args.push("--max-bytes", String(params.max_bytes));
+    if (wantsFull) args.push("--no-truncate");
     if (params.json) args.push("--json");
     if (params.cwd) args.push("--cwd", params.cwd);
     if (params.timeout !== undefined) args.push("--timeout", String(params.timeout));
@@ -1832,7 +2117,7 @@ server.registerTool(
     if (params.background) args.push("--background");
     if (params.tail) args.push("--tail");
     args.push("-o", "json");
-    return cli("fbash", args, undefined, { maxLines: params.max_lines });
+    return cli("fbash", args, undefined, { maxLines: params.max_lines, full: wantsFull });
   }
 );
 

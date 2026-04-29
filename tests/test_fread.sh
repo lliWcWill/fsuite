@@ -24,6 +24,18 @@ setup() {
     echo "Line $i: this is content for testing fread line range functionality" >> "${TEST_DIR}/sample.txt"
   done
 
+  # Larger line-count fixture for default uncapped reads
+  for i in $(seq 1 260); do
+    echo "Large line $i: no truncate regression fixture" >> "${TEST_DIR}/large.txt"
+  done
+
+  # Larger byte-count fixture that would exceed the old 50 KB default cap
+  local huge_payload
+  huge_payload=$(printf '%240s' '' | tr ' ' 'x')
+  for i in $(seq 1 260); do
+    echo "Huge line $i: ${huge_payload}" >> "${TEST_DIR}/huge.txt"
+  done
+
   # Python file with functions
   cat > "${TEST_DIR}/auth.py" <<'PYEOF'
 import os
@@ -270,6 +282,34 @@ test_read_whole_file() {
   else
     fail "Should read all 50 lines" "Got $line_count lines"
   fi
+}
+
+test_default_read_is_uncapped() {
+  local output tmp_json
+  output=$(FSUITE_TELEMETRY=0 "${FREAD}" "${TEST_DIR}/huge.txt" -o json 2>/dev/null)
+  tmp_json="$(mktemp)"
+  printf '%s\n' "$output" > "$tmp_json"
+
+  if python3 - "$tmp_json" <<'PY' 2>/dev/null
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    d = json.load(fh)
+
+assert d["truncated"] is False
+assert d["truncation_reason"] == "none"
+assert d["max_lines"] == 0
+assert d["max_bytes"] == 0
+assert d["lines_emitted"] == 260
+assert any("Huge line 260:" in line for chunk in d["chunks"] for line in chunk["content"])
+PY
+  then
+    pass "Default read is uncapped for lines and bytes"
+  else
+    fail "Default fread should not truncate requested content" "Got: $output"
+  fi
+  rm -f "$tmp_json"
 }
 
 test_read_with_max_lines() {
@@ -875,6 +915,29 @@ test_token_estimate_present() {
   fi
 }
 
+test_no_truncate_overrides_all_budgets() {
+  local output tmp_json
+  output=$(FSUITE_TELEMETRY=0 "${FREAD}" "${TEST_DIR}/large.txt" --max-lines 10 --max-bytes 100 --token-budget 1 --no-truncate -o json 2>/dev/null)
+  tmp_json="$(mktemp)"
+  printf '%s\n' "$output" > "$tmp_json"
+
+  if python3 - "$tmp_json" <<'PY' 2>/dev/null
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    d = json.load(fh)
+assert d["truncated"] is False
+assert d["truncation_reason"] == "none"
+assert d["lines_emitted"] == 260
+assert any("Large line 260" in line for chunk in d["chunks"] for line in chunk["content"])
+PY
+  then
+    pass "--no-truncate overrides line, byte, and token budgets"
+  else
+    fail "--no-truncate should emit the full requested file" "Got: $output"
+  fi
+  rm -f "$tmp_json"
+}
+
 # ============================================================================
 # Mode Conflict Tests
 # ============================================================================
@@ -918,10 +981,38 @@ test_telemetry_recorded() {
   FSUITE_TELEMETRY=1 "${FREAD}" "${TEST_DIR}/sample.txt" --max-lines 5 >/dev/null 2>&1 || true
   local line
   line=$(tail -1 "$HOME/.fsuite/telemetry.jsonl" 2>/dev/null) || line=""
-  if [[ "$line" =~ \"tool\":\"fread\" ]] && [[ "$line" =~ \"run_id\":\"[0-9]+_[0-9]+\" ]]; then
+  if python3 - "$line" <<'PY' 2>/dev/null; then
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+run_id = payload.get("run_id", "")
+assert payload.get("tool") == "fread"
+assert isinstance(run_id, str) and len(run_id) > 0
+PY
     pass "Telemetry records fread with run_id"
   else
     fail "Telemetry should record tool=fread with run_id" "Got: $line"
+  fi
+}
+
+test_telemetry_escapes_run_id() {
+  rm -f "$HOME/.fsuite/telemetry.jsonl"
+  local raw_run_id line
+  raw_run_id=$'custom"run\\id\nnext'
+  FSUITE_TELEMETRY=1 FSUITE_TELEMETRY_RUN_ID="$raw_run_id" "${FREAD}" "${TEST_DIR}/sample.txt" --max-lines 5 >/dev/null 2>&1 || true
+  line=$(tail -1 "$HOME/.fsuite/telemetry.jsonl" 2>/dev/null) || line=""
+  if python3 - "$line" "$raw_run_id" <<'PY' 2>/dev/null; then
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+assert payload.get("tool") == "fread"
+assert payload.get("run_id") == sys.argv[2]
+PY
+    pass "Telemetry JSON escapes custom run_id"
+  else
+    fail "Telemetry should JSON-escape custom run_id" "Got: $line"
   fi
 }
 
@@ -1025,6 +1116,7 @@ main() {
   echo ""
   echo "== Single File Read =="
   run_test "Read whole file" test_read_whole_file
+  run_test "Default read uncapped" test_default_read_is_uncapped
   run_test "Max lines limit" test_read_with_max_lines
   run_test "Line numbers present" test_line_numbers_present
   run_test "Empty file" test_empty_file
@@ -1091,6 +1183,7 @@ main() {
   run_test "Token budget truncation" test_token_budget_truncation
   run_test "Next hint on truncation" test_next_hint_on_truncation
   run_test "Token estimate present" test_token_estimate_present
+  run_test "No truncate override" test_no_truncate_overrides_all_budgets
 
   echo ""
   echo "== Mode Conflicts =="
@@ -1101,6 +1194,7 @@ main() {
   echo ""
   echo "== Telemetry =="
   run_test "Telemetry recorded" test_telemetry_recorded
+  run_test "Telemetry escapes run_id" test_telemetry_escapes_run_id
   run_test "Project name override" test_telemetry_project_name
   run_test "Flag accumulation" test_telemetry_flags
   run_test "Default flag seeding" test_telemetry_default_flags

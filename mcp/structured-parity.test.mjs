@@ -353,30 +353,59 @@ test("fedit and fwrite MCP return pretty-rendered content", async () => {
 });
 
 test("fmetrics MCP preserves stats JSON as structured content", async () => {
-  const result = await callTool("fmetrics", {
-    action: "stats",
-  });
+  const fixture = makeFixture();
+  const telemetryHome = mkdtempSync(join(tmpdir(), "fsuite-mcp-fmetrics-home-"));
+  const env = { ...process.env, HOME: telemetryHome };
+  try {
+    mkdirSync(join(telemetryHome, ".fsuite"));
+    const seedResult = await callToolWithEnv("fcontent", {
+      query: "agent",
+      path: fixture,
+      max_matches: 5,
+    }, env);
+    assert.ok(!seedResult.isError, textContent(seedResult));
 
-  assert.ok(!result.isError, textContent(result));
-  assert.ok(result.structuredContent, "fmetrics should have structuredContent");
-  // tool field is stripped by slimStructuredContent — check tools array instead
-  assert.ok(Array.isArray(result.structuredContent.tools), "fmetrics stats should have tools array");
+    const importResult = await callToolWithEnv("fmetrics", {
+      action: "import",
+    }, env);
+    assert.ok(!importResult.isError, textContent(importResult));
+
+    const result = await callToolWithEnv("fmetrics", {
+      action: "stats",
+    }, env);
+
+    assert.ok(!result.isError, textContent(result));
+    assert.ok(result.structuredContent, "fmetrics should have structuredContent");
+    // tool field is stripped by slimStructuredContent — check tools array instead
+    assert.ok(Array.isArray(result.structuredContent.tools), "fmetrics stats should have tools array");
+  } finally {
+    rmSync(fixture, { recursive: true, force: true });
+    rmSync(telemetryHome, { recursive: true, force: true });
+  }
 });
 
 test("fmetrics MCP preserves nested per-run fields in history", async () => {
   const fixture = makeFixture();
+  const telemetryHome = mkdtempSync(join(tmpdir(), "fsuite-mcp-fmetrics-home-"));
+  const env = { ...process.env, HOME: telemetryHome };
   try {
-    const seedResult = await callTool("fcontent", {
+    mkdirSync(join(telemetryHome, ".fsuite"));
+    const seedResult = await callToolWithEnv("fcontent", {
       query: "agent",
       path: fixture,
       max_matches: 5,
-    });
+    }, env);
     assert.ok(!seedResult.isError, textContent(seedResult));
 
-    const result = await callTool("fmetrics", {
+    const importResult = await callToolWithEnv("fmetrics", {
+      action: "import",
+    }, env);
+    assert.ok(!importResult.isError, textContent(importResult));
+
+    const result = await callToolWithEnv("fmetrics", {
       action: "history",
       limit: 5,
-    });
+    }, env);
 
     assert.ok(!result.isError, textContent(result));
     assert.ok(Array.isArray(result.structuredContent.runs), "fmetrics history should expose runs");
@@ -387,6 +416,7 @@ test("fmetrics MCP preserves nested per-run fields in history", async () => {
     assert.equal(typeof run.duration_ms, "number", "history run should preserve duration_ms");
   } finally {
     rmSync(fixture, { recursive: true, force: true });
+    rmSync(telemetryHome, { recursive: true, force: true });
   }
 });
 
@@ -485,6 +515,57 @@ test("fread MCP preserves paths entries that contain commas", async () => {
   }
 });
 
+test("fread MCP default mode renders all requested content", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "fsuite-mcp-fread-default-full-"));
+  const filePath = join(dir, "default-full.txt");
+  writeFileSync(
+    filePath,
+    Array.from({ length: 12 }, (_, i) => `default full line ${i + 1}`).join("\n") + "\n",
+    "utf8",
+  );
+
+  try {
+    const result = await callTool("fread", {
+      path: filePath,
+    });
+    const plain = stripAnsi(textContent(result));
+
+    assert.ok(!result.isError, plain);
+    assert.ok(plain.includes("default full line 1"), `expected first line in output, got: ${plain}`);
+    assert.ok(plain.includes("default full line 12"), `expected final line in output, got: ${plain}`);
+    assert.ok(!plain.includes("more lines"), `default mode should not render preview truncation, got: ${plain}`);
+    assert.ok(!plain.includes("truncated"), `default mode should not report truncation, got: ${plain}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("fread MCP full mode does not truncate requested content", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "fsuite-mcp-fread-full-"));
+  const filePath = join(dir, "full.txt");
+  writeFileSync(
+    filePath,
+    Array.from({ length: 12 }, (_, i) => `full line ${i + 1}`).join("\n") + "\n",
+    "utf8",
+  );
+
+  try {
+    const result = await callTool("fread", {
+      path: filePath,
+      full: true,
+      max_lines: 3,
+    });
+    const plain = stripAnsi(textContent(result));
+
+    assert.ok(!result.isError, plain);
+    assert.ok(plain.includes("full line 1"), `expected first line in output, got: ${plain}`);
+    assert.ok(plain.includes("full line 12"), `expected final line in output, got: ${plain}`);
+    assert.ok(!plain.includes("more lines"), `full mode should not render preview truncation, got: ${plain}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("fbash pretty output does not color exit=null as an error", async () => {
   const result = await callTool("fbash", {
     command: "sleep 0.2",
@@ -512,6 +593,108 @@ test("fbash pretty output does not color exit=null as an error", async () => {
     !raw.includes("\x1b[38;2;220;90;90mexit=null"),
     `exit=null should not be rendered in red, got: ${JSON.stringify(raw)}`,
   );
+});
+
+test("fbash MCP wrapper does not impose its own exec timeout when disabled", async () => {
+  const result = await callToolWithEnv("fbash", {
+    command: "sleep 0.2; printf mcp-fbash-timeout-ok",
+    timeout: 0,
+  }, { ...process.env, FSUITE_MCP_FBASH_TIMEOUT_MS: "0" });
+
+  const plain = stripAnsi(textContent(result));
+  assert.ok(!result.isError, plain);
+  assert.ok(
+    plain.includes("mcp-fbash-timeout-ok"),
+    `expected fbash command to outlive MCP wrapper timeout setting, got: ${plain}`,
+  );
+});
+
+test("fbash MCP full mode disables shell output and preview truncation", async () => {
+  const result = await callTool("fbash", {
+    command: "for i in $(seq 1 50); do echo \"mcp full line $i\"; done",
+    max_lines: 3,
+    max_bytes: 40,
+    full: true,
+  });
+
+  const plain = stripAnsi(textContent(result));
+  assert.ok(!result.isError, plain);
+  assert.ok(plain.includes("mcp full line 1"), `expected first line in output, got: ${plain}`);
+  assert.ok(plain.includes("mcp full line 50"), `expected final line in output, got: ${plain}`);
+  assert.ok(!plain.includes("more line"), `full mode should not render preview truncation, got: ${plain}`);
+  assert.ok(!plain.includes("truncated"), `full mode should not report output truncation, got: ${plain}`);
+});
+
+test("fbash MCP does not truncate fread commands by default", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "fsuite-mcp-fbash-fread-full-"));
+  const filePath = join(dir, "fbash-fread-full.txt");
+  const payload = "x".repeat(240);
+  writeFileSync(
+    filePath,
+    Array.from({ length: 260 }, (_, i) => `mcp fbash fread line ${i + 1}: ${payload}`).join("\n") + "\n",
+    "utf8",
+  );
+
+  try {
+    const freadPath = join(mcpDir, "..", "fread");
+    const result = await callTool("fbash", {
+      command: `"${freadPath}" "${filePath}" -o json`,
+    });
+    const plain = stripAnsi(textContent(result));
+
+    assert.ok(!result.isError, plain);
+    assert.ok(plain.includes("mcp fbash fread line 260:"), `expected final fread line in fbash output, got: ${plain}`);
+    assert.ok(!plain.includes("more line"), `fbash fread default should not render preview truncation, got: ${plain}`);
+    assert.ok(!plain.includes("truncated:true"), `fbash fread default should not report shell truncation, got: ${plain}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("fbash MCP keeps budgets when fread is only an argument", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "fsuite-mcp-fbash-fread-argument-"));
+  const filePath = join(dir, "fbash-fread-argument.txt");
+  writeFileSync(
+    filePath,
+    Array.from({ length: 260 }, (_, i) => `mcp argument budget line ${i + 1}`).join("\n") + "\n",
+    "utf8",
+  );
+
+  try {
+    const result = await callTool("fbash", {
+      command: `printf 'fread\\n' >/dev/null; cat "${filePath}"`,
+    });
+    const plain = stripAnsi(textContent(result));
+
+    assert.ok(!result.isError, plain);
+    assert.ok(!plain.includes("mcp argument budget line 260"), `expected default fbash cap to hide final line, got: ${plain}`);
+    assert.ok(plain.includes("more line"), `expected default fbash cap to render more-lines marker, got: ${plain}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("fbash MCP keeps budgets when fread is only in a heredoc body", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "fsuite-mcp-fbash-fread-heredoc-"));
+  const filePath = join(dir, "fbash-fread-heredoc.txt");
+  writeFileSync(
+    filePath,
+    Array.from({ length: 260 }, (_, i) => `mcp heredoc budget line ${i + 1}`).join("\n") + "\n",
+    "utf8",
+  );
+
+  try {
+    const result = await callTool("fbash", {
+      command: `cat <<'EOF' >/dev/null\nfread\nEOF\ncat "${filePath}"`,
+    });
+    const plain = stripAnsi(textContent(result));
+
+    assert.ok(!result.isError, plain);
+    assert.ok(!plain.includes("mcp heredoc budget line 260"), `expected default fbash cap to hide final line, got: ${plain}`);
+    assert.ok(plain.includes("more line"), `expected default fbash cap to render more-lines marker, got: ${plain}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("fbash MCP error path falls back to parsed stderr when errors are empty", async () => {

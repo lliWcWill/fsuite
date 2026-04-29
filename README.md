@@ -2611,6 +2611,27 @@ Control telemetry via the `FSUITE_TELEMETRY` environment variable:
 - `filesystem_type`: ext4, ntfs, exfat, apfs, nfs, cifs, tmpfs, etc.
 - `storage_type`: ssd, hdd, nvme, network, removable, tmpfs, etc.
 
+### Caller Attribution
+
+Telemetry also records who called the tool so benchmark runs can compare Codex, Claude Code, OpenCode, local models, and human shells without asking the model to add flags manually.
+
+| Field | Source |
+|-------|--------|
+| `model_id` | `FSUITE_MODEL_ID`, then common runtime model env vars, else `unknown` |
+| `agent_id` | `FSUITE_AGENT_ID`, then runtime/process inference such as Codex, Claude Code, OpenCode, Hermes, Nightfox, else `unknown` |
+| `session_id` | `FSUITE_SESSION_ID`, then common runtime session env vars, else empty |
+
+When `fbash` detects or receives attribution values, it exports them to child fsuite commands so shell pipelines keep the same caller identity:
+
+```bash
+FSUITE_MODEL_ID=codex-gpt-5.5 \
+FSUITE_AGENT_ID=codex-cli \
+FSUITE_SESSION_ID=bench-042 \
+fbash --command 'fsearch -o paths "*.ts" src | fcontent -o paths "authenticate"'
+```
+
+For direct shell pipelines that do not run through `fbash`, export the same variables before the pipeline if you need guaranteed shared attribution across every tool event.
+
 ### Examples
 
 ```bash
@@ -2643,6 +2664,10 @@ fmetrics stats
 
 # View recent runs
 fmetrics history --tool ftree --limit 10
+
+# Compare or filter by caller identity
+fmetrics stats -o json
+fmetrics history --model codex-gpt-5.5 --agent codex-cli -o json
 
 # View the strongest combo patterns for one project
 fmetrics combos --project fsuite

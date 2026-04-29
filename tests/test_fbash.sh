@@ -191,6 +191,97 @@ test_max_lines_truncation() {
   fi
 }
 
+test_no_truncate_overrides_output_budgets() {
+  local bigfile="${TEST_DIR}/big-full.txt"
+  for i in $(seq 1 500); do
+    echo "line $i of 500"
+  done > "$bigfile"
+
+  fbash_json --command "cat ${bigfile}" --max-lines 10 --max-bytes 100 --no-truncate
+
+  local truncated stdout stdout_lines lines_total
+  truncated=$(jraw truncated)
+  stdout=$(jfield stdout)
+  stdout_lines=$(jraw stdout_lines)
+  lines_total=$(jraw lines_total)
+
+  if [[ "$truncated" == "false" ]] && [[ "$lines_total" == "500" ]] && (( stdout_lines >= 499 )) && [[ "$stdout" == *"line 500 of 500"* ]]; then
+    pass "no_truncate: output budgets disabled and full stdout returned"
+  else
+    fail "no_truncate: expected full untruncated stdout" \
+         "Got truncated=$truncated, stdout_lines=$stdout_lines, lines_total=$lines_total, stdout_tail='${stdout: -80}'"
+  fi
+}
+
+test_fread_command_is_uncapped_by_default() {
+  local bigfile="${TEST_DIR}/fbash-fread-full.txt"
+  local payload stdout truncated
+  payload=$(printf '%240s' '' | tr ' ' 'x')
+  for i in $(seq 1 260); do
+    echo "fbash fread line $i: ${payload}"
+  done > "$bigfile"
+
+  fbash_json --command "\"${SCRIPT_DIR}/../fread\" \"${bigfile}\" -o json"
+
+  truncated=$(jraw truncated)
+  stdout=$(jfield stdout)
+
+  if [[ "$truncated" == "false" ]] && printf '%s\n' "$stdout" | jq -e '
+    .tool == "fread" and
+    .truncated == false and
+    .lines_emitted == 260 and
+    any(.chunks[]?.content[]; contains("fbash fread line 260:"))
+  ' >/dev/null 2>&1; then
+    pass "fbash fread command is uncapped by default"
+  else
+    fail "fbash should not truncate fread command output by default" \
+         "Got fbash truncated=$truncated, stdout_tail='${stdout: -120}'"
+  fi
+}
+
+test_fread_word_in_argument_does_not_disable_output_budgets() {
+  local bigfile="${TEST_DIR}/fbash-fread-argument.txt"
+  local stdout truncated stdout_lines
+  for i in $(seq 1 260); do
+    echo "argument budget line $i"
+  done > "$bigfile"
+
+  fbash_json --command "printf 'fread\n' >/dev/null; cat \"${bigfile}\""
+
+  truncated=$(jraw truncated)
+  stdout=$(jfield stdout)
+  stdout_lines=$(jraw stdout_lines)
+
+  if [[ "$truncated" == "true" ]] && [[ "$stdout_lines" == "200" ]] && [[ "$stdout" != *"argument budget line 260"* ]]; then
+    pass "fbash only uncaps real fread invocations"
+  else
+    fail "fbash should keep output budgets when fread is only an argument" \
+         "Got truncated=$truncated, stdout_lines=$stdout_lines, stdout_tail='${stdout: -120}'"
+  fi
+}
+
+test_fread_word_in_heredoc_does_not_disable_output_budgets() {
+  local bigfile="${TEST_DIR}/fbash-fread-heredoc.txt"
+  local stdout truncated stdout_lines command
+  for i in $(seq 1 260); do
+    echo "heredoc budget line $i"
+  done > "$bigfile"
+
+  command=$(printf "cat <<'EOF' >/dev/null\nfread\nEOF\ncat %q\n" "$bigfile")
+  fbash_json --command "$command"
+
+  truncated=$(jraw truncated)
+  stdout=$(jfield stdout)
+  stdout_lines=$(jraw stdout_lines)
+
+  if [[ "$truncated" == "true" ]] && [[ "$stdout_lines" == "200" ]] && [[ "$stdout" != *"heredoc budget line 260"* ]]; then
+    pass "fbash ignores fread text inside heredoc bodies"
+  else
+    fail "fbash should keep output budgets when fread appears only inside a heredoc body" \
+         "Got truncated=$truncated, stdout_lines=$stdout_lines, stdout_tail='${stdout: -120}'"
+  fi
+}
+
 # ============================================================================
 # 8. Tail Mode
 # ============================================================================
@@ -286,6 +377,29 @@ test_cwd_tracking() {
     pass "cwd_tracking: cwd=/tmp"
   else
     fail "cwd_tracking: expected cwd=/tmp" "Got cwd='$cwd'"
+  fi
+}
+
+test_process_cwd_beats_stale_session_cwd() {
+  local process_dir stale_dir stdout cwd
+  process_dir="${TEST_DIR}/process-workspace"
+  stale_dir="${TEST_DIR}/stale-workspace"
+  mkdir -p "$process_dir" "$stale_dir"
+
+  "${FBASH}" --command 'pwd' --cwd "$stale_dir" -o json >/dev/null 2>&1 || true
+
+  pushd "$process_dir" >/dev/null
+  fbash_json --command 'pwd'
+  popd >/dev/null
+
+  stdout=$(jfield stdout)
+  cwd=$(jfield cwd)
+
+  if [[ "$stdout" == "$process_dir" && "$cwd" == "$process_dir" ]]; then
+    pass "process_cwd_beats_stale_session_cwd: used caller cwd"
+  else
+    fail "process_cwd_beats_stale_session_cwd: expected caller cwd" \
+      "stdout='$stdout' cwd='$cwd' process_dir='$process_dir' stale_dir='$stale_dir'"
   fi
 }
 
@@ -466,6 +580,176 @@ test_background_metadata() {
   else
     fail "background_metadata_poll: expected completed poll metadata" \
       "job_id=$job_id poll_job_id=${poll_job_id:-<empty>} status=${poll_status:-<empty>} exit=${poll_exit:-<empty>} out=$FBASH_OUT"
+  fi
+}
+
+test_zero_timeout_disables_foreground_timeout() {
+  fbash_json --command 'sleep 0.2; echo zero_timeout_ok' --timeout 0
+
+  local exit_code stdout
+  exit_code=$(jraw exit_code)
+  stdout=$(jfield stdout)
+
+  if [[ "$exit_code" == "0" && "$stdout" == "zero_timeout_ok" ]]; then
+    pass "zero_timeout: --timeout 0 disables foreground timeout wrapper"
+  else
+    fail "zero_timeout: expected command to complete without timeout" \
+      "exit_code=${exit_code:-<empty>} stdout=${stdout:-<empty>} out=$FBASH_OUT"
+  fi
+}
+
+test_background_has_no_default_timeout_but_respects_explicit_timeout() {
+  fbash_json --background --command 'sleep 0.2; echo bg_no_default_timeout'
+
+  local job_id
+  job_id=$(echo "$FBASH_OUT" | jq -r '.metadata.background_job_id // empty' 2>/dev/null)
+  if [[ -z "$job_id" ]]; then
+    fail "background_no_default_timeout: background job did not start" "out=$FBASH_OUT"
+    return
+  fi
+
+  sleep 0.3
+  fbash_json --command "__fbash_poll $job_id"
+
+  local exit_code stdout
+  exit_code=$(jraw exit_code)
+  stdout=$(jfield stdout)
+  if [[ "$exit_code" == "0" && "$stdout" == "bg_no_default_timeout" ]]; then
+    pass "background_no_default_timeout: background job completed without implicit timeout"
+  else
+    fail "background_no_default_timeout: expected completed background job" \
+      "exit_code=${exit_code:-<empty>} stdout=${stdout:-<empty>} out=$FBASH_OUT"
+    return
+  fi
+
+  command -v timeout >/dev/null 2>&1 || {
+    skip "background_explicit_timeout: timeout unavailable"
+    return
+  }
+
+  fbash_json --background --timeout 1 --command 'sleep 2'
+  job_id=$(echo "$FBASH_OUT" | jq -r '.metadata.background_job_id // empty' 2>/dev/null)
+  if [[ -z "$job_id" ]]; then
+    fail "background_explicit_timeout: background job did not start" "out=$FBASH_OUT"
+    return
+  fi
+
+  sleep 1.3
+  fbash_json --command "__fbash_poll $job_id"
+  exit_code=$(jraw exit_code)
+  if [[ "$exit_code" == "124" ]]; then
+    pass "background_explicit_timeout: explicit --timeout is still enforced"
+  else
+    fail "background_explicit_timeout: expected timeout exit 124" \
+      "exit_code=${exit_code:-<empty>} out=$FBASH_OUT"
+  fi
+}
+
+test_background_survives_launcher_timeout() {
+  command -v timeout >/dev/null 2>&1 || {
+    skip "background_survives_launcher_timeout: timeout unavailable"
+    return
+  }
+
+  local detach_dir="${TEST_DIR}/detach-session"
+  mkdir -p "$detach_dir"
+
+  timeout 1s bash -c "FBASH_SESSION_DIR='${detach_dir}' '${FBASH}' --command 'sleep 2; echo detached_done' --background -o json >/dev/null; sleep 5" >/dev/null 2>&1 || true
+
+  local job_id=""
+  for _ in $(seq 1 20); do
+    local meta_file
+    for meta_file in "$detach_dir/jobs"/*.meta; do
+      [[ -e "$meta_file" ]] || continue
+      job_id=$(basename "${meta_file%.meta}")
+      break
+    done
+    [[ -n "$job_id" ]] && break
+    sleep 0.1
+  done
+
+  if [[ -z "$job_id" ]]; then
+    local files
+    files=$(find "$detach_dir" -maxdepth 3 -type f 2>/dev/null | tr '\n' ' ')
+    fail "background_survives_launcher_timeout: expected background job metadata" \
+      "files=${files}"
+    return
+  fi
+
+  for _ in $(seq 1 40); do
+    FBASH_OUT=$(FBASH_SESSION_DIR="$detach_dir" "${FBASH}" --command "__fbash_poll $job_id" --no-truncate -o json 2>/dev/null) || true
+    local exit_code
+    exit_code=$(jraw exit_code)
+    [[ "$exit_code" != "null" && -n "$exit_code" ]] && break
+    sleep 0.1
+  done
+
+  local exit_code stdout status
+  exit_code=$(jraw exit_code)
+  stdout=$(jfield stdout)
+  status=$(echo "$FBASH_OUT" | jq -r '.metadata.background_status // empty' 2>/dev/null)
+
+  if [[ "$exit_code" == "0" ]] && [[ "$status" == "completed" ]] && [[ "$stdout" == *"detached_done"* ]]; then
+    pass "background_survives_launcher_timeout: detached job completed after launcher died"
+  else
+    fail "background_survives_launcher_timeout: expected detached completion" \
+      "exit_code=${exit_code:-<empty>} status=${status:-<empty>} out=$FBASH_OUT"
+  fi
+}
+
+test_background_exports_telemetry_run_id() {
+  local expected="parent-run-id-no-underscore"
+  local bg_out job_id stdout
+
+  bg_out=$(FSUITE_TELEMETRY=1 FSUITE_TELEMETRY_RUN_ID="$expected" "${FBASH}" \
+    --command 'printf "%s" "$FSUITE_TELEMETRY_RUN_ID"' \
+    --background -o json 2>/dev/null) || true
+  job_id=$(echo "$bg_out" | jq -r '.metadata.background_job_id // empty' 2>/dev/null)
+  if [[ -z "$job_id" ]]; then
+    fail "background_exports_telemetry_run_id: background job did not start" "out=$bg_out"
+    return
+  fi
+
+  for _ in $(seq 1 20); do
+    fbash_json --command "__fbash_poll $job_id"
+    stdout=$(jfield stdout)
+    [[ -n "$stdout" ]] && break
+    sleep 0.1
+  done
+
+  if [[ "$stdout" == "$expected" ]]; then
+    pass "background_exports_telemetry_run_id: detached job inherited shared run_id"
+  else
+    fail "background_exports_telemetry_run_id: expected shared run_id in child env" \
+      "stdout=${stdout:-<empty>} out=$FBASH_OUT"
+  fi
+}
+
+test_telemetry_escapes_run_id() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    skip "telemetry_escapes_run_id: python3 unavailable"
+    return
+  fi
+  mkdir -p "$HOME/.fsuite"
+  rm -f "$HOME/.fsuite/telemetry.jsonl"
+  local raw_run_id line
+  raw_run_id=$'fbash"run\\id\nnext'
+
+  FSUITE_TELEMETRY=1 FSUITE_TELEMETRY_RUN_ID="$raw_run_id" \
+    "${FBASH}" --command 'true' -o json >/dev/null 2>&1 || true
+  line=$(tail -1 "$HOME/.fsuite/telemetry.jsonl" 2>/dev/null) || line=""
+
+  if python3 - "$line" "$raw_run_id" <<'PY' >/dev/null 2>&1; then
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+assert payload.get("tool") == "fbash"
+assert payload.get("run_id") == sys.argv[2]
+PY
+    pass "telemetry_escapes_run_id: custom run_id remains valid JSON"
+  else
+    fail "telemetry_escapes_run_id: expected JSON-escaped run_id" "line=$line"
   fi
 }
 
@@ -662,6 +946,10 @@ main() {
   echo ""
   echo "== Output Budgeting =="
   run_test "Max lines truncation" test_max_lines_truncation
+  run_test "No truncate overrides output budgets" test_no_truncate_overrides_output_budgets
+  run_test "Fread command uncapped by default" test_fread_command_is_uncapped_by_default
+  run_test "Fread argument keeps output budgets" test_fread_word_in_argument_does_not_disable_output_budgets
+  run_test "Fread heredoc body keeps output budgets" test_fread_word_in_heredoc_does_not_disable_output_budgets
   run_test "Tail mode" test_tail_mode
   run_test "Filter" test_filter
   run_test "Quiet mode" test_quiet_mode
@@ -669,6 +957,7 @@ main() {
   echo ""
   echo "== CWD Tracking =="
   run_test "CWD tracking" test_cwd_tracking
+  run_test "Process CWD beats stale session CWD" test_process_cwd_beats_stale_session_cwd
 
   echo ""
   echo "== Smart Routing Suggestions =="
@@ -681,8 +970,13 @@ echo "== Session State & Internal Commands =="
 run_test "Session state" test_session_state
 run_test "Internal history" test_internal_history
 run_test "Internal reset" test_internal_reset
-run_test "Background metadata" test_background_metadata
-run_test "Exec temp cleanup" test_exec_temp_cleanup
+  run_test "Background metadata" test_background_metadata
+  run_test "Zero timeout disables foreground timeout" test_zero_timeout_disables_foreground_timeout
+  run_test "Background timeout behavior" test_background_has_no_default_timeout_but_respects_explicit_timeout
+  run_test "Background survives launcher timeout" test_background_survives_launcher_timeout
+  run_test "Background exports telemetry run_id" test_background_exports_telemetry_run_id
+  run_test "Telemetry escapes run_id" test_telemetry_escapes_run_id
+  run_test "Exec temp cleanup" test_exec_temp_cleanup
 
 echo ""
 echo "== JSON Output Contract =="

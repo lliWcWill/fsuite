@@ -17,7 +17,7 @@ The content below is the **live** `--help` output of `fread`, captured at build 
 fread — budgeted file reading with line numbers, token estimates, and pipeline integration.
 
 USAGE
-  fread <file>                                   Read file (capped)
+  fread <file>                                   Read file (uncapped by default)
   fread <file> --symbol authenticate             Read one exact symbol block
   fread <dir> --symbol authenticate              Resolve one exact symbol within a directory scope
   fread <file> -r 120:220                        Line range
@@ -40,9 +40,10 @@ OPTIONS
   --symbol NAME               Read exactly one exact symbol match within file or directory scope
   -B, --before N              Lines before (default 5)
   -A, --after N               Lines after (default 10)
-  --max-lines N               Cap total emitted lines (default 200)
-  --max-bytes N               Cap total emitted bytes (default 50000)
+  --max-lines N               Cap total emitted lines (0/default = uncapped)
+  --max-bytes N               Cap total emitted bytes (0/default = uncapped)
   --token-budget N            Cap by estimated tokens (conservative bytes/3)
+  --no-truncate, --full       Disable line, byte, and token caps
   --max-files N               Cap files from stdin paths mode (default 10)
   --from-stdin                Read input from stdin
   --stdin-format FMT          Required with --from-stdin: paths|unified-diff

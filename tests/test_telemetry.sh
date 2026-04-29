@@ -9,6 +9,7 @@ FSUITE_DIR="${SCRIPT_DIR}/.."
 FCONTENT="${FSUITE_DIR}/fcontent"
 FSEARCH="${FSUITE_DIR}/fsearch"
 FTREE="${FSUITE_DIR}/ftree"
+FBASH="${FSUITE_DIR}/fbash"
 FMETRICS="${FSUITE_DIR}/fmetrics"
 FMETRICS_PREDICT="${FSUITE_DIR}/fmetrics-predict.py"
 
@@ -685,10 +686,10 @@ test_schema_migration_idempotent() {
   local cols
   cols=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT sql FROM sqlite_master WHERE name='telemetry';" 2>/dev/null || true)
 
-  if [[ "$cols" == *"cpu_temp_mc"* ]] && [[ "$cols" == *"load_avg_1m"* ]] && [[ "$cols" == *"run_id"* ]] && ([[ "$cols" == *"UNIQUE(run_id, tool, path_hash)"* ]] || [[ "$cols" == *"UNIQUE(run_id,tool,path_hash)"* ]]); then
+  if [[ "$cols" == *"cpu_temp_mc"* ]] && [[ "$cols" == *"load_avg_1m"* ]] && [[ "$cols" == *"source_offset"* ]] && [[ "$cols" == *"run_id"* ]] && [[ "$cols" == *"model_id"* ]] && [[ "$cols" == *"agent_id"* ]] && [[ "$cols" == *"session_id"* ]] && ([[ "$cols" == *"UNIQUE(run_id, tool, path_hash, source_offset)"* ]] || [[ "$cols" == *"UNIQUE(run_id,tool,path_hash,source_offset)"* ]]); then
     pass "Schema migration is idempotent"
   else
-    fail "Schema should have hardware columns after migration" "Got: $cols"
+    fail "Schema should have hardware and attribution columns after migration" "Got: $cols"
   fi
 }
 
@@ -697,10 +698,282 @@ test_run_id_in_jsonl() {
   FSUITE_TELEMETRY=1 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
   local line
   line=$(tail -1 "$HOME/.fsuite/telemetry.jsonl" 2>/dev/null) || line=""
-  if [[ "$line" =~ \"run_id\":\"[0-9]+_[0-9]+\" ]]; then
+  if python3 - "$line" <<'PY' 2>/dev/null; then
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+run_id = payload.get("run_id", "")
+assert isinstance(run_id, str) and len(run_id.split("_")) >= 2
+PY
     pass "Telemetry JSONL includes run_id"
   else
     fail "Telemetry JSONL should include run_id" "Got: $line"
+  fi
+}
+
+test_attribution_env_in_jsonl() {
+  rm -f "$HOME/.fsuite/telemetry.jsonl"
+  FSUITE_TELEMETRY=1 \
+    FSUITE_MODEL_ID="codex-gpt-5.5" \
+    FSUITE_AGENT_ID="codex-cli" \
+    FSUITE_SESSION_ID="session-attribution-jsonl" \
+    "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
+
+  local line
+  line=$(tail -1 "$HOME/.fsuite/telemetry.jsonl" 2>/dev/null) || line=""
+  if python3 - "$line" <<'PY' 2>/dev/null; then
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+assert payload["model_id"] == "codex-gpt-5.5"
+assert payload["agent_id"] == "codex-cli"
+assert payload["session_id"] == "session-attribution-jsonl"
+PY
+    pass "Telemetry JSONL includes env-provided model, agent, and session attribution"
+  else
+    fail "Telemetry JSONL should include env-provided attribution" "Got: $line"
+  fi
+}
+
+test_codex_home_does_not_imply_codex_agent() {
+  local detected
+  detected=$(env -i PATH="$PATH" HOME="$HOME" CODEX_HOME="$HOME/.codex" \
+    bash -c 'source "$1"; _fsuite_detect_agent_id' _ "${FSUITE_DIR}/_fsuite_common.sh" 2>/dev/null) || detected=""
+
+  if [[ "$detected" == "unknown" ]]; then
+    pass "Generic CODEX_HOME does not imply codex agent attribution"
+  else
+    fail "CODEX_HOME alone should not be treated as active Codex runtime" "Got: ${detected:-<empty>}"
+  fi
+}
+
+test_codex_session_implies_codex_agent() {
+  local detected
+  detected=$(env -i PATH="$PATH" HOME="$HOME" CODEX_SESSION_ID="session-123" \
+    bash -c 'source "$1"; _fsuite_detect_agent_id' _ "${FSUITE_DIR}/_fsuite_common.sh" 2>/dev/null) || detected=""
+
+  if [[ "$detected" == "codex" ]]; then
+    pass "Runtime session key implies codex agent attribution"
+  else
+    fail "CODEX_SESSION_ID should be treated as active Codex runtime" "Got: ${detected:-<empty>}"
+  fi
+}
+
+test_attribution_import_persists_env_fields() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "Attribution import test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+  FSUITE_TELEMETRY=1 \
+    FSUITE_MODEL_ID="claude-sonnet-4.5" \
+    FSUITE_AGENT_ID="claude-code" \
+    FSUITE_SESSION_ID="bench-session-42" \
+    "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
+
+  run_fmetrics import >/dev/null 2>&1 || {
+    fail "Import with attribution fields should succeed"
+    return
+  }
+
+  local row
+  row=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT model_id || '|' || agent_id || '|' || session_id FROM telemetry WHERE tool='ftree' LIMIT 1;" 2>/dev/null) || row=""
+  if [[ "$row" == "claude-sonnet-4.5|claude-code|bench-session-42" ]]; then
+    pass "fmetrics import persists model, agent, and session attribution"
+  else
+    fail "fmetrics import should persist attribution columns" "Got: ${row:-<empty>}"
+  fi
+}
+
+test_fmetrics_surfaces_attribution_dimensions() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "Attribution analytics test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+
+  FSUITE_TELEMETRY=1 \
+    FSUITE_MODEL_ID="codex-gpt-5.5" \
+    FSUITE_AGENT_ID="codex-cli" \
+    FSUITE_SESSION_ID="codex-session-a" \
+    "${FTREE}" --project-name "AttributionProj" "${TEST_DIR}" >/dev/null 2>&1 || true
+  FSUITE_TELEMETRY=1 \
+    FSUITE_MODEL_ID="claude-sonnet-4.5" \
+    FSUITE_AGENT_ID="claude-code" \
+    FSUITE_SESSION_ID="claude-session-b" \
+    "${FSEARCH}" --project-name "AttributionProj" "*.txt" "${TEST_DIR}" >/dev/null 2>&1 || true
+
+  run_fmetrics import >/dev/null 2>&1 || {
+    fail "Import before attribution analytics should succeed"
+    return
+  }
+
+  local stats_output history_output
+  stats_output=$(run_fmetrics stats -o json 2>&1) || true
+  history_output=$(run_fmetrics history --model codex-gpt-5.5 --agent codex-cli -o json 2>&1) || true
+
+  if python3 - "$stats_output" "$history_output" <<'PY' 2>/dev/null; then
+import json
+import sys
+
+stats = json.loads(sys.argv[1])
+history = json.loads(sys.argv[2])
+
+models = {row["name"]: row["runs"] for row in stats["top_models"]}
+agents = {row["name"]: row["runs"] for row in stats["top_agents"]}
+assert models["codex-gpt-5.5"] == 1
+assert models["claude-sonnet-4.5"] == 1
+assert agents["codex-cli"] == 1
+assert agents["claude-code"] == 1
+
+runs = history["runs"]
+assert len(runs) == 1
+run = runs[0]
+assert run["model_id"] == "codex-gpt-5.5"
+assert run["agent_id"] == "codex-cli"
+assert run["session_id"] == "codex-session-a"
+PY
+    pass "fmetrics stats and history surface model/agent attribution dimensions"
+  else
+    fail "fmetrics should surface attribution dimensions in stats/history" "Stats: $stats_output ; History: $history_output"
+  fi
+}
+
+test_fbash_child_tools_share_run_id_for_combo_edges() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "fbash child run_id combo test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+
+  FSUITE_TELEMETRY=1 "${FBASH}" \
+    --command "\"${FSEARCH}\" -o paths '*.txt' \"${TEST_DIR}\" | \"${FCONTENT}\" -o paths hello" \
+    --cwd "${TEST_DIR}" \
+    --max-lines 20 \
+    --max-bytes 10000 \
+    >/dev/null 2>&1 || true
+
+  run_fmetrics import >/dev/null 2>&1 || {
+    fail "Import after fbash child pipeline should succeed"
+    return
+  }
+  run_fmetrics rebuild >/dev/null 2>&1 || {
+    fail "Rebuild after fbash child pipeline should succeed"
+    return
+  }
+
+  local edge shared_run_id wrapper_edge
+  edge=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM combo_next_stats_v1 WHERE prefix_key='fsearch' AND next_tool='fcontent';" 2>/dev/null || echo "0")
+  shared_run_id=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT run_id FROM telemetry WHERE tool IN ('fsearch','fcontent') GROUP BY run_id HAVING COUNT(DISTINCT tool)=2 LIMIT 1;" 2>/dev/null || true)
+  wrapper_edge=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM combo_next_stats_v1 WHERE prefix_key='fbash' OR prefix_key LIKE 'fbash>%';" 2>/dev/null || echo "0")
+
+  if [[ "$edge" == "1" && -n "$shared_run_id" && "$wrapper_edge" == "0" ]]; then
+    pass "fbash propagates run_id so child fsuite tools form combo edges"
+  else
+    fail "fbash child fsuite tools should share a run_id and produce clean child combo edges" "edge=$edge shared_run_id=${shared_run_id:-<empty>} wrapper_edge=$wrapper_edge"
+  fi
+}
+
+test_analytics_version2_rebuilds_to_current() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "analytics version rebuild test skipped (sqlite3 not available)"
+    return 0
+  fi
+  mkdir -p "$HOME/.fsuite"
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+  cat > "$HOME/.fsuite/telemetry.jsonl" <<'JSONL'
+{"timestamp":"2026-03-23T00:00:00Z","tool":"fsearch","version":"3.3.0","mode":"glob","path_hash":"version-1","project_name":"version-fixture","duration_ms":9,"exit_code":0,"depth":1,"items_scanned":3,"bytes_scanned":300,"flags":"*.sh","backend":"find","run_id":"run-version"}
+{"timestamp":"2026-03-23T00:00:01Z","tool":"fcontent","version":"3.3.0","mode":"content","path_hash":"version-2","project_name":"version-fixture","duration_ms":7,"exit_code":0,"depth":1,"items_scanned":2,"bytes_scanned":200,"flags":"needle","backend":"rg","run_id":"run-version"}
+JSONL
+
+  run_fmetrics import >/dev/null 2>&1 || {
+    fail "Import for analytics version rebuild should succeed"
+    return
+  }
+  run_fmetrics rebuild >/dev/null 2>&1 || {
+    fail "Initial rebuild for analytics version test should succeed"
+    return
+  }
+  sqlite3 "$HOME/.fsuite/telemetry.db" "UPDATE analytics_meta SET value='2' WHERE key='analytics_version';" >/dev/null 2>&1 || {
+    fail "Could not seed stale analytics version"
+    return
+  }
+
+  local output version
+  output=$(run_fmetrics combos --project version-fixture -o json 2>&1) || {
+    fail "Combos should rebuild stale analytics version" "output=$output"
+    return
+  }
+  version=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT value FROM analytics_meta WHERE key='analytics_version';" 2>/dev/null || true)
+
+  if [[ "$version" == "3" ]]; then
+    pass "Analytics version 2 stores rebuild to current version"
+  else
+    fail "Analytics version 2 should rebuild to version 3" "version=${version:-<empty>} output=$output"
+  fi
+}
+
+test_rebuild_timestamps_ignore_fbash_wrapper_when_child_steps_exist() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "fbash wrapper timestamp test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+  cat > "$HOME/.fsuite/telemetry.jsonl" <<'EOF'
+{"timestamp":"2026-03-07T00:00:00Z","tool":"fbash","version":"3.3.0","mode":"general","path_hash":"wrapper","project_name":"ComboProj","duration_ms":20,"exit_code":0,"depth":-1,"items_scanned":-1,"bytes_scanned":-1,"flags":"pipeline","backend":"bash","run_id":"wrapper-run"}
+{"timestamp":"2026-03-07T00:00:01Z","tool":"fsearch","version":"3.3.0","mode":"path","path_hash":"search","project_name":"ComboProj","duration_ms":8,"exit_code":0,"depth":-1,"items_scanned":1,"bytes_scanned":0,"flags":"*.txt","backend":"find","run_id":"wrapper-run"}
+{"timestamp":"2026-03-07T00:00:02Z","tool":"fcontent","version":"3.3.0","mode":"stdin_files","path_hash":"content","project_name":"ComboProj","duration_ms":6,"exit_code":0,"depth":-1,"items_scanned":1,"bytes_scanned":32,"flags":"hello","backend":"rg","run_id":"wrapper-run"}
+EOF
+
+  run_fmetrics import >/dev/null 2>&1 || {
+    fail "Import for wrapper timestamp regression should succeed"
+    return
+  }
+  run_fmetrics rebuild >/dev/null 2>&1 || {
+    fail "Rebuild for wrapper timestamp regression should succeed"
+    return
+  }
+
+  local row
+  row=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT first_timestamp || '|' || last_timestamp || '|' || tool_sequence FROM run_facts_v1 WHERE run_id='wrapper-run';" 2>/dev/null) || row=""
+  if [[ "$row" == "2026-03-07T00:00:01Z|2026-03-07T00:00:02Z|fsearch>fcontent" ]]; then
+    pass "Rebuild derives run timestamps from child combo steps, not fbash wrapper rows"
+  else
+    fail "Rebuild should ignore fbash wrapper timestamps when child fsuite steps exist" "Got: ${row:-<empty>}"
+  fi
+}
+
+test_fbash_child_tools_inherit_attribution() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "fbash child attribution test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+
+  FSUITE_TELEMETRY=1 \
+    FSUITE_MODEL_ID="codex-gpt-5.5" \
+    FSUITE_AGENT_ID="codex-cli" \
+    FSUITE_SESSION_ID="pipeline-session-7" \
+    "${FBASH}" \
+      --command "\"${FSEARCH}\" -o paths '*.txt' \"${TEST_DIR}\" | \"${FCONTENT}\" -o paths hello" \
+      --cwd "${TEST_DIR}" \
+      --max-lines 20 \
+      --max-bytes 10000 \
+      >/dev/null 2>&1 || true
+
+  run_fmetrics import >/dev/null 2>&1 || {
+    fail "Import after attributed fbash child pipeline should succeed"
+    return
+  }
+
+  local child_rows
+  child_rows=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM telemetry WHERE tool IN ('fsearch','fcontent') AND model_id='codex-gpt-5.5' AND agent_id='codex-cli' AND session_id='pipeline-session-7';" 2>/dev/null || echo "0")
+  if [[ "$child_rows" == "2" ]]; then
+    pass "fbash child fsuite tools inherit model, agent, and session attribution"
+  else
+    fail "fbash child fsuite tools should inherit attribution" "child_rows=$child_rows"
   fi
 }
 
@@ -710,15 +983,46 @@ test_burst_runs_not_dropped() {
     return 0
   fi
   rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
-  FSUITE_TELEMETRY=1 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
-  FSUITE_TELEMETRY=1 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
+  env -u FSUITE_TELEMETRY_RUN_ID FSUITE_TELEMETRY=1 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
+  env -u FSUITE_TELEMETRY_RUN_ID FSUITE_TELEMETRY=1 "${FTREE}" "${TEST_DIR}" >/dev/null 2>&1 || true
   run_fmetrics import >/dev/null 2>&1 || true
-  local count
+  local count run_ids
   count=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM telemetry WHERE tool='ftree';" 2>/dev/null) || count=0
-  if [[ "$count" =~ ^[0-9]+$ ]] && (( count >= 2 )); then
+  run_ids=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(DISTINCT run_id) FROM telemetry WHERE tool='ftree';" 2>/dev/null) || run_ids=0
+  if [[ "$count" =~ ^[0-9]+$ ]] && [[ "$run_ids" =~ ^[0-9]+$ ]] && (( count >= 2 )) && (( run_ids >= 2 )); then
     pass "Burst runs are not dropped by dedupe"
   else
-    fail "Expected at least 2 ftree rows after burst import" "Got count=$count"
+    fail "Expected at least 2 ftree rows with distinct run_ids after burst import" "Got count=$count run_ids=$run_ids"
+  fi
+}
+
+test_fbash_repeated_child_steps_same_path_survive_import() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "Repeated child-step import test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+
+  FSUITE_TELEMETRY=1 "${FBASH}" \
+    --command "\"${FSEARCH}\" -o paths '*.txt' \"${TEST_DIR}\" >/dev/null; \"${FSEARCH}\" -o paths '*.txt' \"${TEST_DIR}\" >/dev/null" \
+    --cwd "${TEST_DIR}" \
+    --max-lines 20 \
+    --max-bytes 10000 \
+    >/dev/null 2>&1 || true
+
+  run_fmetrics import >/dev/null 2>&1 || {
+    fail "Import after repeated fbash child steps should succeed"
+    return
+  }
+
+  local count distinct_offsets run_ids
+  count=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM telemetry WHERE tool='fsearch';" 2>/dev/null) || count=0
+  distinct_offsets=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(DISTINCT source_offset) FROM telemetry WHERE tool='fsearch';" 2>/dev/null) || distinct_offsets=0
+  run_ids=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(DISTINCT run_id) FROM telemetry WHERE tool='fsearch';" 2>/dev/null) || run_ids=0
+  if [[ "$count" == "2" && "$distinct_offsets" == "2" && "$run_ids" == "1" ]]; then
+    pass "Repeated same-path fbash child steps are not dropped by import dedupe"
+  else
+    fail "Repeated same-path child steps should survive import" "count=$count distinct_offsets=$distinct_offsets run_ids=$run_ids"
   fi
 }
 
@@ -738,6 +1042,124 @@ EOF
     pass "Legacy JSONL import backfills run_id"
   else
     fail "Legacy JSONL import should backfill run_id"
+  fi
+}
+
+test_legacy_import_backfills_attribution_defaults() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "Legacy attribution backfill test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+  cat > "$HOME/.fsuite/telemetry.jsonl" <<'EOF'
+{"timestamp":"2026-03-07T00:00:00Z","tool":"fcontent","version":"1.6.2","mode":"directory","path_hash":"legacyattr1","project_name":"legacyproj","duration_ms":33,"exit_code":0,"depth":1,"items_scanned":2,"bytes_scanned":512,"flags":"hello","backend":"rg","run_id":"legacy-attribution-run"}
+EOF
+  run_fmetrics import >/dev/null 2>&1 || true
+  local row
+  row=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT model_id || '|' || agent_id || '|' || session_id FROM telemetry WHERE tool='fcontent' LIMIT 1;" 2>/dev/null) || row=""
+  if [[ "$row" == "unknown|unknown|" ]]; then
+    pass "Legacy JSONL import backfills attribution defaults"
+  else
+    fail "Legacy JSONL import should backfill attribution defaults" "Got: ${row:-<empty>}"
+  fi
+}
+
+test_old_unique_schema_migrates_without_optional_columns() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "Old unique migration test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+  sqlite3 "$HOME/.fsuite/telemetry.db" <<'SQL'
+CREATE TABLE telemetry (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp TEXT NOT NULL,
+  tool TEXT NOT NULL,
+  version TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  path_hash TEXT NOT NULL,
+  project_name TEXT NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  exit_code INTEGER NOT NULL,
+  depth INTEGER NOT NULL DEFAULT -1,
+  items_scanned INTEGER NOT NULL DEFAULT -1,
+  bytes_scanned INTEGER NOT NULL DEFAULT -1,
+  flags TEXT NOT NULL DEFAULT '',
+  backend TEXT NOT NULL DEFAULT '',
+  UNIQUE(timestamp, tool, path_hash)
+);
+INSERT INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend)
+  VALUES ('2026-01-01T00:00:00Z','ftree','1.6.0','tree','aabbccdd','legacyproj',100,0,1,3,2048,'-o json','tree');
+SQL
+
+  run_fmetrics stats >/dev/null 2>&1 || {
+    fail "Old unique telemetry schema should migrate without optional columns"
+    return
+  }
+
+  local row schema_sql
+  row=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) || '|' || COALESCE(MIN(run_id),'') || '|' || COALESCE(MIN(source_offset),'') || '|' || COALESCE(MIN(model_id),'') || '|' || COALESCE(MIN(agent_id),'') || '|' || COALESCE(MIN(session_id),'') FROM telemetry;" 2>/dev/null) || row=""
+  schema_sql=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT sql FROM sqlite_master WHERE type='table' AND name='telemetry';" 2>/dev/null) || schema_sql=""
+
+  if [[ "$row" == 1\|2026-01-01T00:00:00Z_0000000001\|1\|unknown\|unknown\| ]] && [[ "$schema_sql" == *"UNIQUE(run_id, tool, path_hash, source_offset)"* ]]; then
+    pass "Old unique telemetry schema migrates with defaulted optional columns"
+  else
+    fail "Old unique telemetry schema migration should preserve row and default missing columns" "row=$row schema=$schema_sql"
+  fi
+}
+
+test_run_id_unique_schema_migrates_to_source_offset_key() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "Run-id schema migration test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+  sqlite3 "$HOME/.fsuite/telemetry.db" <<'SQL'
+CREATE TABLE telemetry (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp TEXT NOT NULL,
+  tool TEXT NOT NULL,
+  version TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  path_hash TEXT NOT NULL,
+  project_name TEXT NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  exit_code INTEGER NOT NULL,
+  depth INTEGER NOT NULL DEFAULT -1,
+  items_scanned INTEGER NOT NULL DEFAULT -1,
+  bytes_scanned INTEGER NOT NULL DEFAULT -1,
+  flags TEXT NOT NULL DEFAULT '',
+  backend TEXT NOT NULL DEFAULT '',
+  cpu_temp_mc INTEGER DEFAULT -1,
+  disk_temp_mc INTEGER DEFAULT -1,
+  ram_total_kb INTEGER DEFAULT -1,
+  ram_available_kb INTEGER DEFAULT -1,
+  load_avg_1m TEXT DEFAULT '-1',
+  filesystem_type TEXT DEFAULT 'unknown',
+  storage_type TEXT DEFAULT 'unknown',
+  run_id TEXT NOT NULL DEFAULT '',
+  model_id TEXT NOT NULL DEFAULT 'unknown',
+  agent_id TEXT NOT NULL DEFAULT 'unknown',
+  session_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(run_id, tool, path_hash)
+);
+INSERT INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend,run_id,model_id,agent_id,session_id)
+  VALUES ('2026-01-01T00:00:00Z','fsearch','2.3.0','name','samepath','schema-current',11,0,1,1,128,'-o paths','fd','current-run','codex','codex','session-1');
+SQL
+
+  run_fmetrics stats >/dev/null 2>&1 || {
+    fail "Run-id unique telemetry schema should migrate to source-offset key"
+    return
+  }
+
+  local row schema_sql
+  row=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) || '|' || COALESCE(MIN(run_id),'') || '|' || COALESCE(MIN(source_offset),'') FROM telemetry;" 2>/dev/null) || row=""
+  schema_sql=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT sql FROM sqlite_master WHERE type='table' AND name='telemetry';" 2>/dev/null) || schema_sql=""
+
+  if [[ "$row" == 1\|current-run\|1 ]] && [[ "$schema_sql" == *"source_offset INTEGER NOT NULL DEFAULT -1"* ]] && [[ "$schema_sql" == *"UNIQUE(run_id, tool, path_hash, source_offset)"* ]]; then
+    pass "Run-id unique telemetry schema migrates to source-offset dedupe"
+  else
+    fail "Run-id unique schema migration should preserve row and widen unique key" "row=$row schema=$schema_sql"
   fi
 }
 
@@ -778,7 +1200,7 @@ SQL
   pre_count=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM telemetry;" 2>/dev/null)
 
   # Run fmetrics import — ensure_db triggers migration, which should fail
-  # at RENAME (telemetry_old already exists), and .bail on + BEGIN IMMEDIATE
+  # at RENAME (telemetry_old already exists), and the single transaction
   # should cause SQLite to roll back, leaving original table intact.
   rm -f "$HOME/.fsuite/telemetry.jsonl"
   echo '{}' > "$HOME/.fsuite/telemetry.jsonl"
@@ -1414,11 +1836,24 @@ main() {
   echo "== Schema Migration =="
   run_test "Schema migration is idempotent" test_schema_migration_idempotent
   run_test "Telemetry JSONL includes run_id" test_run_id_in_jsonl
+  run_test "Telemetry JSONL includes caller attribution" test_attribution_env_in_jsonl
+  run_test "CODEX_HOME does not imply Codex attribution" test_codex_home_does_not_imply_codex_agent
+  run_test "Codex session implies Codex attribution" test_codex_session_implies_codex_agent
+  run_test "fmetrics import persists caller attribution" test_attribution_import_persists_env_fields
+    run_test "fmetrics surfaces caller attribution dimensions" test_fmetrics_surfaces_attribution_dimensions
+    run_test "fbash child tools share run_id for combo edges" test_fbash_child_tools_share_run_id_for_combo_edges
+    run_test "Rebuild timestamps ignore fbash wrapper rows" test_rebuild_timestamps_ignore_fbash_wrapper_when_child_steps_exist
+    run_test "fbash child tools inherit caller attribution" test_fbash_child_tools_inherit_attribution
   run_test "Burst runs are not dropped" test_burst_runs_not_dropped
+  run_test "Repeated fbash child steps survive import dedupe" test_fbash_repeated_child_steps_same_path_survive_import
   run_test "Legacy import backfills run_id" test_legacy_import_backfill_run_id
+  run_test "Legacy import backfills caller attribution" test_legacy_import_backfills_attribution_defaults
+  run_test "Old unique schema migrates without optional columns" test_old_unique_schema_migrates_without_optional_columns
+  run_test "Run-id schema migrates to source-offset key" test_run_id_unique_schema_migrates_to_source_offset_key
   run_test "Migration rollback on failure preserves data" test_migration_atomicity
   run_test "Import marks analytics dirty without rebuild" test_import_marks_analytics_dirty_without_rebuild
   run_test "Rebuild populates run_facts_v1 analytics" test_rebuild_populates_run_facts_after_import
+  run_test "Analytics version 2 rebuilds to current" test_analytics_version2_rebuilds_to_current
   run_test "fmetrics JSON escapes quoted paths" test_json_outputs_escape_quoted_paths
   run_test "Combos skips rebuild for single-step next edges" test_combos_skip_next_edge_rebuild_for_single_step_runs
   run_test "Import survives malformed lines" test_import_survives_malformed_lines

@@ -3,7 +3,7 @@
 #
 # Covers:
 #   1. Dependency detection (check_deps output during install, --skip-deps)
-#   2. Source install flow (all 12 tools, share helper files, permissions)
+#   2. Source install flow (all tools, share helper files, permissions)
 #   3. MCP setup (npm install, node -c syntax check, --mcp-only flag)
 #   4. Agent configuration (Claude Code mcp.json, Codex config.toml, idempotency)
 #   5. Uninstall (tools removed, share files removed, MCP configs removed)
@@ -79,7 +79,7 @@ run_installer() {
 
 # ── Shared fixture arrays (mirror install.sh) ────────────────────────────────
 
-EXPECTED_TOOLS=(fsuite ftree fsearch fcontent fmap fread fcase fedit fmetrics freplay fprobe fs)
+EXPECTED_TOOLS=(fsuite ftree fsearch fcontent fmap fread fcase fedit fwrite fmetrics freplay fprobe fs fls fbash fpatch-claude-mcp)
 EXPECTED_SHARE_FILES=(_fsuite_common.sh _fsuite_db.sh fmetrics-predict.py fmetrics-import.py fprobe-engine.py fs-engine.py)
 
 # ── §1  Dependency detection ─────────────────────────────────────────────────
@@ -230,7 +230,7 @@ EOF
 
 # ── §2  Source install flow ───────────────────────────────────────────────────
 
-test_source_install_all_12_tools_present() {
+test_source_install_all_tools_present() {
   local prefix="${TEST_ROOT}/src-tools"
   local fake_home="${TEST_ROOT}/src-tools-home"
   run_installer "$fake_home" --prefix "$prefix" --skip-mcp --no-verify >/dev/null 2>&1 || {
@@ -245,7 +245,7 @@ test_source_install_all_12_tools_present() {
   done
 
   if (( ${#missing[@]} == 0 )); then
-    pass "All 12 tools are present in bin/ after source install"
+    pass "All ${#EXPECTED_TOOLS[@]} tools are present in bin/ after source install"
   else
     fail "Source install is missing tools in bin/" "missing: ${missing[*]}"
   fi
@@ -583,7 +583,7 @@ test_uninstall_removes_all_tools() {
   done
 
   if (( rc == 0 )) && (( ${#remaining[@]} == 0 )); then
-    pass "--uninstall removes all 12 tools from prefix/bin/"
+    pass "--uninstall removes all ${#EXPECTED_TOOLS[@]} tools from prefix/bin/"
   else
     fail "--uninstall should remove all tools from prefix/bin/" \
       "rc=$rc remaining: ${remaining[*]:-none}"
@@ -775,7 +775,7 @@ test_double_install_is_idempotent() {
   done
 
   if (( ${#bad[@]} == 0 )); then
-    pass "Double install is idempotent: all 12 tools present and executable after two runs"
+    pass "Double install is idempotent: all ${#EXPECTED_TOOLS[@]} tools present and executable after two runs"
   else
     fail "Double install left some tools non-executable" "bad: ${bad[*]}"
   fi
@@ -858,7 +858,7 @@ main() {
   echo ""
 
   echo -e "${CYAN}── §2  Source install flow ──────────────────${NC}"
-  run_test "All 12 tools present in bin/"               test_source_install_all_12_tools_present
+  run_test "All tools present in bin/"                  test_source_install_all_tools_present
 run_test "All 6 share files present in share/fsuite/" test_source_install_all_6_share_files_present
   run_test "Tool permissions are 755"                   test_source_install_tool_permissions_755
   run_test "Shell lib permissions are 644"              test_source_install_shell_lib_permissions_644
@@ -880,7 +880,7 @@ run_test "fmetrics helpers are 755"                  test_source_install_fmetric
   echo ""
 
   echo -e "${CYAN}── §5  Uninstall ────────────────────────────${NC}"
-  run_test "--uninstall removes all 12 tools"           test_uninstall_removes_all_tools
+    run_test "--uninstall removes all tools"              test_uninstall_removes_all_tools
   run_test "--uninstall removes share/fsuite/"          test_uninstall_removes_share_dir
   run_test "--uninstall removes Claude mcp.json entry"  test_uninstall_removes_claude_mcp_entry
   run_test "--uninstall removes Codex config entry"     test_uninstall_removes_codex_mcp_entry

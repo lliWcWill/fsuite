@@ -574,6 +574,147 @@ _fsuite_hw_json_fields() {
 }
 
 # -------------------------
+# Caller Attribution
+# -------------------------
+
+_fsuite_json_escape_value() {
+  local value="${1:-}"
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  value=${value//$'\n'/\\n}
+  value=${value//$'\r'/\\r}
+  value=${value//$'\t'/\\t}
+  printf '%s' "$value"
+}
+
+_fsuite_first_env_value() {
+  local name value
+  for name in "$@"; do
+    value="${!name-}"
+    if [[ -n "$value" ]]; then
+      printf '%s' "$value"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_fsuite_parent_args() {
+  ps -o args= -p "${PPID:-0}" 2>/dev/null || true
+}
+
+_fsuite_detect_agent_id() {
+  local explicit
+  explicit=$(_fsuite_first_env_value FSUITE_AGENT_ID) && {
+    printf '%s' "$explicit"
+    return 0
+  }
+
+  if _fsuite_first_env_value CODEX_SESSION_ID OPENAI_CODEX_SESSION_ID >/dev/null; then
+    printf 'codex'
+    return 0
+  fi
+  if [[ -n "${CLAUDE_CODE_VERSION:-}" || -n "${CLAUDE_SESSION_ID:-}" || -n "${CLAUDE_MODEL:-}" ]] || env | grep -qE '^(CLAUDE_CODE_|CLAUDECODE_)' 2>/dev/null; then
+    printf 'claude-code'
+    return 0
+  fi
+  if env | grep -qE '^OPENCODE_' 2>/dev/null; then
+    printf 'opencode'
+    return 0
+  fi
+  if env | grep -qE '^HERMES_' 2>/dev/null; then
+    printf 'hermes'
+    return 0
+  fi
+  if env | grep -qE '^NIGHTFOX_' 2>/dev/null; then
+    printf 'nightfox'
+    return 0
+  fi
+
+  local parent
+  parent=$(_fsuite_parent_args | tr '[:upper:]' '[:lower:]')
+  case "$parent" in
+    *codex*) printf 'codex' ;;
+    *claude*) printf 'claude-code' ;;
+    *opencode*) printf 'opencode' ;;
+    *hermes*) printf 'hermes' ;;
+    *nightfox*) printf 'nightfox' ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
+_fsuite_detect_model_id() {
+  local model
+  model=$(_fsuite_first_env_value \
+    FSUITE_MODEL_ID \
+    CODEX_MODEL \
+    OPENAI_CODEX_MODEL \
+    CLAUDE_MODEL \
+    ANTHROPIC_MODEL \
+    OPENCODE_MODEL \
+    HERMES_MODEL \
+    NIGHTFOX_MODEL \
+    OPENAI_MODEL \
+    MODEL_ID \
+    MODEL_NAME) && {
+    printf '%s' "$model"
+    return 0
+  }
+  printf 'unknown'
+}
+
+_fsuite_detect_session_id() {
+  local session
+  session=$(_fsuite_first_env_value \
+    FSUITE_SESSION_ID \
+    CODEX_SESSION_ID \
+    OPENAI_CODEX_SESSION_ID \
+    CLAUDE_SESSION_ID \
+    ANTHROPIC_SESSION_ID \
+    OPENCODE_SESSION_ID \
+    HERMES_SESSION_ID \
+    NIGHTFOX_SESSION_ID) && {
+    printf '%s' "$session"
+    return 0
+  }
+  printf ''
+}
+
+_fsuite_attribution_json_fields() {
+  local model_id agent_id session_id
+  model_id=$(_fsuite_json_escape_value "$(_fsuite_detect_model_id)")
+  agent_id=$(_fsuite_json_escape_value "$(_fsuite_detect_agent_id)")
+  session_id=$(_fsuite_json_escape_value "$(_fsuite_detect_session_id)")
+  printf ',\"model_id\":\"%s\",\"agent_id\":\"%s\",\"session_id\":\"%s\"' "$model_id" "$agent_id" "$session_id"
+}
+
+_fsuite_generate_run_id() {
+  local start_ms="${1:-}"
+  if [[ -z "$start_ms" || ! "$start_ms" =~ ^[0-9]+$ ]]; then
+    start_ms=$(date +%s%3N 2>/dev/null || date +%s 2>/dev/null || printf '0')
+  fi
+
+  local ns random
+  ns=$(date +%s%N 2>/dev/null || printf '%s000000' "$start_ms")
+  if command -v od >/dev/null 2>&1; then
+    random=$(od -An -N4 -tx4 /dev/urandom 2>/dev/null | tr -d '[:space:]')
+  else
+    random="${RANDOM:-0}${RANDOM:-0}"
+  fi
+  [[ -n "$random" ]] || random="${RANDOM:-0}${RANDOM:-0}"
+
+  printf '%s_%s_%s_%s' "$start_ms" "$$" "$ns" "$random"
+}
+
+_fsuite_resolve_run_id() {
+  if [[ -n "${FSUITE_TELEMETRY_RUN_ID:-}" ]]; then
+    printf '%s' "$FSUITE_TELEMETRY_RUN_ID"
+  else
+    _fsuite_generate_run_id "${1:-}"
+  fi
+}
+
+# -------------------------
 # Project Name Inference
 # -------------------------
 # Walks up from a path looking for project root markers (.git, package.json, etc.)

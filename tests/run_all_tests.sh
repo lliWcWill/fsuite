@@ -5,7 +5,18 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ORIGINAL_HOME="${HOME:-}"
+RUN_ALL_TEST_HOME="$(mktemp -d)"
 export FSUITE_TELEMETRY="${FSUITE_TELEMETRY:-1}"
+export HOME="$RUN_ALL_TEST_HOME"
+mkdir -p "$HOME/.fsuite"
+
+cleanup() {
+  if [[ -n "${RUN_ALL_TEST_HOME:-}" && -d "$RUN_ALL_TEST_HOME" && "$RUN_ALL_TEST_HOME" != "${ORIGINAL_HOME:-}" ]]; then
+    rm -rf "$RUN_ALL_TEST_HOME"
+  fi
+}
+trap cleanup EXIT
 
 # Colors for output
 RED='\033[0;31m'
@@ -32,7 +43,18 @@ run_test_suite() {
     return 1
   fi
 
-  if bash "${test_script}"; then
+  local output_file rc
+  output_file="$(mktemp)"
+  rc=0
+  bash "${test_script}" 2>&1 | tee "$output_file" || rc=$?
+
+  if (( rc == 0 )) && [[ ! -s "$output_file" ]]; then
+    echo -e "${RED}Error: ${test_script} exited successfully without producing test output${NC}"
+    rc=1
+  fi
+  rm -f "$output_file"
+
+  if (( rc == 0 )); then
     echo ""
     echo -e "${GREEN}${test_name}: PASSED${NC}"
     return 0
@@ -49,6 +71,7 @@ main() {
   echo -e "${BLUE}  fsuite Master Test Runner${NC}"
   echo -e "${BLUE}============================================${NC}"
   echo -e "Telemetry tier: ${FSUITE_TELEMETRY}"
+  echo -e "Sandbox HOME: ${HOME}"
   echo ""
 
   local failed_suites=()
@@ -69,6 +92,15 @@ main() {
   else
     TOTAL_FAILED=$((TOTAL_FAILED + 1))
     failed_suites+=("fcontent")
+  fi
+
+  # Run fbash tests
+  echo ""
+  if run_test_suite "${SCRIPT_DIR}/test_fbash.sh" "fbash Test Suite"; then
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+  else
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+    failed_suites+=("fbash")
   fi
 
   # Run fcase tests
@@ -125,6 +157,15 @@ main() {
     failed_suites+=("fread")
   fi
 
+  # Run fread symbol tests
+  echo ""
+  if run_test_suite "${SCRIPT_DIR}/test_fread_symbols.sh" "fread symbol resolution"; then
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+  else
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+    failed_suites+=("fread-symbols")
+  fi
+
   # Run fedit tests
   echo ""
   if run_test_suite "${SCRIPT_DIR}/test_fedit.sh" "fedit Test Suite"; then
@@ -132,6 +173,15 @@ main() {
   else
     TOTAL_FAILED=$((TOTAL_FAILED + 1))
     failed_suites+=("fedit")
+  fi
+
+  # Run fedit validation tests
+  echo ""
+  if run_test_suite "${SCRIPT_DIR}/test_fedit_validation.sh" "fedit validation"; then
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+  else
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+    failed_suites+=("fedit-validation")
   fi
 
   # Run freplay tests
@@ -188,6 +238,15 @@ main() {
     failed_suites+=("install")
   fi
 
+  # Run installer automation tests
+  echo ""
+  if run_test_suite "${SCRIPT_DIR}/test_install_automation.sh" "install automation"; then
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+  else
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+    failed_suites+=("install-automation")
+  fi
+
   # Run telemetry tests
   echo ""
   if run_test_suite "${SCRIPT_DIR}/test_telemetry.sh" "Telemetry Test Suite"; then
@@ -195,6 +254,15 @@ main() {
   else
     TOTAL_FAILED=$((TOTAL_FAILED + 1))
     failed_suites+=("telemetry")
+  fi
+
+  # Run regression bucket tests
+  echo ""
+  if run_test_suite "${SCRIPT_DIR}/test_coderabbit_fixes.sh" "CodeRabbit regression bucket"; then
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+  else
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+    failed_suites+=("coderabbit-fixes")
   fi
 
   TOTAL_TESTS=$((TOTAL_PASSED + TOTAL_FAILED))

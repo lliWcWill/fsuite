@@ -103,9 +103,13 @@ def normalize_record(payload: dict[str, object], line_offset: int) -> tuple:
     load_avg_1m = str(payload.get("load_avg_1m", "-1") or "-1").strip() or "-1"
     filesystem_type = str(payload.get("filesystem_type", "unknown") or "unknown").strip() or "unknown"
     storage_type = str(payload.get("storage_type", "unknown") or "unknown").strip() or "unknown"
+    source_offset = line_offset
     run_id = str(payload.get("run_id", "") or "").strip()
     if not run_id:
         run_id = f"{timestamp}_{duration_ms}_{line_offset}"
+    model_id = str(payload.get("model_id", "unknown") or "unknown").strip() or "unknown"
+    agent_id = str(payload.get("agent_id", "unknown") or "unknown").strip() or "unknown"
+    session_id = str(payload.get("session_id", "") or "").strip()
 
     return (
         timestamp,
@@ -128,7 +132,11 @@ def normalize_record(payload: dict[str, object], line_offset: int) -> tuple:
         load_avg_1m,
         filesystem_type,
         storage_type,
+        source_offset,
         run_id,
+        model_id,
+        agent_id,
+        session_id,
     )
 
 
@@ -165,8 +173,10 @@ def main() -> int:
                 timestamp, tool, version, mode, path_hash, project_name,
                 duration_ms, exit_code, depth, items_scanned, bytes_scanned,
                 flags, backend, cpu_temp_mc, disk_temp_mc, ram_total_kb,
-                ram_available_kb, load_avg_1m, filesystem_type, storage_type, run_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                ram_available_kb, load_avg_1m, filesystem_type, storage_type,
+                source_offset, run_id,
+                model_id, agent_id, session_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
 
         with open(jsonl_path, "rb") as handle:

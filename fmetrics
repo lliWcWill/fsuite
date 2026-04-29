@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VERSION="3.1.0"
+VERSION="3.3.0"
 
 # -------------------------
 # Paths
@@ -108,7 +108,7 @@ metric_rule() { paint '38;5;240' "$1"; }
 sql_escape() {
   local val="$1"
   # Strip unsafe characters, keep alphanumeric and safe punctuation
-  val=$(printf '%s' "$val" | tr -cd '[:alnum:]. _:-')
+  val=$(printf '%s' "$val" | tr -cd '[:alnum:]. _:/-')
   # Escape single quotes for SQL
   val="${val//\'/\'\'}"
   printf '%s' "$val"
@@ -433,14 +433,14 @@ ensure_analytics_populated() {
   [[ "$multi_step_runs_count" =~ ^[0-9]+$ ]] || multi_step_runs_count=0
   if (( telemetry_count == 0 )); then
     # Empty stores only need a rebuild when stale derived rows are still hanging around.
-    if [[ "$analytics_version" != "2" ]] || [[ "$analytics_dirty" == "1" ]] || (( run_facts_count > 0 )) || (( combo_count > 0 )) || (( multi_step_runs_count > 0 && next_count > 0 )); then
+    if [[ "$analytics_version" != "3" ]] || [[ "$analytics_dirty" == "1" ]] || (( run_facts_count > 0 )) || (( combo_count > 0 )) || (( multi_step_runs_count > 0 && next_count > 0 )); then
       rebuild_analytics
     fi
     return 0
   fi
 
   # Non-empty stores get rebuilt when analytics are stale or incomplete.
-  if [[ "$analytics_version" != "2" ]] || [[ "$analytics_dirty" == "1" ]] || (( run_facts_count == 0 )) || (( combo_count == 0 )) || (( multi_step_runs_count > 0 && next_count == 0 )); then
+  if [[ "$analytics_version" != "3" ]] || [[ "$analytics_dirty" == "1" ]] || (( run_facts_count == 0 )) || (( combo_count == 0 )) || (( multi_step_runs_count > 0 && next_count == 0 )); then
     rebuild_analytics
   fi
 }
@@ -457,6 +457,22 @@ ensure_column() {
     }
   fi
   return 0
+}
+
+column_exists() {
+  local table="$1" column="$2" exists
+  exists=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM pragma_table_info('$table') WHERE name='$column';" 2>/dev/null) || exists=0
+  [[ "$exists" =~ ^[0-9]+$ ]] || exists=0
+  (( exists > 0 ))
+}
+
+legacy_column_expr() {
+  local column="$1" when_present="$2" when_missing="$3"
+  if column_exists telemetry "$column"; then
+    printf '%s' "$when_present"
+  else
+    printf '%s' "$when_missing"
+  fi
 }
 
 ensure_db() {
@@ -485,8 +501,12 @@ CREATE TABLE IF NOT EXISTS telemetry (
   load_avg_1m TEXT DEFAULT '-1',
   filesystem_type TEXT DEFAULT 'unknown',
   storage_type TEXT DEFAULT 'unknown',
+  source_offset INTEGER NOT NULL DEFAULT -1,
   run_id TEXT NOT NULL DEFAULT '',
-  UNIQUE(run_id, tool, path_hash)
+  model_id TEXT NOT NULL DEFAULT 'unknown',
+  agent_id TEXT NOT NULL DEFAULT 'unknown',
+  session_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(run_id, tool, path_hash, source_offset)
 );
 CREATE INDEX IF NOT EXISTS idx_tool ON telemetry(tool);
 CREATE INDEX IF NOT EXISTS idx_project ON telemetry(project_name);
@@ -515,6 +535,7 @@ CREATE TABLE IF NOT EXISTS run_steps_v1 (
   tool TEXT NOT NULL,
   exit_code INTEGER NOT NULL,
   duration_ms INTEGER NOT NULL,
+  timestamp TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (run_id, step_index)
 );
 CREATE INDEX IF NOT EXISTS idx_run_steps_project ON run_steps_v1(project_name);
@@ -546,13 +567,39 @@ CREATE INDEX IF NOT EXISTS idx_combo_next_project ON combo_next_stats_v1(project
 SQL
   sqlite3 "$DB_FILE" "PRAGMA journal_mode=WAL;" >/dev/null 2>&1 || true
 
-  # Migrate legacy UNIQUE(timestamp,tool,path_hash) schema to run_id-based dedupe.
-  local _has_old_unique
-  _has_old_unique=$(sqlite3 "$DB_FILE" "SELECT CASE WHEN lower(replace(replace(sql,' ',''),char(10),'')) LIKE '%unique(timestamp,tool,path_hash)%' THEN 1 ELSE 0 END FROM sqlite_master WHERE type='table' AND name='telemetry';" 2>/dev/null) || _has_old_unique="0"
-  [[ -z "$_has_old_unique" ]] && _has_old_unique="0"
-  if [[ "$_has_old_unique" == "1" ]]; then
-    sqlite3 "$DB_FILE" <<'SQL' >/dev/null 2>&1 || die "telemetry schema migration failed"
-.bail on
+  # Migrate legacy telemetry schemas to source-offset-aware dedupe.
+  # Earlier schemas keyed on (timestamp,tool,path_hash), then on
+  # (run_id,tool,path_hash). The latter collapsed repeated child-tool steps
+  # inside one fbash run, so import now keeps the JSONL line offset in the key.
+  local _telemetry_sql _has_source_offset _needs_telemetry_key_migration
+  _telemetry_sql=$(sqlite3 "$DB_FILE" "SELECT lower(replace(replace(replace(sql,' ',''),char(10),''),char(9),'')) FROM sqlite_master WHERE type='table' AND name='telemetry';" 2>/dev/null) || _telemetry_sql=""
+  _has_source_offset=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM pragma_table_info('telemetry') WHERE name='source_offset';" 2>/dev/null) || _has_source_offset="0"
+  [[ "$_has_source_offset" =~ ^[0-9]+$ ]] || _has_source_offset="0"
+  _needs_telemetry_key_migration=0
+  if [[ "$_telemetry_sql" == *"unique(timestamp,tool,path_hash)"* ]] ||
+     [[ "$_telemetry_sql" == *"unique(run_id,tool,path_hash)"* ]] ||
+     (( _has_source_offset == 0 )); then
+    _needs_telemetry_key_migration=1
+  fi
+
+  if [[ "$_needs_telemetry_key_migration" == "1" ]]; then
+    local _cpu_expr _disk_expr _ram_total_expr _ram_available_expr _load_expr
+    local _filesystem_expr _storage_expr _source_offset_expr _run_expr
+    local _model_expr _agent_expr _session_expr
+    _cpu_expr=$(legacy_column_expr cpu_temp_mc "COALESCE(cpu_temp_mc,-1)" "-1")
+    _disk_expr=$(legacy_column_expr disk_temp_mc "COALESCE(disk_temp_mc,-1)" "-1")
+    _ram_total_expr=$(legacy_column_expr ram_total_kb "COALESCE(ram_total_kb,-1)" "-1")
+    _ram_available_expr=$(legacy_column_expr ram_available_kb "COALESCE(ram_available_kb,-1)" "-1")
+    _load_expr=$(legacy_column_expr load_avg_1m "COALESCE(load_avg_1m,'-1')" "'-1'")
+    _filesystem_expr=$(legacy_column_expr filesystem_type "COALESCE(filesystem_type,'unknown')" "'unknown'")
+    _storage_expr=$(legacy_column_expr storage_type "COALESCE(storage_type,'unknown')" "'unknown'")
+    _source_offset_expr=$(legacy_column_expr source_offset "COALESCE(source_offset, id, -1)" "COALESCE(id, -1)")
+    _run_expr=$(legacy_column_expr run_id "CASE WHEN COALESCE(run_id,'') != '' THEN run_id ELSE timestamp || '_' || printf('%010d', id) END" "timestamp || '_' || printf('%010d', id)")
+    _model_expr=$(legacy_column_expr model_id "COALESCE(model_id,'unknown')" "'unknown'")
+    _agent_expr=$(legacy_column_expr agent_id "COALESCE(agent_id,'unknown')" "'unknown'")
+    _session_expr=$(legacy_column_expr session_id "COALESCE(session_id,'')" "''")
+    local _migration_sql
+    read -r -d '' _migration_sql <<SQL || true
 BEGIN IMMEDIATE;
 ALTER TABLE telemetry RENAME TO telemetry_old;
 CREATE TABLE telemetry (
@@ -577,21 +624,31 @@ CREATE TABLE telemetry (
   load_avg_1m TEXT DEFAULT '-1',
   filesystem_type TEXT DEFAULT 'unknown',
   storage_type TEXT DEFAULT 'unknown',
+  source_offset INTEGER NOT NULL DEFAULT -1,
   run_id TEXT NOT NULL DEFAULT '',
-  UNIQUE(run_id, tool, path_hash)
+  model_id TEXT NOT NULL DEFAULT 'unknown',
+  agent_id TEXT NOT NULL DEFAULT 'unknown',
+  session_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(run_id, tool, path_hash, source_offset)
 );
-INSERT INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend,cpu_temp_mc,disk_temp_mc,ram_total_kb,ram_available_kb,load_avg_1m,filesystem_type,storage_type,run_id)
+INSERT OR IGNORE INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend,cpu_temp_mc,disk_temp_mc,ram_total_kb,ram_available_kb,load_avg_1m,filesystem_type,storage_type,source_offset,run_id,model_id,agent_id,session_id)
   SELECT timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend,
-    COALESCE(cpu_temp_mc,-1),COALESCE(disk_temp_mc,-1),COALESCE(ram_total_kb,-1),COALESCE(ram_available_kb,-1),
-    COALESCE(load_avg_1m,'-1'),COALESCE(filesystem_type,'unknown'),COALESCE(storage_type,'unknown'),
-    timestamp || '_' || printf('%010d', id)
+    ${_cpu_expr},${_disk_expr},${_ram_total_expr},${_ram_available_expr},
+    ${_load_expr},${_filesystem_expr},${_storage_expr},
+    ${_source_offset_expr},
+    ${_run_expr},
+    ${_model_expr},${_agent_expr},${_session_expr}
   FROM telemetry_old;
 DROP TABLE telemetry_old;
 CREATE INDEX IF NOT EXISTS idx_tool ON telemetry(tool);
 CREATE INDEX IF NOT EXISTS idx_project ON telemetry(project_name);
 CREATE INDEX IF NOT EXISTS idx_timestamp ON telemetry(timestamp);
+CREATE INDEX IF NOT EXISTS idx_model ON telemetry(model_id);
+CREATE INDEX IF NOT EXISTS idx_agent ON telemetry(agent_id);
+CREATE INDEX IF NOT EXISTS idx_session ON telemetry(session_id);
 COMMIT;
 SQL
+    sqlite3 "$DB_FILE" "$_migration_sql" >/dev/null 2>&1 || die "telemetry schema migration failed"
   else
     # Schema backfill for existing DBs that predate newer telemetry columns.
     ensure_column telemetry cpu_temp_mc "ALTER TABLE telemetry ADD COLUMN cpu_temp_mc INTEGER DEFAULT -1;" || true
@@ -601,10 +658,20 @@ SQL
     ensure_column telemetry load_avg_1m "ALTER TABLE telemetry ADD COLUMN load_avg_1m TEXT DEFAULT '-1';" || true
     ensure_column telemetry filesystem_type "ALTER TABLE telemetry ADD COLUMN filesystem_type TEXT DEFAULT 'unknown';" || true
     ensure_column telemetry storage_type "ALTER TABLE telemetry ADD COLUMN storage_type TEXT DEFAULT 'unknown';" || true
+    ensure_column telemetry source_offset "ALTER TABLE telemetry ADD COLUMN source_offset INTEGER NOT NULL DEFAULT -1;" || true
     ensure_column telemetry run_id "ALTER TABLE telemetry ADD COLUMN run_id TEXT DEFAULT '';" || true
-    ensure_column run_facts_v1 tool_sequence "ALTER TABLE run_facts_v1 ADD COLUMN tool_sequence TEXT NOT NULL DEFAULT '';" || true
-    ensure_column run_facts_v1 total_duration_ms "ALTER TABLE run_facts_v1 ADD COLUMN total_duration_ms INTEGER NOT NULL DEFAULT 0;" || true
+    ensure_column telemetry model_id "ALTER TABLE telemetry ADD COLUMN model_id TEXT NOT NULL DEFAULT 'unknown';" || true
+    ensure_column telemetry agent_id "ALTER TABLE telemetry ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'unknown';" || true
+      ensure_column telemetry session_id "ALTER TABLE telemetry ADD COLUMN session_id TEXT NOT NULL DEFAULT '';" || true
+      ensure_column run_facts_v1 tool_sequence "ALTER TABLE run_facts_v1 ADD COLUMN tool_sequence TEXT NOT NULL DEFAULT '';" || true
+      ensure_column run_facts_v1 total_duration_ms "ALTER TABLE run_facts_v1 ADD COLUMN total_duration_ms INTEGER NOT NULL DEFAULT 0;" || true
+      ensure_column run_steps_v1 timestamp "ALTER TABLE run_steps_v1 ADD COLUMN timestamp TEXT NOT NULL DEFAULT '';" || true
   fi
+  sqlite3 "$DB_FILE" <<'SQL' >/dev/null 2>&1 || true
+CREATE INDEX IF NOT EXISTS idx_model ON telemetry(model_id);
+CREATE INDEX IF NOT EXISTS idx_agent ON telemetry(agent_id);
+CREATE INDEX IF NOT EXISTS idx_session ON telemetry(session_id);
+SQL
 }
 
 rebuild_analytics() {
@@ -618,31 +685,41 @@ DELETE FROM run_steps_v1;
 DELETE FROM run_facts_v1;
 DELETE FROM combo_stats_v1;
 DELETE FROM combo_next_stats_v1;
-INSERT INTO run_steps_v1 (run_id, step_index, project_name, tool, exit_code, duration_ms)
+INSERT INTO run_steps_v1 (run_id, step_index, project_name, tool, exit_code, duration_ms, timestamp)
 SELECT
   run_id,
   ROW_NUMBER() OVER (PARTITION BY run_id ORDER BY timestamp, id) AS step_index,
   COALESCE(project_name, '') AS project_name,
   tool,
   exit_code,
-  duration_ms
+  duration_ms,
+  timestamp
 FROM telemetry
 WHERE COALESCE(run_id, '') != ''
+  AND NOT (
+    tool = 'fbash'
+    AND EXISTS (
+      SELECT 1
+      FROM telemetry child
+      WHERE child.run_id = telemetry.run_id
+        AND child.tool != 'fbash'
+    )
+  )
 ;
 INSERT INTO run_facts_v1 (run_id, first_timestamp, last_timestamp, project_name, tool_count, nonzero_exit_count, tools_csv, tool_sequence, total_duration_ms)
-SELECT
-  t.run_id,
-  MIN(t.timestamp) AS first_timestamp,
-  MAX(t.timestamp) AS last_timestamp,
-  COALESCE(MAX(t.project_name), '') AS project_name,
+  SELECT
+    rs_run.run_id,
+    COALESCE(MIN(rs_run.timestamp), '') AS first_timestamp,
+    COALESCE(MAX(rs_run.timestamp), '') AS last_timestamp,
+  COALESCE(MAX(rs_run.project_name), '') AS project_name,
   COUNT(*) AS tool_count,
-  SUM(CASE WHEN t.exit_code != 0 THEN 1 ELSE 0 END) AS nonzero_exit_count,
+  SUM(CASE WHEN rs_run.exit_code != 0 THEN 1 ELSE 0 END) AS nonzero_exit_count,
   COALESCE((
     SELECT group_concat(tool, ',')
     FROM (
       SELECT DISTINCT rs.tool AS tool
       FROM run_steps_v1 rs
-      WHERE rs.run_id = t.run_id
+      WHERE rs.run_id = rs_run.run_id
       ORDER BY rs.tool
     )
   ), '') AS tools_csv,
@@ -651,14 +728,13 @@ SELECT
     FROM (
       SELECT rs2.tool AS tool
       FROM run_steps_v1 rs2
-      WHERE rs2.run_id = t.run_id
+      WHERE rs2.run_id = rs_run.run_id
       ORDER BY rs2.step_index
     )
   ), '') AS tool_sequence,
-  COALESCE(SUM(t.duration_ms), 0) AS total_duration_ms
-FROM telemetry t
-WHERE COALESCE(t.run_id, '') != ''
-GROUP BY t.run_id;
+  COALESCE(SUM(rs_run.duration_ms), 0) AS total_duration_ms
+FROM run_steps_v1 rs_run
+GROUP BY rs_run.run_id;
 INSERT INTO combo_stats_v1 (project_name, combo_key, step_count, occurrence_count, clean_run_count, faulted_run_count, avg_duration_ms, total_duration_ms)
 SELECT
   project_name,
@@ -708,7 +784,7 @@ FROM prefix_edges pe
 JOIN run_facts_v1 rf ON rf.run_id = pe.run_id
 WHERE COALESCE(pe.prefix_key, '') != ''
 GROUP BY pe.project_name, pe.prefix_key, pe.prefix_step_count, pe.next_tool;
-INSERT INTO analytics_meta (key, value) VALUES ('analytics_version', '2')
+INSERT INTO analytics_meta (key, value) VALUES ('analytics_version', '3')
 ON CONFLICT(key) DO UPDATE SET value=excluded.value;
 INSERT INTO analytics_meta (key, value) VALUES ('last_rebuilt_at', '$rebuilt_at')
 ON CONFLICT(key) DO UPDATE SET value=excluded.value;
@@ -746,10 +822,13 @@ OPTIONS (global)
   --self-check       Verify dependencies
   --install-hints    Print install commands for missing dependencies
 
-  OPTIONS (history)
-    --tool <name>      Filter by tool (ftree, fsearch, fcontent)
-    --project <name>   Filter by project name
-    --limit <N>        Max rows (default 20)
+    OPTIONS (history)
+      --tool <name>      Filter by tool (ftree, fsearch, fcontent)
+      --project <name>   Filter by project name
+      --model <id>       Filter by model_id
+      --agent <id>       Filter by agent_id
+      --session <id>     Filter by session_id
+      --limit <N>        Max rows (default 20)
 
   OPTIONS (combos)
     --project <name>           Filter by project name
@@ -772,12 +851,16 @@ OPTIONS (clean)
 
 ENVIRONMENT
   FSUITE_TELEMETRY=0  Disable telemetry collection in fsuite tools
+  FSUITE_MODEL_ID     Model identifier to store with telemetry
+  FSUITE_AGENT_ID     Agent/runtime identifier to store with telemetry
+  FSUITE_SESSION_ID   Session/thread identifier to store with telemetry
 
 EXAMPLES
     fmetrics import              Import telemetry data into SQLite
 fmetrics stats               Show usage dashboard
 fmetrics stats -o json       Machine-readable stats
 fmetrics history --tool ftree --limit 10
+fmetrics history --model codex-gpt-5.5 --agent codex-cli -o json
 fmetrics combos --project fsuite -o json
 fmetrics recommend --after ftree,fsearch --project fsuite
 fmetrics predict /project    Estimate runtimes for /project
@@ -901,6 +984,8 @@ cmd_stats() {
   local stats_sql
   stats_sql="SELECT tool, COUNT(*), CAST(AVG(duration_ms) AS INTEGER), MIN(duration_ms), MAX(duration_ms), ROUND(100.0 * SUM(CASE WHEN exit_code=0 THEN 1 ELSE 0 END) / COUNT(*), 1) FROM telemetry GROUP BY tool ORDER BY tool;"
   local projects_sql="SELECT project_name, COUNT(*) as c FROM telemetry GROUP BY project_name ORDER BY c DESC LIMIT 5;"
+  local models_sql="SELECT model_id, COUNT(*) as c FROM telemetry GROUP BY model_id ORDER BY c DESC, model_id LIMIT 10;"
+  local agents_sql="SELECT agent_id, COUNT(*) as c FROM telemetry GROUP BY agent_id ORDER BY c DESC, agent_id LIMIT 10;"
 
   if [[ "$OUTPUT" == "json" ]]; then
     db_size=$(stat -c%s "$DB_FILE" 2>/dev/null) || db_size=0
@@ -924,6 +1009,26 @@ cmd_stats() {
       first=0
       echo -n "{\"name\":\"$pname\",\"runs\":$pruns}"
     done < <(sqlite3 -separator '|' "$DB_FILE" "$projects_sql" 2>/dev/null)
+
+    echo -n "],\"top_models\":["
+    first=1
+    while IFS='|' read -r model mruns; do
+      (( first )) || echo -n ","
+      first=0
+      local model_json
+      model_json=$(printf '%s' "$model" | json_escape)
+      echo -n "{\"name\":\"$model_json\",\"runs\":$mruns}"
+    done < <(sqlite3 -separator '|' "$DB_FILE" "$models_sql" 2>/dev/null)
+
+    echo -n "],\"top_agents\":["
+    first=1
+    while IFS='|' read -r agent aruns; do
+      (( first )) || echo -n ","
+      first=0
+      local agent_json
+      agent_json=$(printf '%s' "$agent" | json_escape)
+      echo -n "{\"name\":\"$agent_json\",\"runs\":$aruns}"
+    done < <(sqlite3 -separator '|' "$DB_FILE" "$agents_sql" 2>/dev/null)
     echo "]}"
     else
       echo "$(metric_title 'fmetrics stats')"
@@ -950,15 +1055,27 @@ cmd_stats() {
     done < <(sqlite3 -separator '|' "$DB_FILE" "$stats_sql" 2>/dev/null)
 
     echo ""
-      echo "$(metric_label '  Top Projects:')"
+    echo "$(metric_label '  Top Projects:')"
     while IFS='|' read -r pname pruns; do
       printf "    %-30s %d runs\n" "$pname" "$pruns"
     done < <(sqlite3 -separator '|' "$DB_FILE" "$projects_sql" 2>/dev/null)
 
+    echo ""
+    echo "$(metric_label '  Top Models:')"
+    while IFS='|' read -r model mruns; do
+      printf "    %-30s %d runs\n" "${model:0:30}" "$mruns"
+    done < <(sqlite3 -separator '|' "$DB_FILE" "$models_sql" 2>/dev/null)
+
+    echo ""
+    echo "$(metric_label '  Top Agents:')"
+    while IFS='|' read -r agent aruns; do
+      printf "    %-30s %d runs\n" "${agent:0:30}" "$aruns"
+    done < <(sqlite3 -separator '|' "$DB_FILE" "$agents_sql" 2>/dev/null)
+
     db_size=$(du -h "$DB_FILE" 2>/dev/null | cut -f1) || db_size="?"
     echo ""
-      echo "  $(metric_label 'Telemetry:') $count total runs -- $oldest to $newest"
-      echo "  $(metric_label 'Database:') $DB_FILE -- $db_size"
+    echo "  $(metric_label 'Telemetry:') $count total runs -- $oldest to $newest"
+    echo "  $(metric_label 'Database:') $DB_FILE -- $db_size"
   fi
 }
 
@@ -969,14 +1086,20 @@ cmd_history() {
   ensure_db
 
   # Sanitize filter inputs to prevent SQL injection
-  local safe_tool safe_project
+  local safe_tool safe_project safe_model safe_agent safe_session
   safe_tool=$(echo "${FILTER_TOOL:-}" | tr -cd '[:alnum:]._-')
   safe_project=$(echo "${FILTER_PROJECT:-}" | tr -cd '[:alnum:]. _-')
   safe_project="${safe_project//\'/\'\'}"
+  safe_model=$(sql_escape "${FILTER_MODEL:-}")
+  safe_agent=$(sql_escape "${FILTER_AGENT:-}")
+  safe_session=$(sql_escape "${FILTER_SESSION:-}")
 
   local where_clauses=()
   [[ -n "$safe_tool" ]] && where_clauses+=("tool='$safe_tool'")
   [[ -n "$safe_project" ]] && where_clauses+=("project_name='$safe_project'")
+  [[ -n "$safe_model" ]] && where_clauses+=("model_id='$safe_model'")
+  [[ -n "$safe_agent" ]] && where_clauses+=("agent_id='$safe_agent'")
+  [[ -n "$safe_session" ]] && where_clauses+=("session_id='$safe_session'")
 
   local where=""
   if (( ${#where_clauses[@]} > 0 )); then
@@ -993,11 +1116,15 @@ cmd_history() {
   if [[ "$OUTPUT" == "json" ]]; then
     echo -n "{\"tool\":\"fmetrics\",\"version\":\"$VERSION\",\"subcommand\":\"history\",\"runs\":["
     local first=1
-    while IFS='|' read -r ts t mode pn dur ec items bytes backend; do
+    while IFS='|' read -r ts t mode pn dur ec items bytes backend model agent session; do
       (( first )) || echo -n ","
       first=0
-      echo -n "{\"timestamp\":\"$ts\",\"tool\":\"$t\",\"mode\":\"$mode\",\"project\":\"$pn\",\"duration_ms\":$dur,\"exit_code\":$ec,\"items_scanned\":$items,\"bytes_scanned\":$bytes,\"backend\":\"$backend\"}"
-    done < <(sqlite3 -separator '|' "$DB_FILE" "SELECT timestamp,tool,mode,project_name,duration_ms,exit_code,items_scanned,bytes_scanned,backend FROM telemetry $where ORDER BY timestamp DESC LIMIT $LIMIT;" 2>/dev/null)
+      local model_json agent_json session_json
+      model_json=$(printf '%s' "$model" | json_escape)
+      agent_json=$(printf '%s' "$agent" | json_escape)
+      session_json=$(printf '%s' "$session" | json_escape)
+      echo -n "{\"timestamp\":\"$ts\",\"tool\":\"$t\",\"mode\":\"$mode\",\"project\":\"$pn\",\"duration_ms\":$dur,\"exit_code\":$ec,\"items_scanned\":$items,\"bytes_scanned\":$bytes,\"backend\":\"$backend\",\"model_id\":\"$model_json\",\"agent_id\":\"$agent_json\",\"session_id\":\"$session_json\"}"
+    done < <(sqlite3 -separator '|' "$DB_FILE" "SELECT timestamp,tool,mode,project_name,duration_ms,exit_code,items_scanned,bytes_scanned,backend,model_id,agent_id,session_id FROM telemetry $where ORDER BY timestamp DESC LIMIT $LIMIT;" 2>/dev/null)
     echo "]}"
   else
     local title="Recent Runs"
@@ -1996,6 +2123,9 @@ OUTPUT="$DEFAULT_OUTPUT"
 LIMIT="$DEFAULT_LIMIT"
 FILTER_TOOL=""
 FILTER_PROJECT=""
+FILTER_MODEL=""
+FILTER_AGENT=""
+FILTER_SESSION=""
 PREDICT_MODE=""
 PREDICT_PATH=""
 CLEAN_DAYS="$DEFAULT_CLEAN_DAYS"
@@ -2018,10 +2148,19 @@ while [[ $# -gt 0 ]]; do
     --tool)
       [[ -n "${2:-}" ]] || die "Missing value for $1"
       FILTER_TOOL="$2"; shift 2 ;;
-    --project)
-      [[ -n "${2:-}" ]] || die "Missing value for $1"
-      FILTER_PROJECT="$2"; shift 2 ;;
-    --mode)
+      --project)
+        [[ -n "${2:-}" ]] || die "Missing value for $1"
+        FILTER_PROJECT="$2"; shift 2 ;;
+      --model)
+        [[ -n "${2:-}" ]] || die "Missing value for $1"
+        FILTER_MODEL="$2"; shift 2 ;;
+      --agent)
+        [[ -n "${2:-}" ]] || die "Missing value for $1"
+        FILTER_AGENT="$2"; shift 2 ;;
+      --session)
+        [[ -n "${2:-}" ]] || die "Missing value for $1"
+        FILTER_SESSION="$2"; shift 2 ;;
+      --mode)
       [[ -n "${2:-}" ]] || die "Missing value for $1"
       PREDICT_MODE="$2"; shift 2 ;;
     --limit)
