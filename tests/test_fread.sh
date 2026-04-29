@@ -1238,6 +1238,92 @@ fail "Media JSON bytes_emitted should report UTF-8 byte length" "$result"
 fi
 }
 
+test_media_pdf_preserves_default_token_budget() {
+local fake_dir media_file output rc=0 result
+fake_dir="${TEST_DIR}/fake-media-default-budget"
+mkdir -p "$fake_dir"
+cp "${FREAD}" "${fake_dir}/fread"
+cp "${SCRIPT_DIR}/../_fsuite_common.sh" "${fake_dir}/_fsuite_common.sh"
+chmod +x "${fake_dir}/fread"
+cat > "${fake_dir}/fread-media.py" <<'PY'
+#!/usr/bin/env python3
+import json
+import sys
+
+if sys.argv[1] == "probe":
+    print(json.dumps({"detected": "pdf"}))
+elif sys.argv[1] == "pdf":
+    token_arg = None
+    if "--token-budget" in sys.argv:
+        idx = sys.argv.index("--token-budget")
+        token_arg = sys.argv[idx + 1] if idx + 1 < len(sys.argv) else "MISSING"
+    print(json.dumps({
+        "type": "pdf-text",
+        "file": {
+            "text": "token budget arg: %s" % token_arg,
+            "page_count": 1,
+            "pages_returned": [1],
+            "truncated": False,
+            "tokens_estimate": 8,
+        },
+        "backend": "test",
+        "token_budget_arg": token_arg,
+    }, separators=(",", ":")))
+else:
+    print(json.dumps({"type": "error", "code": "BAD_TEST", "error": "bad subcommand"}))
+    sys.exit(1)
+PY
+chmod +x "${fake_dir}/fread-media.py"
+media_file="${TEST_DIR}/default-budget.pdf"
+printf '%b' '%PDF-1.4\n\0' > "$media_file"
+
+output=$(FSUITE_TELEMETRY=0 FSUITE_MEMORY_INGEST=0 "${fake_dir}/fread" "$media_file" -o json 2>/dev/null) || rc=$?
+if (( rc != 0 )); then
+fail "Default PDF read should exit 0" "exit=$rc"
+return
+fi
+result=$(printf '%s' "$output" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print('OK' if d.get('media_payload', {}).get('token_budget_arg') is None else 'FAIL:%r' % d.get('media_payload', {}).get('token_budget_arg'))
+" 2>/dev/null || echo "PARSE_ERROR")
+if [[ "$result" != "OK" ]]; then
+fail "Default PDF read should not override engine token budget" "$result"
+return
+fi
+
+output=$(FSUITE_TELEMETRY=0 FSUITE_MEMORY_INGEST=0 "${fake_dir}/fread" "$media_file" --token-budget 123 -o json 2>/dev/null) || rc=$?
+if (( rc != 0 )); then
+fail "PDF --token-budget should exit 0" "exit=$rc"
+return
+fi
+result=$(printf '%s' "$output" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print('OK' if d.get('media_payload', {}).get('token_budget_arg') == '123' else 'FAIL:%r' % d.get('media_payload', {}).get('token_budget_arg'))
+" 2>/dev/null || echo "PARSE_ERROR")
+if [[ "$result" != "OK" ]]; then
+fail "PDF --token-budget should forward explicit budget to engine" "$result"
+return
+fi
+
+output=$(FSUITE_TELEMETRY=0 FSUITE_MEMORY_INGEST=0 "${fake_dir}/fread" "$media_file" --no-truncate -o json 2>/dev/null) || rc=$?
+if (( rc != 0 )); then
+fail "PDF --no-truncate should exit 0" "exit=$rc"
+return
+fi
+result=$(printf '%s' "$output" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+print('OK' if d.get('media_payload', {}).get('token_budget_arg') == '0' else 'FAIL:%r' % d.get('media_payload', {}).get('token_budget_arg'))
+" 2>/dev/null || echo "PARSE_ERROR")
+if [[ "$result" == "OK" ]]; then
+pass "PDF token budget forwarding preserves engine default and explicit overrides"
+else
+fail "PDF --no-truncate should forward unlimited engine budget" "$result"
+fi
+}
+
 test_media_image_honors_global_token_budget() {
 local output rc=0
 output=$(FSUITE_TELEMETRY=0 FSUITE_MEMORY_INGEST=0 "${FREAD}" "${MEDIA_FIXTURES}/sample.png" --token-budget 1 -o json 2>/dev/null) || rc=$?
@@ -2063,6 +2149,7 @@ echo "== Media Reading (Phase 5) =="
 run_test "Image pretty no base64" test_media_image_pretty_no_base64
 run_test "Image JSON media_payload" test_media_image_json_has_media_payload
 run_test "Media JSON UTF-8 byte budget" test_media_json_budget_counts_utf8_bytes
+run_test "PDF default token cap preserved" test_media_pdf_preserves_default_token_budget
 run_test "Image global token budget" test_media_image_honors_global_token_budget
 run_test "Image no-truncate unlimited budget" test_media_image_no_truncate_disables_engine_cap
 run_test "Image meta-only" test_media_image_meta_only

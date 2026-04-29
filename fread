@@ -105,6 +105,7 @@ OUTPUT="$DEFAULT_OUTPUT"
 MAX_LINES=$DEFAULT_MAX_LINES
 MAX_BYTES=$DEFAULT_MAX_BYTES
 TOKEN_BUDGET=0
+TOKEN_BUDGET_EXPLICIT=0
 MAX_FILES=$DEFAULT_MAX_FILES
 BEFORE=$DEFAULT_BEFORE
 AFTER=$DEFAULT_AFTER
@@ -769,10 +770,13 @@ media_dispatch() {
         (( MEDIA_RENDER ))     && engine_args+=("--render")
         [[ -n "$MEDIA_PAGES" ]] && engine_args+=("--pages" "$MEDIA_PAGES")
         [[ -n "$MEDIA_MAX_PAGES" ]] && engine_args+=("--max-pages" "$MEDIA_MAX_PAGES")
-        [[ -n "$MEDIA_TOKEN_BUDGET_ENGINE" ]] && engine_args+=("--token-budget" "$MEDIA_TOKEN_BUDGET_ENGINE")
-        # Forward fread's own --token-budget unconditionally (engine treats 0 as unlimited
-        # so --no-truncate, which sets TOKEN_BUDGET=0, propagates correctly to the engine).
-        [[ -z "$MEDIA_TOKEN_BUDGET_ENGINE" ]] && engine_args+=("--token-budget" "$TOKEN_BUDGET")
+        if [[ -n "$MEDIA_TOKEN_BUDGET_ENGINE" ]]; then
+            engine_args+=("--token-budget" "$MEDIA_TOKEN_BUDGET_ENGINE")
+        elif (( NO_TRUNCATE == 1 )); then
+            engine_args+=("--token-budget" "0")
+        elif (( TOKEN_BUDGET_EXPLICIT == 1 )); then
+            engine_args+=("--token-budget" "$TOKEN_BUDGET")
+        fi
     else
         return 1
     fi
@@ -1718,6 +1722,7 @@ while [[ $# -gt 0 ]]; do
       [[ -n "${2:-}" ]] || die "Missing value for --token-budget"
       [[ "$2" =~ ^[0-9]+$ ]] || die "--token-budget must be an integer"
       TOKEN_BUDGET="$2"
+      TOKEN_BUDGET_EXPLICIT=1
       _TELEM_FLAGS+=" --token-budget $2"
       shift 2
       ;;
