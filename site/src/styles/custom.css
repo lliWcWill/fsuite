@@ -1470,3 +1470,255 @@ starlight-tabs [role="tab"][aria-selected="true"] {
   border-bottom: 4px solid transparent;
   transform: translateY(-50%);
 }
+
+/* ============================================================
+   fsuite — ROUND 6 components appendix
+   APPEND to bottom of site/src/styles/custom.css
+   (after rounds 1-5 appendices)
+
+   New components for the story-page rebuild:
+   - .fs-hud (HUD frame for episode opener)
+   - .fs-hud-glow (extra glow variant for the lightbulb page)
+   - .fs-strip (5-cell status strip under the HUD)
+   - .fs-chain-display (visual chain for the lightbulb page)
+   - .fs-stack (2-layer carrier/cargo display)
+   ============================================================ */
+
+/* ---------- 36. HUD FRAME (episode opener) ---------- */
+.fs-hud {
+  position: relative;
+  margin: 24px 0 14px;
+  padding: 32px 36px 28px;
+  border: 1px solid var(--sl-color-hairline-light);
+  border-radius: 4px;
+  background:
+    linear-gradient(180deg, rgba(58, 255, 157, 0.04), transparent 50%),
+    var(--sl-color-bg);
+  overflow: hidden;
+}
+.fs-hud::before {
+  /* corner crosshair grid background */
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(to right, rgba(58, 255, 157, 0.05) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(58, 255, 157, 0.05) 1px, transparent 1px);
+  background-size: 32px 32px;
+  pointer-events: none;
+  opacity: 0.4;
+}
+.fs-hud-corner {
+  position: absolute;
+  width: 18px; height: 18px;
+  border: 1.5px solid var(--fs-accent);
+  pointer-events: none;
+}
+.fs-hud-corner.tl { top: 8px; left: 8px; border-right: none; border-bottom: none; }
+.fs-hud-corner.tr { top: 8px; right: 8px; border-left: none; border-bottom: none; }
+.fs-hud-corner.bl { bottom: 8px; left: 8px; border-right: none; border-top: none; }
+.fs-hud-corner.br { bottom: 8px; right: 8px; border-left: none; border-top: none; }
+.fs-hud-body {
+  position: relative;
+  z-index: 1;
+}
+.fs-hud-eyebrow {
+  font-family: var(--sl-font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.18em;
+  color: var(--fs-accent);
+  margin-bottom: 10px;
+  font-weight: 600;
+}
+.fs-hud-title {
+  margin: 0 0 10px 0 !important;
+  font-size: 32px !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.01em !important;
+  color: var(--sl-color-white) !important;
+  border: none !important;
+  padding: 0 !important;
+}
+.fs-hud-sub {
+  margin: 0;
+  font-size: 15px;
+  color: var(--sl-color-gray-2);
+  max-width: 56ch;
+  line-height: 1.55;
+}
+.fs-hud-sub code {
+  font-size: 13px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--sl-color-gray-7);
+  color: var(--fs-accent);
+}
+
+/* Lightbulb glow variant */
+.fs-hud-glow {
+  background:
+    radial-gradient(circle at 70% 30%, rgba(58, 255, 157, 0.10), transparent 50%),
+    linear-gradient(180deg, rgba(58, 255, 157, 0.06), transparent 60%),
+    var(--sl-color-bg);
+  box-shadow:
+    inset 0 0 60px rgba(58, 255, 157, 0.05),
+    0 0 0 1px color-mix(in oklab, var(--fs-accent) 15%, transparent);
+}
+.fs-hud-glow .fs-hud-corner {
+  border-color: color-mix(in oklab, var(--fs-accent) 80%, white);
+  box-shadow: 0 0 8px color-mix(in oklab, var(--fs-accent) 50%, transparent);
+}
+
+/* ---------- 37. STATUS STRIP (5 cells under HUD) ---------- */
+.fs-strip {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 0;
+  margin: 0 0 28px;
+  border: 1px solid var(--sl-color-hairline);
+  border-radius: 4px;
+  overflow: hidden;
+  font-family: var(--sl-font-mono);
+  background: var(--sl-color-gray-7);
+}
+.fs-strip-cell {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 10px 14px;
+  border-right: 1px solid var(--sl-color-hairline);
+}
+.fs-strip-cell:last-child {
+  border-right: none;
+}
+.fs-strip-cell b {
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--sl-color-gray-3);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.fs-strip-cell span {
+  font-size: 13px;
+  color: var(--sl-color-white);
+  font-weight: 500;
+}
+.fs-strip-end span {
+  color: var(--fs-accent);
+}
+@media (max-width: 800px) {
+  .fs-strip { grid-template-columns: repeat(2, 1fr); }
+  .fs-strip-cell:nth-child(2n) { border-right: none; }
+  .fs-strip-cell { border-bottom: 1px solid var(--sl-color-hairline); }
+  .fs-strip-cell:nth-last-child(-n+2) { border-bottom: none; }
+}
+
+/* ---------- 38. CHAIN DISPLAY (lightbulb page) ---------- */
+.fs-chain-display {
+  margin: 28px 0;
+  padding: 22px 18px;
+  border: 1px solid var(--sl-color-hairline-light);
+  border-radius: 8px;
+  background: var(--sl-color-bg);
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  overflow-x: auto;
+  font-family: var(--sl-font-mono);
+}
+.fs-chain-stage {
+  flex: 1 1 0;
+  min-width: 130px;
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 12px 14px;
+  background: var(--sl-color-gray-7);
+  border: 1px solid var(--sl-color-hairline);
+  border-radius: 5px;
+  position: relative;
+}
+.fs-chain-stage .fs-chain-num {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--sl-color-gray-4);
+  font-weight: 600;
+}
+.fs-chain-stage b {
+  font-size: 14px;
+  color: var(--sl-color-white);
+  font-weight: 600;
+}
+.fs-chain-stage span:not(.fs-chain-num) {
+  font-size: 11.5px;
+  color: var(--sl-color-gray-3);
+}
+.fs-chain-stage-keystone {
+  border-color: color-mix(in oklab, var(--fs-accent) 50%, var(--sl-color-hairline));
+  background: color-mix(in oklab, var(--fs-accent) 6%, var(--sl-color-gray-7));
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--fs-accent) 25%, transparent) inset;
+}
+.fs-chain-stage-keystone b { color: var(--fs-accent); }
+.fs-chain-display .fs-arr {
+  align-self: center;
+  width: 22px; height: 14px;
+  position: relative;
+  flex-shrink: 0;
+}
+.fs-chain-display .fs-arr::before {
+  content: "";
+  position: absolute;
+  top: 50%; left: 0; right: 6px;
+  height: 1px;
+  background: var(--sl-color-gray-3);
+  transform: translateY(-50%);
+}
+.fs-chain-display .fs-arr::after {
+  content: "";
+  position: absolute;
+  top: 50%; right: 0;
+  width: 0; height: 0;
+  border-left: 6px solid var(--sl-color-gray-3);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transform: translateY(-50%);
+}
+
+/* ---------- 39. CARRIER/CARGO STACK (lightbulb page) ---------- */
+.fs-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 24px 0 32px;
+  border: 1px solid var(--sl-color-hairline-light);
+  border-radius: 8px;
+  overflow: hidden;
+  font-family: var(--sl-font-mono);
+}
+.fs-stack-layer {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 18px 22px;
+}
+.fs-stack-layer b {
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  font-weight: 700;
+}
+.fs-stack-layer span {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--sl-color-white);
+}
+.fs-stack-layer code {
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(255,255,255,0.06);
+}
+.fs-stack-cargo {
+  background: linear-gradient(180deg,
+    color-mix(in oklab, var(--fs-accent) 12%, var(--sl-color-bg)),
+    color-mix(in oklab, var(--fs-accent) 4%, var(--sl-color-bg)));
+  border-bottom: 1px solid var(--sl-color-hairline);
+}
+.fs-stack-cargo b { color: var(--fs-accent); }
+.fs-stack-carrier {
+  background: var(--sl-color-gray-7);
+}
+.fs-stack-carrier b { color: var(--sl-color-gray-3); }

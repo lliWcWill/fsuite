@@ -1,0 +1,117 @@
+---
+title: Episode 2 — Reading Too Much
+description: Capping search fixed flooding. Reading entire files when you needed one function was the next bottleneck. fmap and fread --symbol are how it ended.
+sidebar:
+  order: 3
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<div class="fs-hud">
+  <div class="fs-hud-corner tl"></div>
+  <div class="fs-hud-corner tr"></div>
+  <div class="fs-hud-corner bl"></div>
+  <div class="fs-hud-corner br"></div>
+  <div class="fs-hud-body">
+    <div class="fs-hud-eyebrow">EPISODE 02 · DESIGN INSIGHT</div>
+    <h2 class="fs-hud-title">Reading Too Much</h2>
+    <p class="fs-hud-sub">If <code>grep</code> floods the context, <code>cat</code> drowns it. The fix wasn't smaller files — it was reading the structure first, then the symbol.</p>
+  </div>
+</div>
+
+<div class="fs-strip">
+  <div class="fs-strip-cell"><b>Date</b><span>May 2025</span></div>
+  <div class="fs-strip-cell"><b>Trigger</b><span>cat handler.ts (612 lines)</span></div>
+  <div class="fs-strip-cell"><b>Insight</b><span>read structure, then symbol</span></div>
+  <div class="fs-strip-cell"><b>Coined</b><span>"the keystone tool"</span></div>
+  <div class="fs-strip-cell fs-strip-end"><b>Born</b><span>fmap · fread --symbol</span></div>
+</div>
+
+## The leftover problem
+
+After Episode 1, the search problem was solved. `fsearch` and `fcontent` returned ranked, capped, useful results. But the agent's next move was always the same: it had a file path, and it needed to look inside it.
+
+So it did what every agent does. It read the file.
+
+```bash
+cat src/core/handler.ts
+# 612 lines. 14 functions. 3 classes. ~6,000 tokens.
+```
+
+The agent needed *one function* — `doTheThing`, line 384. It got 612 lines instead. Twelve more files like this and the context budget was gone again, even though searching was now budget-clean.
+
+The agent wasn't doing anything wrong. **It had no way to ask "show me only the function I want."** Every native tool — `Read`, `cat`, `head`, `tail` — operated on lines or files. None of them understood symbols.
+
+## The conceptual leap
+
+The leap was realizing that **agents need an outline before they need the text**. A human reading a 600-line file scans the function names down the left margin first, finds the one they want, then jumps. A human's eye is doing the structural pass automatically. An agent reading the same file gets the structural pass and the textual pass *as one undifferentiated wall*.
+
+Split them. One tool that returns structure (`fmap`). Another tool that reads exactly one symbol from that structure (`fread --symbol`). The agent does what the human does — scan, then jump — but as two separate, cheap tool calls.
+
+<div class="fs-term">
+  <div class="fs-term-bar"><b>fmap → fread chain</b> · 612-line file, 38 tokens to navigate <span class="fs-term-cost">180ms</span></div>
+<pre>
+<span class="tk-tool">fmap</span>(<span class="tk-str">"src/core/handler.ts"</span>)
+  <span class="tk-arrow">└─</span> Symbol skeleton · <span class="tk-num">14</span> functions, <span class="tk-num">3</span> classes
+<span class="tk-mut">·</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="tk-cyan">class</span> Handler         L<span class="tk-num">42</span>:<span class="tk-num">198</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="tk-cyan">class</span> RetryHandler    L<span class="tk-num">200</span>:<span class="tk-num">256</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="tk-cyan">fn</span>    parseRequest    L<span class="tk-num">258</span>:<span class="tk-num">301</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="tk-cyan">fn</span>    validateInput   L<span class="tk-num">303</span>:<span class="tk-num">340</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="tk-yellow">fn</span>    <span class="tk-bold">doTheThing</span>      L<span class="tk-num">384</span>:<span class="tk-num">421</span>  <span class="tk-com">// ← target</span>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="tk-cyan">fn</span>    formatResponse  L<span class="tk-num">423</span>:<span class="tk-num">458</span>
+<span class="tk-mut">·</span>
+<span class="tk-tool">fread</span>(<span class="tk-str">"src/core/handler.ts"</span> | symbol: <span class="tk-str">"doTheThing"</span>)
+  <span class="tk-arrow">└─</span> <span class="tk-num">38</span> lines · L<span class="tk-num">384</span>:<span class="tk-num">421</span> · ~<span class="tk-num">320</span> tokens
+</pre>
+</div>
+
+The full file would have been ~6,000 tokens. The chain that found, located, and read the target function used roughly 320 — a **20× reduction** for the same answer.
+
+## Why this is the keystone
+
+`fmap` is the tool that separates fsuite from "ripgrep with a budget." Every other fsuite tool has a roughly-equivalent native sibling — `fsearch ↔ fd`, `fcontent ↔ ripgrep`, `fread ↔ cat`, `fls ↔ ls`. Not `fmap`. There is no native CLI tool that returns a Treesitter-aware symbol skeleton with line ranges in a token-budgeted envelope. **fmap exists nowhere else.**
+
+That's why the [Mental Model](/fsuite/getting-started/mental-model/) page calls it the keystone. Remove `fmap` and the whole chain reverts to "ripgrep with vibes." Keep it and you have a discipline.
+
+## The discipline
+
+After Episode 2, the chain settled into the form it still has today:
+
+<CardGrid>
+  <Card title="1. Scout" icon="seti:folder">
+    `ftree` or `fls` to understand layout. Token-cheap, structural.
+  </Card>
+  <Card title="2. Narrow" icon="magnifier">
+    `fsearch` for paths, `fcontent` for content, `fs` if you don't want to choose. Capped, ranked.
+  </Card>
+  <Card title="3. Map" icon="list-format">
+    `fmap` on the file you found. Returns the skeleton. **Don't skip this.**
+  </Card>
+  <Card title="4. Read" icon="open-book">
+    `fread --symbol NAME` for exactly the symbol the map showed you. Surgical.
+  </Card>
+</CardGrid>
+
+The reflex it replaces is `cat the_file`. Once an agent has used `fmap → fread` once, it stops reaching for `cat`. The output is just *better* — smaller, more relevant, navigable.
+
+## What we learned
+
+| Old reflex | New reflex | Why |
+|------------|-----------|-----|
+| `cat file.ts` | `fmap file.ts` then `fread --symbol X` | structure first, content second |
+| `head -50 file.ts` | `fread file.ts -r 1:50` | line ranges are first-class |
+| `wc -l file.ts` | `fmap file.ts` | symbol count is more useful than line count |
+| "let me just read the whole thing" | "let me just map it" | mapping costs ~5% of reading |
+
+## The next incident
+
+Capping fixed flooding. Symbol-aware reading fixed drowning. But agents still reached for native `Read` and `Grep` by reflex even when fsuite was installed — training is sticky. The next problem was *enforcement*.
+
+That's [Episode 3](/fsuite/story/episode-3/).
+
+## Related
+
+- [`fmap`](/fsuite/commands/fmap/) — the keystone drone profile
+- [`fread`](/fsuite/commands/fread/) — symbol-aware and range-aware reading
+- [Mental model](/fsuite/getting-started/mental-model/) — the chain in full

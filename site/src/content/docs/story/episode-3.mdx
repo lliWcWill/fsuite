@@ -1,0 +1,125 @@
+---
+title: Episode 3 — The Enforcement Layer
+description: fsuite existed. Agents still reached for native Read and Grep. The fix was hooks — block the native primitives, force the agent off muscle memory.
+sidebar:
+  order: 4
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<div class="fs-hud">
+  <div class="fs-hud-corner tl"></div>
+  <div class="fs-hud-corner tr"></div>
+  <div class="fs-hud-corner bl"></div>
+  <div class="fs-hud-corner br"></div>
+  <div class="fs-hud-body">
+    <div class="fs-hud-eyebrow">EPISODE 03 · DEPLOYMENT</div>
+    <h2 class="fs-hud-title">The Enforcement Layer</h2>
+    <p class="fs-hud-sub">Building the better tool wasn't enough. The agent had to be denied the worse one.</p>
+  </div>
+</div>
+
+<div class="fs-strip">
+  <div class="fs-strip-cell"><b>Date</b><span>July 2025</span></div>
+  <div class="fs-strip-cell"><b>Trigger</b><span>agents still using native Read</span></div>
+  <div class="fs-strip-cell"><b>Diagnosis</b><span>training reflexes are sticky</span></div>
+  <div class="fs-strip-cell"><b>Fix</b><span>PreToolUse hooks · exit 2</span></div>
+  <div class="fs-strip-cell fs-strip-end"><b>Born</b><span>MCP adapter · hook installer</span></div>
+</div>
+
+## The discovery
+
+The CLI was working. `fmap` and `fread` were saving thousands of tokens per task. The team had quietly assumed that once you installed fsuite, the agent would *prefer* it — because the outputs are smaller, the chains are shorter, the answers are better.
+
+They opened the telemetry log to confirm.
+
+The agent was using `Read` 4× more often than `fread`. `Grep` 6× more often than `fcontent`. `Glob` 3× more often than `fsearch`.
+
+The fsuite tools were there. The agent was ignoring them.
+
+## Why training won
+
+A coding agent's tool selection is shaped by the millions of training examples where someone said "look at this file" and the right answer was `Read`. Whatever the local environment offers, the model's first instinct is the tool that won the training distribution. Installing fsuite made it *available*. It did not make it *preferred*.
+
+This is the same pattern that makes humans keep typing `ls` even after they know `fls` does the same job better — muscle memory beats new-feature-awareness for the first few hundred uses. Agents have the same problem, except the muscle memory is baked in at the weights and you cannot retrain it on a per-project basis.
+
+You can, however, **deny the alternative.**
+
+## The fix
+
+Claude Code supports `PreToolUse` hooks — small scripts that run before any tool call and can reject it with a message the agent sees. The fix was almost embarrassingly simple:
+
+```json
+\{
+  "PreToolUse": [
+    \{
+      "matcher": "Read",
+      "hooks": [\{
+        "type": "command",
+        "command": "echo 'Use fsuite fread instead. Example: fread --symbol NAME path' >&2; exit 2"
+      \}]
+    \}
+  ]
+\}
+```
+
+Exit code `2` is the magic. It tells Claude Code "block this call, but show this message to the agent, not the user." The agent reads the message, learns, switches tools — instantly, no retraining needed.
+
+Apply the same pattern to `Read`, `Write`, `Edit`, `Grep`, `Glob`. Five hooks. Forty lines of JSON. Done.
+
+<div class="fs-term">
+  <div class="fs-term-bar"><b>Before / After</b> · same task, same agent, hooks installed mid-session <span class="fs-term-cost">measured</span></div>
+<pre>
+<span class="tk-mut">// before hooks</span>
+agent <span class="tk-arrow">→</span> Read(<span class="tk-str">"src/handler.ts"</span>)         <span class="tk-num">612</span> lines, ~<span class="tk-num">6000</span> tok
+agent <span class="tk-arrow">→</span> Read(<span class="tk-str">"src/utils.ts"</span>)           <span class="tk-num">340</span> lines, ~<span class="tk-num">3300</span> tok
+agent <span class="tk-arrow">→</span> Grep(<span class="tk-str">"doTheThing"</span>)             <span class="tk-num">47</span> matches, ~<span class="tk-num">2000</span> tok
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="tk-warn">total: ~11,300 tok</span>
+<span class="tk-mut">·</span>
+<span class="tk-mut">// after hooks installed (same prompt, fresh session)</span>
+agent <span class="tk-arrow">→</span> Read(<span class="tk-str">"src/handler.ts"</span>)
+hook  <span class="tk-arrow">└─</span> <span class="tk-warn">blocked</span> · "use fsuite fread instead"
+agent <span class="tk-arrow">→</span> fmap(<span class="tk-str">"src/handler.ts"</span>)         <span class="tk-num">14</span> symbols, ~<span class="tk-num">280</span> tok
+agent <span class="tk-arrow">→</span> fread(... symbol: doTheThing)   <span class="tk-num">38</span> lines, ~<span class="tk-num">320</span> tok
+agent <span class="tk-arrow">→</span> fcontent(<span class="tk-str">"doTheThing"</span>)         ranked top-<span class="tk-num">12</span>, ~<span class="tk-num">450</span> tok
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span class="tk-green">total: ~1,050 tok</span> (<span class="tk-num">10.7×</span> reduction)
+</pre>
+</div>
+
+## Hooks + MCP, complementary
+
+Hooks block native tools. They cannot route or translate calls — they just refuse. Without an alternative the agent can find, blocking is useless: the agent retries the blocked tool a few times and gives up.
+
+That's where the [MCP adapter](/fsuite/architecture/mcp/) comes in. MCP **exposes** every fsuite tool with a structured JSON Schema, so when the agent's native `Read` fails, the next-best-tool search lands on `fread` immediately. The agent sees a tool with the same job, picks it, succeeds.
+
+<CardGrid>
+  <Card title="Hooks alone" icon="error">
+    Block native primitives but offer no path forward. Agent thrashes, gives up, falls back to whatever it can still call.
+  </Card>
+  <Card title="MCP alone" icon="warning">
+    Expose fsuite cleanly but do not deny the native fallback. Agent reaches for trained reflex, ignores fsuite.
+  </Card>
+  <Card title="Hooks + MCP" icon="approve-check">
+    Native blocked, fsuite exposed and discoverable. Agent finds the alternative within one retry. Adoption is automatic.
+  </Card>
+</CardGrid>
+
+## What we learned
+
+Three lessons from rolling out the enforcement layer:
+
+1. **Better tools don't get used. Required tools get used.** Build the better thing, then deny the worse thing. Both halves are necessary.
+2. **The redirect message matters.** A bare `exit 2` with no message produces an agent that retries the blocked tool five times. A message like `"Use fsuite fread instead — fread --symbol NAME path"` produces an agent that switches on the first try.
+3. **Hooks should redirect, not punish.** Exit `2` (block + show message to agent) is correct. Exit `1` (block + show error to user) is hostile. The hook's job is to teach, not to scold.
+
+## The synthesis
+
+Episode 1 capped output. Episode 2 added structure. Episode 3 enforced adoption. Together they form a system: the agent is forced off bad reflexes, finds budget-aware tools, and uses them in a chain that compounds.
+
+That synthesis is the [Lightbulb](/fsuite/story/lightbulb/) — when the team realized fsuite wasn't a CLI, it was a delivery vehicle for a discipline.
+
+## Related
+
+- [Hooks &amp; enforcement](/fsuite/architecture/hooks/) — the implementation in detail
+- [MCP adapter](/fsuite/architecture/mcp/) — the routing layer that pairs with hooks
+- [Telemetry](/fsuite/architecture/telemetry/) — how the team noticed adoption was failing in the first place

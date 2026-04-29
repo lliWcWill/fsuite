@@ -1,0 +1,100 @@
+---
+title: Episode 1 — The Bash Overflow
+description: How a single naive grep on node_modules eating the whole context window became the seed of fsearch, fcontent, and the token-budget gospel.
+sidebar:
+  order: 2
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<div class="fs-hud">
+  <div class="fs-hud-corner tl"></div>
+  <div class="fs-hud-corner tr"></div>
+  <div class="fs-hud-corner bl"></div>
+  <div class="fs-hud-corner br"></div>
+  <div class="fs-hud-body">
+    <div class="fs-hud-eyebrow">EPISODE 01 · INCIDENT REPORT</div>
+    <h2 class="fs-hud-title">The Bash Overflow</h2>
+    <p class="fs-hud-sub">A single <code>grep -r</code> ate 180,000 tokens. The agent forgot why it had been called. fsuite started here.</p>
+  </div>
+</div>
+
+<div class="fs-strip">
+  <div class="fs-strip-cell"><b>Date</b><span>April 2025</span></div>
+  <div class="fs-strip-cell"><b>Trigger</b><span>grep -r on node_modules</span></div>
+  <div class="fs-strip-cell"><b>Damage</b><span>~180k tokens lost</span></div>
+  <div class="fs-strip-cell"><b>Lesson</b><span>cap output at the tool</span></div>
+  <div class="fs-strip-cell fs-strip-end"><b>Born</b><span>fsearch · fcontent</span></div>
+</div>
+
+## What happened
+
+A coding agent — Claude Code, fresh session, clean context — was asked to find every place a particular function was called across a fairly average TypeScript monorepo. The agent reached for its training reflex:
+
+```bash
+grep -r "doTheThing" .
+```
+
+The repo had `node_modules`. `node_modules` had a few hundred packages. A handful of those packages had source maps embedded as enormous JSON blobs. Each blob, when grepped, produced one matching line per minified function reference, and the line was the entire minified bundle.
+
+The tool result came back at roughly 180,000 tokens. The agent's context window was 200,000. Within a single tool call, **90% of the conversation history was now grep noise**.
+
+The agent finished the task — sort of. It reported back. The user asked a follow-up question. The agent had no memory of the project structure, no memory of the original goal, no memory of the half-dozen earlier exchanges that had set up the request. It was sitting in 180k tokens of minified JavaScript and 20k tokens of "what was I doing again."
+
+## The root cause
+
+The problem was not that `grep` is bad. `grep` is a beautiful tool for humans, who can pipe it through `head`, `less`, `awk`, or just `Ctrl+C` when the screen explodes. Agents cannot `Ctrl+C`. They consume the entire tool result whether they want to or not.
+
+The problem was that the **agent's tooling was designed for humans**. Every primitive — `Read`, `Grep`, `Glob`, `Bash` — assumed unbounded output. None of them had any concept of a token budget. None of them had any concept of "this answer is too large to be useful."
+
+## The first fix
+
+The first fix was crude: a wrapper script that capped `grep` output at 2000 lines and reported the truncation. It worked. It also revealed the deeper issue — once you've capped the output, you also need to **rank** the results so the 2000 lines you keep are the *useful* ones.
+
+Ranking led to ripgrep with relevance scoring. Relevance scoring led to skip-by-default lists for `node_modules`, `dist`, `.git`, `vendor`. Skip-lists led to a unified search abstraction that could route between filename glob, content match, and symbol lookup based on what the agent actually asked.
+
+That abstraction became `fs`. The content half became `fcontent`. The filename half became `fsearch`.
+
+<div class="fs-term">
+  <div class="fs-term-bar"><b>The fix in three calls</b> · same task, ~600 tokens total <span class="fs-term-cost">2.1s</span></div>
+<pre>
+<span class="tk-tool">fsearch</span>(<span class="tk-str">"&#42;.ts"</span>) <span class="tk-com">// scope to TS files first</span>
+  <span class="tk-arrow">└─</span> <span class="tk-num">347</span> matches · skipped node_modules, dist, .git
+<span class="tk-mut">·</span>
+<span class="tk-tool">fcontent</span>(<span class="tk-str">"doTheThing"</span> | scope: <span class="tk-str">"&#42;.ts"</span>)
+  <span class="tk-arrow">└─</span> <span class="tk-num">12</span> matches across <span class="tk-num">9</span> files · ranked by relevance
+<span class="tk-mut">·</span>
+<span class="tk-tool">fmap</span>(<span class="tk-str">"src/core/handler.ts"</span>)
+  <span class="tk-arrow">└─</span> symbol skeleton · <span class="tk-num">14</span> functions, <span class="tk-num">3</span> classes
+<span class="tk-mut">·</span>
+<span class="tk-cyan">next</span> <span class="tk-arrow">→</span> fread --symbol doTheThing <span class="tk-com">// surgical read</span>
+</pre>
+</div>
+
+## What we learned
+
+Three principles came out of this incident, and all three are still load-bearing for fsuite today:
+
+<CardGrid>
+  <Card title="Cap at the tool, not the agent" icon="error">
+    The agent cannot decide to stop reading mid-result. The tool itself must enforce the budget — truncate, rank, summarize. Every fsuite command honors a hard token cap, and reports the cap explicitly when it bites.
+  </Card>
+  <Card title="Rank what survives the cap" icon="star">
+    A capped result is only useful if the right matches survived. fsuite's ranking is path-aware (deprioritize generated/vendor), recency-aware, and exact-match-aware. The first 50 results are the ones an agent would actually want to read.
+  </Card>
+  <Card title="Skip the obvious noise by default" icon="seti:hidden">
+    `node_modules`, `dist`, `.git`, `vendor`, `.venv`, `__pycache__`, `target`, `build` — every fsuite tool excludes these unless explicitly told otherwise. The opt-in flag for "no really, search everything" exists, but it is not the default.
+  </Card>
+</CardGrid>
+
+## The next incident
+
+Capping fixed flooding. It did not fix **reading too much**. The agent could now search a repo without burning its context, but the moment it found a match and tried to *read* the file, all bets were off again. A 600-line file is 600 lines of context whether you needed function 4 or function 24.
+
+That's [Episode 2](/fsuite/story/episode-2/).
+
+## Related
+
+- [`fsearch`](/fsuite/commands/fsearch/) — the filename search drone born from this incident
+- [`fcontent`](/fsuite/commands/fcontent/) — the content search drone born from this incident
+- [Mental model](/fsuite/getting-started/mental-model/) — the chain that makes capping not feel like a limit
