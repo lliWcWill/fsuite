@@ -7,58 +7,120 @@ sidebar:
 
 ## The core chain
 
-```text
-ftree → fs → fmap → fread → fedit
-```
+The default for "I need to understand and modify something in this repo."
 
-Use this as your default for "I need to understand and modify something in this repo."
+<div class="fs-pipeline">
+  <span class="fs-pn fs-pn-entry">ftree</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn">fs</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn">fmap</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn">fread</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn">fedit</span>
+</div>
 
 ## Investigation chain
 
-```text
-fcase init → ftree → fs → fmap → fread → fcase note → fedit → fcase resolve
-```
+Spans multiple sessions or context windows. `fcase` brackets the work.
 
-Use this when the work spans multiple sessions or context windows.
+<div class="fs-pipeline">
+  <span class="fs-pn fs-pn-entry">fcase init</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn">ftree</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn">fs</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn">fmap</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn">fread</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn">fcase note</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn">fedit</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn fs-pn-entry">fcase resolve</span>
+</div>
 
 ## Debugging chain
 
-```text
-fbash (reproduce bug) → fs (find relevant code) → fmap → fread → fcase → fedit → fbash (verify fix)
-```
-
 `fcase` captures the hypothesis, the repro steps, and the fix — so if the fix fails, the next attempt starts with context.
+
+<div class="fs-pipeline">
+  <span class="fs-pn">fbash</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn">fs</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn">fmap</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn">fread</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn">fcase</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn">fedit</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn fs-pn-entry">fbash</span>
+</div>
 
 ## Refactoring chain
 
-```text
-fcontent (find all call sites) → fsearch (scope files) → fmap (find symbols to update) → fedit --function_name (scoped edits)
-```
+The key move: use `fedit --symbol` for each symbol instead of doing a text-replace across files. Zero ambiguity.
 
-The key move: use `fedit --function_name` for each symbol instead of doing a text-replace across files. Zero ambiguity.
+<div class="fs-pipeline">
+  <span class="fs-pn">fcontent</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn">fsearch</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn">fmap</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn fs-pn-entry">fedit --symbol</span>
+</div>
 
 ## Binary investigation chain
 
-```text
-fprobe strings → fprobe scan → fprobe window → fprobe patch
-```
+When the target is a compiled binary, an obfuscated bundle, or anything text tools can't read.
 
-When you need to work with a compiled binary, an obfuscated bundle, or anything the text-based tools can't read.
+<div class="fs-pipeline">
+  <span class="fs-pn fs-pn-branch">fprobe strings</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn fs-pn-branch">fprobe scan</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn fs-pn-branch">fprobe window</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn fs-pn-branch">fprobe patch</span>
+</div>
+
+## fcase lifecycle
+
+The investigation ledger isn't a chain — it's a state machine that wraps every other chain.
+
+<div class="fs-fcase">
+  <div class="fs-fcase-state"><b>init</b><span>open the seam</span></div>
+  <span class="fs-arr"></span>
+  <div class="fs-fcase-state"><b>note</b><span>capture evidence</span></div>
+  <span class="fs-arr"></span>
+  <div class="fs-fcase-state"><b>handoff</b><span>pass to next agent</span></div>
+  <span class="fs-arr"></span>
+  <div class="fs-fcase-state fs-fcase-end"><b>resolve</b><span>close + archive</span></div>
+</div>
 
 ## Replay chain
 
-```text
+Rerun a traced investigation step-by-step. Useful for post-mortems and regression tests.
+
+```bash
 freplay --session <id>
 ```
 
-Rerun a traced investigation step-by-step. Useful for post-mortems and regression tests.
-
 ## Measurement chain
-
-```text
-fmetrics import → fmetrics stats → fmetrics predict <project>
-```
 
 Ask the telemetry database what worked last time and what probably works next.
 
-> **TODO:** add screenshots / example outputs for each chain.
+<div class="fs-pipeline">
+  <span class="fs-pn">fmetrics import</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn">fmetrics stats</span>
+  <span class="fs-arr"></span>
+  <span class="fs-pn fs-pn-entry">fmetrics predict</span>
+</div>

@@ -22,11 +22,26 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-## What is fsuite?
+<div class="fs-fielddispatch">
+  <span class="fs-fd-live">FIELD DISPATCH</span>
+  <span>EP 0 · ORIGINS</span>
+  <span>STATUS: <b>DRONES OPERATIONAL</b></span>
+  <span>v2.4.0</span>
+</div>
 
-fsuite is **fourteen command-line tools** built for AI coding agents. It is the answer to one question: *what would you give an LLM if you actually wanted it to find, read, and edit code without burning its context on irrelevant junk?*
+<div class="fs-counters">
+  <div><b>14</b><span>tools</span></div>
+  <div><b>516</b><span>tests</span></div>
+  <div><b>50</b><span>languages</span></div>
+  <div><b>MCP</b><span>native</span></div>
+  <div><b>0</b><span>flooded contexts</span></div>
+</div>
 
-The tools replace the native filesystem and shell primitives every agent reaches for by default — grep, find, cat, sed, bash — with **bounded, structured, token-budgeted** alternatives that know how to cap their output, rank their results, and hand back exactly the slice of the repo that matters.
+## What if the agent had real reconnaissance instead of a flashlight?
+
+The native filesystem tools every coding agent reaches for — `grep`, `find`, `cat`, `sed`, `bash` — were built for humans, on terminals, in 1979. They do not cap their output. They do not rank their results. They do not know what a token costs.
+
+**fsuite does.** Fourteen tools, one mental model: *recon → read → edit → replay → measure*. Designed for headless agents, kept human-friendly so the engineer holding the leash never gets lost either.
 
 ## The four things it fixes
 
@@ -45,6 +60,106 @@ The tools replace the native filesystem and shell primitives every agent reaches
   </Card>
 </CardGrid>
 
+## The chain
+
+The agent only has to remember one flow:
+
+<div class="fs-pipeline-v2">
+  <div class="fs-pipeline-row">
+    <span class="fs-pn fs-pn-entry">fs</span>
+    <span class="fs-arr"></span>
+    <span class="fs-pn">ftree</span>
+    <span class="fs-arr"></span>
+    <span class="fs-pn fs-pn-bridge">fsearch │ fcontent</span>
+    <span class="fs-arr"></span>
+    <span class="fs-pn fs-pn-keystone">fmap</span>
+    <span class="fs-arr"></span>
+    <span class="fs-pn">fread</span>
+    <span class="fs-arr"></span>
+    <span class="fs-pn">fcase</span>
+    <span class="fs-arr"></span>
+    <span class="fs-pn">fedit</span>
+  </div>
+  <div class="fs-pipeline-undernote">
+    <span>↑ <code>fs</code> auto-routes through <code>fsearch</code> + <code>fcontent</code> — you usually don't call them by hand</span>
+    <span>↑ <code>fmap</code> is the keystone — symbol cartography is the gap native tools don't fill</span>
+  </div>
+  <div class="fs-pipeline-row fs-pipeline-row-aux">
+    <span class="fs-pn-aux">fls</span>
+    <span class="fs-pn-aux">fwrite</span>
+    <span class="fs-pn-aux">fbash</span>
+    <span class="fs-pn-aux">freplay</span>
+    <span class="fs-pn-aux">fmetrics</span>
+    <span class="fs-pn-aux fs-pn-aux-warn">fprobe</span>
+  </div>
+  <div class="fs-pipeline-undernote">
+    <span><code>fls</code> structured ls · <code>fwrite</code> atomic create · <code>fbash</code> budgeted shell · <code>freplay</code> deterministic rerun · <code>fmetrics</code> tool-chain prediction · <code>fprobe</code> binaries</span>
+  </div>
+</div>
+
+[Internalize the discipline →](/fsuite/getting-started/mental-model/)
+
+## Native vs fsuite
+
+The same investigation, two tool stacks. fsuite's columns hand back exactly the slice the agent needs.
+
+<div class="fs-vs">
+  <div class="fs-vs-col fs-vs-bad">
+    <div class="fs-vs-head"><span class="fs-vs-tag">grep / find / cat</span> <span class="fs-vs-cost">~12k tokens</span></div>
+<pre>
+<span class="fs-c-prompt">$</span> grep -rn "authenticate" src/
+src/auth.py:14:def authenticate(user):
+src/auth.py:42:    return authenticate_with_db(user)
+src/legacy.py:8:# old authenticate logic, kept for...
+src/tests/test_auth.py:3:def test_authenticate_basic():
+src/tests/test_auth.py:19:def test_authenticate_invalid():
+... <span class="fs-c-com">(217 more lines)</span>
+<span class="fs-c-sep">———————————————————————————</span>
+<span class="fs-c-prompt">$</span> cat src/auth.py
+<span class="fs-c-com"># dumps all 480 lines into context</span>
+</pre>
+  </div>
+  <div class="fs-vs-col fs-vs-good">
+    <div class="fs-vs-head"><span class="fs-vs-tag fs-vs-tag-good">fs / fmap / fread</span> <span class="fs-vs-cost fs-vs-cost-good">~480 tokens</span></div>
+<pre>
+<span class="fs-c-prompt">$</span> fs "authenticate" -o json
+<span class="fs-c-key">"intent"</span>: <span class="fs-c-str">"symbol"</span>,
+<span class="fs-c-key">"hits"</span>: [\{ <span class="fs-c-key">"path"</span>: <span class="fs-c-str">"src/auth.py"</span>, <span class="fs-c-key">"line"</span>: <span class="fs-c-num">42</span> \}],
+<span class="fs-c-key">"next_hint"</span>: <span class="fs-c-str">"fread src/auth.py --symbol authenticate"</span>
+<span class="fs-c-sep">———————————————————————————</span>
+<span class="fs-c-prompt">$</span> fread src/auth.py --symbol authenticate -B 2 -A 12
+<span class="fs-c-ok">→</span> exact 14-line block, nothing else
+</pre>
+  </div>
+</div>
+
+## See it in the wild
+
+A real opening move on a fresh repo. `fs` auto-classifies. `fmap` bridges to symbols. `fread` hands back the exact neighborhood. `fcase` preserves the seam for the next agent. **Four calls.**
+
+```bash
+# 01  Auto-route the opening move
+$ fs "renderTool" -o json | jq .
+{
+  "intent": "symbol",
+  "hits": [{ "path": "src/tools/render.ts", "line": 42, "score": 0.97 }],
+  "next_hint": "fread src/tools/render.ts --symbol renderTool"
+}
+
+# 02  Map the neighborhood before reading
+$ fmap -o json src/tools/render.ts | head
+→ renderTool        function   line 42
+→ resolveContext    function   line 18
+→ ToolRenderer      class      line 7
+
+# 03  Read exactly the symbol — no surrounding noise
+$ fread src/tools/render.ts --symbol renderTool -B 2 -A 12
+
+# 04  Preserve the seam, hand off to the next agent
+$ fcase init render-seam --goal "Trace renderTool denial path"
+✓ case opened   ~/.fsuite/fcase.db · session 0xa72f
+```
+
 ## The fourteen tools
 
 | Tool | Purpose |
@@ -54,8 +169,8 @@ The tools replace the native filesystem and shell primitives every agent reaches
 | [`fls`](/fsuite/commands/fls/) | Structured directory listing with recon mode |
 | [`fsearch`](/fsuite/commands/fsearch/) | File / glob discovery |
 | [`fcontent`](/fsuite/commands/fcontent/) | Bounded content search (token-capped ripgrep) |
-| [`fmap`](/fsuite/commands/fmap/) | Symbol cartography — functions, classes, imports |
-| [`fread`](/fsuite/commands/fread/) | Budgeted reading with symbol & line-range resolution |
+| [`fmap`](/fsuite/commands/fmap/) | Symbol cartography — functions, classes, imports, 50 languages |
+| [`fread`](/fsuite/commands/fread/) | Budgeted reading with symbol & line-range resolution; PDF + image media |
 | [`fedit`](/fsuite/commands/fedit/) | Surgical editing (line-range, symbol-scoped, anchor-based) |
 | [`fwrite`](/fsuite/commands/fwrite/) | Atomic file creation |
 | [`fbash`](/fsuite/commands/fbash/) | Token-budgeted shell with classification + session state |
@@ -67,5 +182,9 @@ The tools replace the native filesystem and shell primitives every agent reaches
 ## Why it exists
 
 fsuite was always supposed to be **CLI-first**. The MCP server came later, the hooks came later, and the whole thing is still catching up to the lightbulb moment that probably should have come first.
+
+> *"The gap isn't in any single tool. It's in the reconnaissance layer. I have no native way to answer the question: 'What is this project, how big is it, and where should I look first?'"*
+>
+> — Claude Code (Opus 4.5), unprompted self-assessment
 
 [Read the full story →](/fsuite/story/episode-0/)
