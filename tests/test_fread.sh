@@ -953,11 +953,31 @@ import sys
 payload = json.loads(sys.argv[1])
 run_id = payload.get("run_id", "")
 assert payload.get("tool") == "fread"
-assert isinstance(run_id, str) and len(run_id.split("_")) >= 2
+assert isinstance(run_id, str) and len(run_id) > 0
 PY
     pass "Telemetry records fread with run_id"
   else
     fail "Telemetry should record tool=fread with run_id" "Got: $line"
+  fi
+}
+
+test_telemetry_escapes_run_id() {
+  rm -f "$HOME/.fsuite/telemetry.jsonl"
+  local raw_run_id line
+  raw_run_id=$'custom"run\\id\nnext'
+  FSUITE_TELEMETRY=1 FSUITE_TELEMETRY_RUN_ID="$raw_run_id" "${FREAD}" "${TEST_DIR}/sample.txt" --max-lines 5 >/dev/null 2>&1 || true
+  line=$(tail -1 "$HOME/.fsuite/telemetry.jsonl" 2>/dev/null) || line=""
+  if python3 - "$line" "$raw_run_id" <<'PY' 2>/dev/null; then
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+assert payload.get("tool") == "fread"
+assert payload.get("run_id") == sys.argv[2]
+PY
+    pass "Telemetry JSON escapes custom run_id"
+  else
+    fail "Telemetry should JSON-escape custom run_id" "Got: $line"
   fi
 }
 
@@ -1138,6 +1158,7 @@ main() {
   echo ""
   echo "== Telemetry =="
   run_test "Telemetry recorded" test_telemetry_recorded
+  run_test "Telemetry escapes run_id" test_telemetry_escapes_run_id
   run_test "Project name override" test_telemetry_project_name
   run_test "Flag accumulation" test_telemetry_flags
   run_test "Default flag seeding" test_telemetry_default_flags

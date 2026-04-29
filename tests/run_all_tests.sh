@@ -43,7 +43,18 @@ run_test_suite() {
     return 1
   fi
 
-  if bash "${test_script}"; then
+  local output_file rc
+  output_file="$(mktemp)"
+  rc=0
+  bash "${test_script}" 2>&1 | tee "$output_file" || rc=$?
+
+  if (( rc == 0 )) && [[ ! -s "$output_file" ]]; then
+    echo -e "${RED}Error: ${test_script} exited successfully without producing test output${NC}"
+    rc=1
+  fi
+  rm -f "$output_file"
+
+  if (( rc == 0 )); then
     echo ""
     echo -e "${GREEN}${test_name}: PASSED${NC}"
     return 0

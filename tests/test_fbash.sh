@@ -553,6 +553,11 @@ test_background_has_no_default_timeout_but_respects_explicit_timeout() {
     return
   fi
 
+  command -v timeout >/dev/null 2>&1 || {
+    skip "background_explicit_timeout: timeout unavailable"
+    return
+  }
+
   fbash_json --background --timeout 1 --command 'sleep 2'
   job_id=$(echo "$FBASH_OUT" | jq -r '.metadata.background_job_id // empty' 2>/dev/null)
   if [[ -z "$job_id" ]]; then
@@ -584,14 +589,21 @@ test_background_survives_launcher_timeout() {
 
   local job_id=""
   for _ in $(seq 1 20); do
-    job_id=$(find "$detach_dir/jobs" -maxdepth 1 -name '*.meta' -printf '%f\n' 2>/dev/null | sed 's/\.meta$//' | head -n 1)
+    local meta_file
+    for meta_file in "$detach_dir/jobs"/*.meta; do
+      [[ -e "$meta_file" ]] || continue
+      job_id=$(basename "${meta_file%.meta}")
+      break
+    done
     [[ -n "$job_id" ]] && break
     sleep 0.1
   done
 
   if [[ -z "$job_id" ]]; then
+    local files
+    files=$(find "$detach_dir" -maxdepth 3 -type f 2>/dev/null | tr '\n' ' ')
     fail "background_survives_launcher_timeout: expected background job metadata" \
-      "files=$(find "$detach_dir" -maxdepth 3 -type f -printf '%p ' 2>/dev/null)"
+      "files=${files}"
     return
   fi
 
@@ -613,6 +625,34 @@ test_background_survives_launcher_timeout() {
   else
     fail "background_survives_launcher_timeout: expected detached completion" \
       "exit_code=${exit_code:-<empty>} status=${status:-<empty>} out=$FBASH_OUT"
+  fi
+}
+
+test_background_exports_telemetry_run_id() {
+  local expected="parent-run-id-no-underscore"
+  local bg_out job_id stdout
+
+  bg_out=$(FSUITE_TELEMETRY=1 FSUITE_TELEMETRY_RUN_ID="$expected" "${FBASH}" \
+    --command 'printf "%s" "$FSUITE_TELEMETRY_RUN_ID"' \
+    --background -o json 2>/dev/null) || true
+  job_id=$(echo "$bg_out" | jq -r '.metadata.background_job_id // empty' 2>/dev/null)
+  if [[ -z "$job_id" ]]; then
+    fail "background_exports_telemetry_run_id: background job did not start" "out=$bg_out"
+    return
+  fi
+
+  for _ in $(seq 1 20); do
+    fbash_json --command "__fbash_poll $job_id"
+    stdout=$(jfield stdout)
+    [[ -n "$stdout" ]] && break
+    sleep 0.1
+  done
+
+  if [[ "$stdout" == "$expected" ]]; then
+    pass "background_exports_telemetry_run_id: detached job inherited shared run_id"
+  else
+    fail "background_exports_telemetry_run_id: expected shared run_id in child env" \
+      "stdout=${stdout:-<empty>} out=$FBASH_OUT"
   fi
 }
 
@@ -834,6 +874,7 @@ run_test "Internal reset" test_internal_reset
   run_test "Zero timeout disables foreground timeout" test_zero_timeout_disables_foreground_timeout
   run_test "Background timeout behavior" test_background_has_no_default_timeout_but_respects_explicit_timeout
   run_test "Background survives launcher timeout" test_background_survives_launcher_timeout
+  run_test "Background exports telemetry run_id" test_background_exports_telemetry_run_id
   run_test "Exec temp cleanup" test_exec_temp_cleanup
 
 echo ""

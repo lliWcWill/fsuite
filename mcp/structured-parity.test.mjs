@@ -354,22 +354,25 @@ test("fedit and fwrite MCP return pretty-rendered content", async () => {
 
 test("fmetrics MCP preserves stats JSON as structured content", async () => {
   const fixture = makeFixture();
+  const telemetryHome = mkdtempSync(join(tmpdir(), "fsuite-mcp-fmetrics-home-"));
+  const env = { ...process.env, HOME: telemetryHome };
   try {
-    const seedResult = await callTool("fcontent", {
+    mkdirSync(join(telemetryHome, ".fsuite"));
+    const seedResult = await callToolWithEnv("fcontent", {
       query: "agent",
       path: fixture,
       max_matches: 5,
-    });
+    }, env);
     assert.ok(!seedResult.isError, textContent(seedResult));
 
-    const importResult = await callTool("fmetrics", {
+    const importResult = await callToolWithEnv("fmetrics", {
       action: "import",
-    });
+    }, env);
     assert.ok(!importResult.isError, textContent(importResult));
 
-    const result = await callTool("fmetrics", {
+    const result = await callToolWithEnv("fmetrics", {
       action: "stats",
-    });
+    }, env);
 
     assert.ok(!result.isError, textContent(result));
     assert.ok(result.structuredContent, "fmetrics should have structuredContent");
@@ -377,28 +380,32 @@ test("fmetrics MCP preserves stats JSON as structured content", async () => {
     assert.ok(Array.isArray(result.structuredContent.tools), "fmetrics stats should have tools array");
   } finally {
     rmSync(fixture, { recursive: true, force: true });
+    rmSync(telemetryHome, { recursive: true, force: true });
   }
 });
 
 test("fmetrics MCP preserves nested per-run fields in history", async () => {
   const fixture = makeFixture();
+  const telemetryHome = mkdtempSync(join(tmpdir(), "fsuite-mcp-fmetrics-home-"));
+  const env = { ...process.env, HOME: telemetryHome };
   try {
-    const seedResult = await callTool("fcontent", {
+    mkdirSync(join(telemetryHome, ".fsuite"));
+    const seedResult = await callToolWithEnv("fcontent", {
       query: "agent",
       path: fixture,
       max_matches: 5,
-    });
+    }, env);
     assert.ok(!seedResult.isError, textContent(seedResult));
 
-    const importResult = await callTool("fmetrics", {
+    const importResult = await callToolWithEnv("fmetrics", {
       action: "import",
-    });
+    }, env);
     assert.ok(!importResult.isError, textContent(importResult));
 
-    const result = await callTool("fmetrics", {
+    const result = await callToolWithEnv("fmetrics", {
       action: "history",
       limit: 5,
-    });
+    }, env);
 
     assert.ok(!result.isError, textContent(result));
     assert.ok(Array.isArray(result.structuredContent.runs), "fmetrics history should expose runs");
@@ -409,6 +416,7 @@ test("fmetrics MCP preserves nested per-run fields in history", async () => {
     assert.equal(typeof run.duration_ms, "number", "history run should preserve duration_ms");
   } finally {
     rmSync(fixture, { recursive: true, force: true });
+    rmSync(telemetryHome, { recursive: true, force: true });
   }
 });
 

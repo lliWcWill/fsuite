@@ -572,6 +572,9 @@ next_hint_for_error() {
     structural_validation_failed)
       printf 'Fix the payload so the structured file remains valid, or use --no-validate only for intentional non-standard syntax.'
       ;;
+    lines_out_of_range)
+      printf 'Re-read the target with fread to confirm the current line numbers, then retry with a valid --lines START:END range.'
+      ;;
     not_found)
       printf 'Verify the path with fsearch -o paths or create the file with fedit --create.'
       ;;

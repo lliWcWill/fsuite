@@ -453,6 +453,29 @@ PY
   fi
 }
 
+test_json_lines_out_of_range_hint() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    pass "JSON lines-out-of-range test skipped (python3 not available)"
+    return 0
+  fi
+  local output rc=0
+  reset_fixture "single.py"
+  output=$(FSUITE_TELEMETRY=0 "${FEDIT}" -o json "${TEST_DIR}/single.py" --lines 999:1000 --with 'replacement' 2>/dev/null) || rc=$?
+  if (( rc != 0 )) && python3 - "$output" <<'PY' >/dev/null 2>&1; then
+import json
+import sys
+
+payload = json.loads(sys.argv[1])
+assert payload["error_code"] == "lines_out_of_range"
+assert "fread" in payload["next_hint"]
+assert "--lines" in payload["next_hint"]
+PY
+    pass "JSON mode gives a next_hint for lines_out_of_range"
+  else
+    fail "JSON mode should hint for lines_out_of_range errors" "rc=$rc output=$output"
+  fi
+}
+
 test_json_anchor_ambiguous_error() {
   if ! command -v python3 >/dev/null 2>&1; then
     pass "JSON anchor-ambiguous test skipped (python3 not available)"
@@ -1250,6 +1273,7 @@ main() {
   run_test "Replace-file apply" test_replace_file_apply
   run_test "JSON parseability" test_json_output_parseable
   run_test "JSON error output" test_json_error_output
+  run_test "JSON lines out of range hint" test_json_lines_out_of_range_hint
   run_test "JSON not_found" test_json_not_found_error
   run_test "JSON not_regular" test_json_not_regular_error
   run_test "JSON permission" test_json_permission_error

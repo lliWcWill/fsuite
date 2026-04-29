@@ -621,6 +621,9 @@ start_background_job() {
       env_prefix+="export $(printf '%q' "$override"); "
     fi
   done
+  if [[ -n "$_TELEM_PARENT_RUN_ID" ]] || command_contains_fsuite_tool "$cmd"; then
+    env_prefix+="export FSUITE_TELEMETRY_RUN_ID=$(printf '%q' "$_TELEM_RUN_ID"); "
+  fi
 
   # Build timeout command if available (respecting TIMEOUT)
   local timeout_cmd=""

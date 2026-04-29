@@ -843,12 +843,51 @@ test_fbash_child_tools_share_run_id_for_combo_edges() {
   local edge shared_run_id wrapper_edge
   edge=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM combo_next_stats_v1 WHERE prefix_key='fsearch' AND next_tool='fcontent';" 2>/dev/null || echo "0")
   shared_run_id=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT run_id FROM telemetry WHERE tool IN ('fsearch','fcontent') GROUP BY run_id HAVING COUNT(DISTINCT tool)=2 LIMIT 1;" 2>/dev/null || true)
-  wrapper_edge=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM combo_next_stats_v1 WHERE next_tool='fbash' AND prefix_key LIKE 'fsearch%';" 2>/dev/null || echo "0")
+  wrapper_edge=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM combo_next_stats_v1 WHERE prefix_key='fbash' OR prefix_key LIKE 'fbash>%';" 2>/dev/null || echo "0")
 
   if [[ "$edge" == "1" && -n "$shared_run_id" && "$wrapper_edge" == "0" ]]; then
     pass "fbash propagates run_id so child fsuite tools form combo edges"
   else
     fail "fbash child fsuite tools should share a run_id and produce clean child combo edges" "edge=$edge shared_run_id=${shared_run_id:-<empty>} wrapper_edge=$wrapper_edge"
+  fi
+}
+
+test_analytics_version2_rebuilds_to_current() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "analytics version rebuild test skipped (sqlite3 not available)"
+    return 0
+  fi
+  mkdir -p "$HOME/.fsuite"
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+  cat > "$HOME/.fsuite/telemetry.jsonl" <<'JSONL'
+{"timestamp":"2026-03-23T00:00:00Z","tool":"fsearch","version":"3.3.0","mode":"glob","path_hash":"version-1","project_name":"version-fixture","duration_ms":9,"exit_code":0,"depth":1,"items_scanned":3,"bytes_scanned":300,"flags":"*.sh","backend":"find","run_id":"run-version"}
+{"timestamp":"2026-03-23T00:00:01Z","tool":"fcontent","version":"3.3.0","mode":"content","path_hash":"version-2","project_name":"version-fixture","duration_ms":7,"exit_code":0,"depth":1,"items_scanned":2,"bytes_scanned":200,"flags":"needle","backend":"rg","run_id":"run-version"}
+JSONL
+
+  run_fmetrics import >/dev/null 2>&1 || {
+    fail "Import for analytics version rebuild should succeed"
+    return
+  }
+  run_fmetrics rebuild >/dev/null 2>&1 || {
+    fail "Initial rebuild for analytics version test should succeed"
+    return
+  }
+  sqlite3 "$HOME/.fsuite/telemetry.db" "UPDATE analytics_meta SET value='2' WHERE key='analytics_version';" >/dev/null 2>&1 || {
+    fail "Could not seed stale analytics version"
+    return
+  }
+
+  local output version
+  output=$(run_fmetrics combos --project version-fixture -o json 2>&1) || {
+    fail "Combos should rebuild stale analytics version" "output=$output"
+    return
+  }
+  version=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT value FROM analytics_meta WHERE key='analytics_version';" 2>/dev/null || true)
+
+  if [[ "$version" == "3" ]]; then
+    pass "Analytics version 2 stores rebuild to current version"
+  else
+    fail "Analytics version 2 should rebuild to version 3" "version=${version:-<empty>} output=$output"
   fi
 }
 
@@ -1701,6 +1740,7 @@ main() {
   run_test "Migration rollback on failure preserves data" test_migration_atomicity
   run_test "Import marks analytics dirty without rebuild" test_import_marks_analytics_dirty_without_rebuild
   run_test "Rebuild populates run_facts_v1 analytics" test_rebuild_populates_run_facts_after_import
+  run_test "Analytics version 2 rebuilds to current" test_analytics_version2_rebuilds_to_current
   run_test "fmetrics JSON escapes quoted paths" test_json_outputs_escape_quoted_paths
   run_test "Combos skips rebuild for single-step next edges" test_combos_skip_next_edge_rebuild_for_single_step_runs
   run_test "Import survives malformed lines" test_import_survives_malformed_lines

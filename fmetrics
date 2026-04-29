@@ -433,14 +433,14 @@ ensure_analytics_populated() {
   [[ "$multi_step_runs_count" =~ ^[0-9]+$ ]] || multi_step_runs_count=0
   if (( telemetry_count == 0 )); then
     # Empty stores only need a rebuild when stale derived rows are still hanging around.
-    if [[ "$analytics_version" != "2" ]] || [[ "$analytics_dirty" == "1" ]] || (( run_facts_count > 0 )) || (( combo_count > 0 )) || (( multi_step_runs_count > 0 && next_count > 0 )); then
+    if [[ "$analytics_version" != "3" ]] || [[ "$analytics_dirty" == "1" ]] || (( run_facts_count > 0 )) || (( combo_count > 0 )) || (( multi_step_runs_count > 0 && next_count > 0 )); then
       rebuild_analytics
     fi
     return 0
   fi
 
   # Non-empty stores get rebuilt when analytics are stale or incomplete.
-  if [[ "$analytics_version" != "2" ]] || [[ "$analytics_dirty" == "1" ]] || (( run_facts_count == 0 )) || (( combo_count == 0 )) || (( multi_step_runs_count > 0 && next_count == 0 )); then
+  if [[ "$analytics_version" != "3" ]] || [[ "$analytics_dirty" == "1" ]] || (( run_facts_count == 0 )) || (( combo_count == 0 )) || (( multi_step_runs_count > 0 && next_count == 0 )); then
     rebuild_analytics
   fi
 }
@@ -765,7 +765,7 @@ FROM prefix_edges pe
 JOIN run_facts_v1 rf ON rf.run_id = pe.run_id
 WHERE COALESCE(pe.prefix_key, '') != ''
 GROUP BY pe.project_name, pe.prefix_key, pe.prefix_step_count, pe.next_tool;
-INSERT INTO analytics_meta (key, value) VALUES ('analytics_version', '2')
+INSERT INTO analytics_meta (key, value) VALUES ('analytics_version', '3')
 ON CONFLICT(key) DO UPDATE SET value=excluded.value;
 INSERT INTO analytics_meta (key, value) VALUES ('last_rebuilt_at', '$rebuilt_at')
 ON CONFLICT(key) DO UPDATE SET value=excluded.value;
