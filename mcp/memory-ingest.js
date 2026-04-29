@@ -75,7 +75,15 @@ function resolveCmd() {
       // Grab the block after the section header until the next [
       const block = toml.slice(m.index + m[0].length).split(/^\[/m)[0];
       const cmdMatch = block.match(/^command\s*=\s*"([^"]+)"/m);
-      if (cmdMatch) return { cmd: cmdMatch[1], args: [] };
+if (cmdMatch) {
+  const argsRegex = /args\s*=\s*\[([^\]]*)\]/m;
+  const am = block.match(argsRegex);
+  let args = [];
+  if (am) {
+    args = am[1].split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+  }
+  return { cmd: cmdMatch[1], args };
+}
     }
   } catch { /* not present */ }
 
@@ -83,6 +91,8 @@ function resolveCmd() {
 }
 
 // ── Core ingest ──────────────────────────────────────────────────────────
+let activeClient = null;
+
 async function doIngest(payload) {
   const resolved = resolveCmd();
   if (!resolved) {
@@ -92,6 +102,7 @@ async function doIngest(payload) {
 
   const transport = new StdioClientTransport({ command: resolved.cmd, args: resolved.args });
   const client = new Client({ name: "fsuite-memory-ingest", version: "1.0.0" });
+  activeClient = client;
 
   try {
     await client.connect(transport);
@@ -113,7 +124,7 @@ async function doIngest(payload) {
             tags: [hashTag],
             limit: 1,
             ...(process.env.FSUITE_PROJECT_NAME ? { project: process.env.FSUITE_PROJECT_NAME } : {}),
-            source: payload.source,
+            ...(payload.source !== undefined ? { source: payload.source } : {}),
           },
         });
       } catch { /* recall failure is non-fatal — fall through to write */ }
@@ -136,7 +147,8 @@ async function doIngest(payload) {
     await client.callTool({ name: "remember", arguments: payload });
     log("info", `wrote: ${payload.title}`);
   } finally {
-    try { await client.close(); } catch { /* best-effort */ }
+    activeClient = null;
+    await client.close().catch(() => {});
   }
 }
 
@@ -160,8 +172,12 @@ async function doIngest(payload) {
     ]);
     process.exit(0);
   } catch (err) {
+    if (activeClient) {
+      try { await activeClient.close(); } catch {}
+      activeClient = null;
+    }
     const msg = err?.message || String(err);
-    log(msg === "timeout" ? "error" : "error", msg);
+    log(msg === "timeout" ? "warn" : "error", msg);
     process.exit(1);
   }
 })();

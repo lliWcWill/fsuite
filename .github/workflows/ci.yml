@@ -29,7 +29,10 @@ jobs:
       - name: Install test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y tree ripgrep fd-find sqlite3
+          sudo apt-get install -y tree ripgrep fd-find sqlite3 \
+            poppler-utils python3-pil
+          # Optional but recommended PDF backend (Phase 5+ media tests prefer it)
+          python3 -m pip install --user --quiet pymupdf || true
 
       - name: Install MCP test dependencies
         run: npm ci --prefix mcp

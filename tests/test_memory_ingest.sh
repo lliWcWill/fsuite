@@ -29,9 +29,11 @@ fail() {
 }
 
 run_test() {
-    TESTS_RUN=$((TESTS_RUN + 1))
-    shift
-    "$@" || true
+TESTS_RUN=$((TESTS_RUN + 1))
+local name="$1"
+shift
+echo "Running: $name"
+"$@" || true
 }
 
 # ── Tests ─────────────────────────────────────────────────────────────────────

@@ -164,6 +164,7 @@ FREAD_MEDIA_FORCE_BACKEND=poppler fread report.pdf
 # Skip ShieldCortex memory ingest
 FSUITE_MEMORY_INGEST=0 fread sensitive.png
 ```
+
 ## See also
 
 - [fsuite mental model](/fsuite/getting-started/mental-model/) — how fread fits into the toolchain

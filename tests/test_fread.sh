@@ -1504,8 +1504,8 @@ import json, sys
 d = json.load(sys.stdin)
 mp = d.get('media_payload', {})
 f  = mp.get('file', {})
-pr = f.get('pages_returned', [1,2,3,4,5])
-ok = f.get('truncated') == True and len(pr) < 5
+pr = f.get('pages_returned')
+ok = f.get('truncated') == True and pr is not None and len(pr) < 5
 print('OK' if ok else 'FAIL: truncated=%s pages_returned=%s' % (f.get('truncated'), pr))
 " 2>/dev/null || echo "PARSE_ERROR")
 if [[ "$result" == "OK" ]]; then

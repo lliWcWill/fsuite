@@ -265,14 +265,14 @@ main() {
     failed_suites+=("coderabbit-fixes")
   fi
 
-# Run memory-ingest helper tests (Phase 4/5)
-echo ""
-if run_test_suite "${SCRIPT_DIR}/test_memory_ingest.sh" "memory-ingest helper Test Suite"; then
-TOTAL_PASSED=$((TOTAL_PASSED + 1))
-else
-TOTAL_FAILED=$((TOTAL_FAILED + 1))
-failed_suites+=("memory-ingest")
-fi
+  # Run memory-ingest helper tests (Phase 4/5)
+  echo ""
+  if run_test_suite "${SCRIPT_DIR}/test_memory_ingest.sh" "memory-ingest helper Test Suite"; then
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+  else
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+    failed_suites+=("memory-ingest")
+  fi
 
 TOTAL_TESTS=$((TOTAL_PASSED + TOTAL_FAILED))
 

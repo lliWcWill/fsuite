@@ -15,8 +15,9 @@ and PDFs via PyMuPDF (Poppler fallback).
 
 ### Added
 
-- New flags: `--render`, `--pages`, `--meta-only`, `--no-resize`, `--max-pages`,
-  `--max-tokens`, `--no-ingest`
+- New flags: --render, --pages, --meta-only, --no-resize, --max-pages,
+  --max-tokens (image-specific), --token-budget (PDF text total cap),
+  --no-ingest
 - MCP fread emits image content blocks (mimeType per 2025-11-25 spec)
   for image and PDF render outputs; bypasses cli() for media payloads
 - `mcp/memory-ingest.js` — detached, timed (3s) Node helper that writes

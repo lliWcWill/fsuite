@@ -168,67 +168,75 @@ def err(message: str, code: str, exit_code: int = 1):
 class PyMuPDFBackend:
     def page_count(self, path: str) -> int:
         doc = fitz.open(path)
-        n = doc.page_count
-        doc.close()
-        return n
+        try:
+            return doc.page_count
+        finally:
+            doc.close()
 
     def extract_text(self, path: str, pages: list) -> list:
         doc = fitz.open(path)
-        if doc.is_encrypted and doc.needs_pass:
+        try:
+            if doc.is_encrypted and doc.needs_pass:
+                raise RuntimeError("PDF is encrypted and requires a password")
+            results = []
+            for i in pages:
+                if 0 <= i < doc.page_count:
+                    results.append(doc[i].get_text())
+                else:
+                    results.append("")
+            return results
+        finally:
             doc.close()
-            raise RuntimeError("PDF is encrypted and requires a password")
-        results = []
-        for i in pages:
-            if 0 <= i < doc.page_count:
-                results.append(doc[i].get_text())
-            else:
-                results.append("")
-        doc.close()
-        return results
 
     def render_page(self, path: str, page: int, dpi: int = 100):
         doc = fitz.open(path)
-        if doc.is_encrypted and doc.needs_pass:
+        try:
+            if doc.is_encrypted and doc.needs_pass:
+                raise RuntimeError("PDF is encrypted and requires a password")
+            pix = doc[page].get_pixmap(dpi=dpi)
+            width, height = pix.width, pix.height
+            data = pix.tobytes("jpeg")
+            return data, width, height
+        finally:
             doc.close()
-            raise RuntimeError("PDF is encrypted and requires a password")
-        pix = doc[page].get_pixmap(dpi=dpi)
-        width, height = pix.width, pix.height
-        data = pix.tobytes("jpeg")
-        doc.close()
-        return data, width, height
 
     def get_page_dims(self, path: str, page: int) -> dict:
         doc = fitz.open(path)
-        r = doc[page].rect
-        doc.close()
-        return {"width": round(r.width, 2), "height": round(r.height, 2)}
+        try:
+            if doc.is_encrypted and doc.needs_pass:
+                raise RuntimeError("PDF is encrypted and requires a password")
+            r = doc[page].rect
+            return {"width": round(r.width, 2), "height": round(r.height, 2)}
+        finally:
+            doc.close()
 
     def metadata(self, path: str) -> dict:
         doc = fitz.open(path)
-        if doc.is_encrypted and doc.needs_pass:
+        try:
+            if doc.is_encrypted and doc.needs_pass:
+                raise RuntimeError("PDF is encrypted and requires a password")
+            pc = doc.page_count
+            encrypted = doc.is_encrypted
+            page_size = {}
+            if pc > 0:
+                r = doc[0].rect
+                page_size = {"width": round(r.width, 2), "height": round(r.height, 2)}
+            has_text = False
+            img_count = 0
+            for pg in doc:
+                if pg.get_text().strip():
+                    has_text = True
+                img_count += len(pg.get_images())
+            return {
+                "page_count": pc,
+                "encrypted": encrypted,
+                "has_text": has_text,
+                "embedded_image_count": img_count,
+                "page_size": page_size,
+                "mtime": iso_mtime(path),
+            }
+        finally:
             doc.close()
-            raise RuntimeError("PDF is encrypted and requires a password")
-        pc = doc.page_count
-        encrypted = doc.is_encrypted
-        page_size = {}
-        if pc > 0:
-            r = doc[0].rect
-            page_size = {"width": round(r.width, 2), "height": round(r.height, 2)}
-        has_text = False
-        img_count = 0
-        for pg in doc:
-            if pg.get_text().strip():
-                has_text = True
-            img_count += len(pg.get_images())
-        doc.close()
-        return {
-            "page_count": pc,
-            "encrypted": encrypted,
-            "has_text": has_text,
-            "embedded_image_count": img_count,
-            "page_size": page_size,
-            "mtime": iso_mtime(path),
-        }
 
 
 # ── Poppler backend ───────────────────────────────────────────────────────────

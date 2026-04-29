@@ -1606,23 +1606,38 @@ server.registerTool(
       if (wantsFull) args.push("--no-truncate");
       args.push("-o", "json");
 
-      // Phase 3: Media-aware short-circuit. Engine emits media_payload for
-      // images/PDFs — translate directly to MCP image/text content blocks
-      // and bypass cli()'s text-only renderer. Any failure falls through to
-      // the normal text path so we never crash the MCP server.
-      try {
-        const opts = execOptsFor("fread");
-        const { stdout, stderr } = await run(resolveTool("fread"), args, opts);
-        const raw = stdout || stderr || "";
-        const parsed = maybeParseJson(raw);
-        if (parsed && parsed.media_payload) {
-          const built = buildMediaContent(parsed.media_payload);
-          if (built) return built;
-        }
-      } catch {
-        // fall through to standard cli() path (engine error, missing file, etc.)
-      }
-      return cli("fread", args, undefined, { maxLines: max_lines, full: wantsFull });
+
+// Phase 3: Media-aware short-circuit. Engine emits media_payload for
+// images/PDFs — translate directly to MCP image/text content blocks
+// and bypass cli()'s text-only renderer. Any failure falls through to
+// the normal text path so we never crash the MCP server.
+try {
+  const opts = execOptsFor("fread");
+  const { stdout, stderr } = await run(resolveTool("fread"), args, opts);
+  const raw = stdout || stderr || "(no output)";
+  const parsed = maybeParseJson(raw);
+  if (parsed && parsed.media_payload) {
+    const built = buildMediaContent(parsed.media_payload);
+    if (built) return built;
+  }
+  // Non-media file: reuse already-captured raw output through the same
+  // render/slim chain that cli() uses — avoids spawning fread a second time.
+  const slim = slimStructuredContent(normalizeStructuredContent(parsed));
+  const renderer = RENDERERS["fread"];
+  if (renderer) {
+    const pretty = renderer(raw, { maxLines: max_lines, full: wantsFull });
+    if (pretty) return { content: [{ type: "text", text: pretty }] };
+    const result = { content: [{ type: "text", text: "(fread: renderer yielded no output)\n" }] };
+    if (slim !== undefined) result.structuredContent = slim;
+    return result;
+  }
+  const noRendererResult = { content: [{ type: "text", text: raw }] };
+  if (slim !== undefined) noRendererResult.structuredContent = slim;
+  return noRendererResult;
+} catch {
+  // fall through to standard cli() path (engine error, missing file, etc.)
+}
+return cli("fread", args, undefined, { maxLines: max_lines, full: wantsFull });
     }
   );
 

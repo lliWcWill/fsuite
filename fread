@@ -771,12 +771,12 @@ media_dispatch() {
 
     # ── Run engine ────────────────────────────────────────────────
     local engine_json engine_exit=0
-    engine_json="$(python3 "$ENGINE_MEDIA" "$subcmd" "$path" "${engine_args[@]}" 2>/dev/null)" || engine_exit=$?
+engine_json="$(python3 "$ENGINE_MEDIA" "$subcmd" "$path" ${engine_args[@]+"${engine_args[@]}"} 2>/dev/null)" || engine_exit=$?
 
-    if [[ -z "$engine_json" ]]; then
-        add_warning "media engine returned empty output for: $path"
-        return 0
-    fi
+if [[ -z "$engine_json" ]]; then
+add_warning "media engine returned empty output for: $path"
+return 1
+fi
 
     # ── Parse type and detect errors ─────────────────────────────
     local media_type
@@ -896,7 +896,10 @@ local payload_file
 payload_file="$(mktemp 2>/dev/null)" || return 0
 
 # Write ingest_payload to temp file
-    printf '%s' "$engine_json" | python3 -c "
+# NOTE: Python code below must remain consistent with its own indentation —
+# Python parses the string content; the bash indentation of printf/python3
+# wrapping lines is independent.
+printf '%s' "$engine_json" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
 ip = d.get('ingest_payload')
