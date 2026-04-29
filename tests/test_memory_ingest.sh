@@ -74,7 +74,7 @@ test_no_config() {
     # Strip PATH of ~/.local/bin (where shieldcortex-mcp lives) and use a
     # non-existent HOME so ~/.claude.json and ~/.codex/config.toml can't be found.
     err=$(printf '{"title":"t","category":"c","content":"x","tags":["a"]}' \
-        | PATH="/usr/local/bin:/usr/bin:/bin" HOME=/nonexistent node "$INGEST_HELPER" 2>&1 >/dev/null) || rc=$?
+        | env PATH="$(dirname "$(command -v node)"):/usr/local/bin:/usr/bin:/bin" HOME=/nonexistent node "$INGEST_HELPER" 2>&1 >/dev/null) || rc=$?
     if (( rc != 0 )); then
         fail "no-config: should exit 0 when no command configured" "exit=$rc stderr=$err"
         return

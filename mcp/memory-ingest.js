@@ -70,8 +70,10 @@ function resolveCmd() {
     const sectionRe = /^\[mcp_servers\.([^\]]+)\]/gm;
     const nameRe = /^(memory|shieldcortex|shield.cortex)$/i;
     let m;
-    while ((m = sectionRe.exec(toml)) !== null) {
-      if (!nameRe.test(m[1])) continue;
+      while ((m = sectionRe.exec(toml)) !== null) {
+        // Strip surrounding quotes from quoted TOML keys, e.g. ["shield.cortex"]
+        const key = m[1].replace(/^["']|["']$/g, "");
+        if (!nameRe.test(key)) continue;
       // Grab the block after the section header until the next [
       const block = toml.slice(m.index + m[0].length).split(/^\[/m)[0];
       const cmdMatch = block.match(/^command\s*=\s*"([^"]+)"/m);
