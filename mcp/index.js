@@ -1340,6 +1340,99 @@ function slimStructuredContent(obj) {
 }
 
 
+// ─── Helper: translate fread media_payload → MCP content blocks ──
+// Phase 3: Engine emits snake_case mime_type; MCP spec uses camelCase mimeType.
+// MIME string itself is identical (image/png, image/jpeg, application/pdf).
+// Only the JSON field NAME differs — we translate via field name when emitting.
+function mediaMimeType(rawMime) {
+  return typeof rawMime === "string" && rawMime ? rawMime : "application/octet-stream";
+}
+
+function imageMetaSummary(payload) {
+  const f = payload?.file || {};
+  const dims = f.dimensions || {};
+  const fmt = (f.format || "").toUpperCase();
+  const w = dims.width ?? "?";
+  const h = dims.height ?? "?";
+  const size = f.original_size ?? "?";
+  const tokens = f.tokens_estimate;
+  const tokensPart = tokens !== undefined ? ` (~${tokens} tokens)` : "";
+  let line = `Image: ${fmt} ${w}×${h}, ${size} bytes${tokensPart}`;
+  if (f.resized) line += " [resized]";
+  if (f.budget_exceeded) line += " [budget exceeded — quality degraded]";
+  return line;
+}
+
+function pdfTextHeader(payload) {
+  const f = payload?.file || {};
+  const total = f.page_count ?? "?";
+  const returned = Array.isArray(f.pages_returned) ? f.pages_returned.length : (f.pages_returned ?? "?");
+  const tokens = f.tokens_estimate ?? "?";
+  let header = `PDF: ${returned}/${total} pages, ${tokens} tokens`;
+  if (f.truncated) header += " [truncated]";
+  if (payload?.backend) header += ` (backend: ${payload.backend})`;
+  return header + "\n\n";
+}
+
+function pdfPagesSummary(payload) {
+  const f = payload?.file || {};
+  const count = f.count ?? (Array.isArray(f.pages) ? f.pages.length : "?");
+  const total = f.page_count ?? "?";
+  const size = f.original_size ?? "?";
+  const backend = payload?.backend ?? "?";
+  return `PDF rendered ${count}/${total} pages, ${size} bytes (backend: ${backend})`;
+}
+
+function pdfMetaSummary(payload) {
+  const f = payload?.file || {};
+  const ps = f.page_size || {};
+  const psStr = (ps.width !== undefined && ps.height !== undefined) ? `${ps.width}×${ps.height}` : "unknown";
+  const fmtVal = (v) => v === null || v === undefined ? "unknown" : String(v);
+  return [
+    "PDF metadata:",
+    `  pages: ${fmtVal(f.page_count)}`,
+    `  page_size: ${psStr}`,
+    `  encrypted: ${fmtVal(f.encrypted)}`,
+    `  has_text: ${fmtVal(f.has_text)}`,
+    `  embedded_images: ${fmtVal(f.embedded_image_count)}`,
+    `  backend: ${fmtVal(payload?.backend)}`,
+  ].join("\n");
+}
+
+function buildMediaContent(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  switch (payload.type) {
+    case "image": {
+      const f = payload.file || {};
+      const blocks = [];
+      if (typeof f.base64 === "string" && f.base64) {
+        blocks.push({ type: "image", data: f.base64, mimeType: mediaMimeType(f.mime_type) });
+      }
+      blocks.push({ type: "text", text: imageMetaSummary(payload) });
+      return { content: blocks };
+    }
+    case "image-meta":
+      return { content: [{ type: "text", text: imageMetaSummary(payload) }] };
+    case "pdf-text": {
+      const f = payload.file || {};
+      return { content: [{ type: "text", text: pdfTextHeader(payload) + (f.text || "") }] };
+    }
+    case "pdf-pages": {
+      const f = payload.file || {};
+      const pages = Array.isArray(f.pages) ? f.pages : [];
+      const blocks = pages
+        .filter((p) => p && typeof p.base64 === "string" && p.base64)
+        .map((p) => ({ type: "image", data: p.base64, mimeType: mediaMimeType(p.mime_type) }));
+      blocks.push({ type: "text", text: pdfPagesSummary(payload) });
+      return { content: blocks };
+    }
+    case "pdf-meta":
+      return { content: [{ type: "text", text: pdfMetaSummary(payload) }] };
+    default:
+      return null;
+  }
+}
+
 // ─── Helper: run CLI tool, pretty-render if possible ─────────────
 async function cli(tool, args, renderAs, renderContext) {
   try {
@@ -1512,6 +1605,23 @@ server.registerTool(
       const wantsFull = Boolean(full || no_truncate);
       if (wantsFull) args.push("--no-truncate");
       args.push("-o", "json");
+
+      // Phase 3: Media-aware short-circuit. Engine emits media_payload for
+      // images/PDFs — translate directly to MCP image/text content blocks
+      // and bypass cli()'s text-only renderer. Any failure falls through to
+      // the normal text path so we never crash the MCP server.
+      try {
+        const opts = execOptsFor("fread");
+        const { stdout, stderr } = await run(resolveTool("fread"), args, opts);
+        const raw = stdout || stderr || "";
+        const parsed = maybeParseJson(raw);
+        if (parsed && parsed.media_payload) {
+          const built = buildMediaContent(parsed.media_payload);
+          if (built) return built;
+        }
+      } catch {
+        // fall through to standard cli() path (engine error, missing file, etc.)
+      }
       return cli("fread", args, undefined, { maxLines: max_lines, full: wantsFull });
     }
   );
