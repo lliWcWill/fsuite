@@ -958,7 +958,7 @@ return 0
 fi
 
     # Spawn detached — never blocks fread exit
-    setsid bash -c 'node "$0" < "$1" >>"$HOME/.cache/fsuite/memory-ingest.log" 2>&1 || echo "$(date -Iseconds) [memory-ingest] helper exit code $?" >>"$HOME/.cache/fsuite/memory-ingest.log"; rm -f "$1"' \
+    setsid bash -c 'node "$0" < "$1" >>"$HOME/.cache/fsuite/memory-ingest.log" 2>&1; status=$?; if (( status != 0 )); then echo "$(date -Iseconds) [memory-ingest] helper exit code $status" >>"$HOME/.cache/fsuite/memory-ingest.log"; fi; rm -f "$1"' \
         "$ingest_helper" "$payload_file" </dev/null >/dev/null 2>&1 &
 
     return 0

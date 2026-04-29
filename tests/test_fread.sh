@@ -1514,6 +1514,39 @@ fail "--no-ingest should produce no log entries" "Log: $(cat "$log_file" 2>/dev/
 fi
 }
 
+test_media_ingest_logs_helper_failure_status() {
+local test_home fake_bin log_file rc=0
+test_home="$(mktemp -d)"
+fake_bin="${TEST_DIR}/fake-node-bin"
+log_file="${test_home}/.cache/fsuite/memory-ingest.log"
+mkdir -p "$fake_bin" "${test_home}/.cache/fsuite"
+cat > "${fake_bin}/node" <<'EOF'
+#!/usr/bin/env bash
+exit 73
+EOF
+chmod +x "${fake_bin}/node"
+
+HOME="$test_home" PATH="${fake_bin}:$PATH" FSUITE_TELEMETRY=0 \
+  "${FREAD}" "${MEDIA_FIXTURES}/sample.png" >/dev/null 2>&1 || rc=$?
+if (( rc != 0 )); then
+fail "Helper failure logging fixture should not fail fread" "exit=$rc"
+rm -rf "$test_home"
+return
+fi
+
+for _ in $(seq 1 20); do
+  if [[ -f "$log_file" ]] && grep -q "helper exit code 73" "$log_file"; then
+    pass "Memory ingest helper failure log preserves helper exit status"
+    rm -rf "$test_home"
+    return
+  fi
+  sleep 0.1
+done
+
+fail "Memory ingest helper failure log should preserve helper exit status" "Log: $(cat "$log_file" 2>/dev/null || true)"
+rm -rf "$test_home"
+}
+
 # O. Missing ingest helper — exercised manually in Phase 7; skip here.
 # The _media_maybe_ingest function locates the helper via a hard path
 # (${_FSUITE_SCRIPT_DIR}/mcp/memory-ingest.js) with no env override,
@@ -1811,6 +1844,7 @@ run_test "PDF encrypted" test_media_pdf_encrypted
 run_test "PDF backend fallback (poppler)" test_media_backend_fallback
 run_test "PDF invalid backend" test_media_backend_force_invalid
 run_test "No-ingest flag" test_media_no_ingest_flag
+run_test "Ingest helper failure status log" test_media_ingest_logs_helper_failure_status
 run_test "PDF token budget truncation" test_media_pdf_token_budget_truncation
 run_test "PDF pretty --max-lines truncation" test_media_pdf_pretty_max_lines
 run_test "Engine standalone probe" test_media_python_engine_standalone
