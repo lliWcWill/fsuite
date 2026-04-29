@@ -820,3 +820,61 @@ test("fread media MCP content honors max_bytes budget", () => {
   assert.ok(text.includes("media omitted"), `expected omission note, got: ${text}`);
   assert.ok(Buffer.byteLength(text, "utf8") <= 40, `text should respect maxBytes cap, got ${Buffer.byteLength(text, "utf8")}`);
 });
+
+test("fread media MCP content preserves text chunks in mixed batches", () => {
+  const mediaPayload = {
+    type: "image",
+    file: {
+      base64: "aGVsbG8=",
+      mime_type: "image/png",
+      format: "png",
+      dimensions: { width: 10, height: 10 },
+      original_size: 5,
+      tokens_estimate: 1,
+    },
+    backend: "pillow",
+  };
+  const parsed = {
+    tool: "fread",
+    version: "test",
+    mode: "stdin_paths",
+    truncated: false,
+    token_estimate: 4,
+    bytes_emitted: 30,
+    lines_emitted: 3,
+    max_lines: 0,
+    max_bytes: 0,
+    token_budget: 0,
+    next_hint: null,
+    media_payloads: [mediaPayload],
+    chunks: [
+      {
+        path: "/tmp/sample.png",
+        start_line: 1,
+        end_line: 1,
+        match_line: null,
+        content: [JSON.stringify(mediaPayload)],
+      },
+      {
+        path: "/tmp/notes.md",
+        start_line: 1,
+        end_line: 2,
+        match_line: null,
+        content: ["1  # Notes", "2  keep this text"],
+      },
+    ],
+    files: [
+      { path: "/tmp/sample.png", status: "read", language: "image" },
+      { path: "/tmp/notes.md", status: "read", language: "markdown" },
+    ],
+    warnings: [],
+    errors: [],
+  };
+
+  const result = mcpInternals.buildFreadMcpContent(JSON.stringify(parsed), parsed, { maxLines: 10 });
+  assert.ok(result.content.some((item) => item.type === "image"), "expected image block to be preserved");
+  const text = stripAnsi(textContent(result));
+  assert.ok(text.includes("# Notes"), `expected rendered markdown chunk, got: ${text}`);
+  assert.ok(text.includes("keep this text"), `expected text content from mixed batch, got: ${text}`);
+  assert.equal(text.includes("\"base64\""), false, `media JSON chunk should not be rendered as text: ${text}`);
+});

@@ -1508,6 +1508,86 @@ function buildMediaContent(payload, opts) {
   }
 }
 
+function isMediaPayloadObject(value) {
+  return Boolean(value && typeof value === "object" && [
+    "image",
+    "image-meta",
+    "pdf-text",
+    "pdf-pages",
+    "pdf-meta",
+  ].includes(value.type));
+}
+
+function isMediaJsonChunk(chunk) {
+  const content = Array.isArray(chunk?.content) ? chunk.content : [];
+  if (content.length !== 1 || typeof content[0] !== "string") return false;
+  return isMediaPayloadObject(maybeParseJson(content[0]));
+}
+
+function textOnlyFreadPayload(parsed) {
+  if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.chunks)) return null;
+  const mediaPaths = new Set();
+  const chunks = [];
+  for (const chunk of parsed.chunks) {
+    if (isMediaJsonChunk(chunk)) {
+      if (chunk.path) mediaPaths.add(chunk.path);
+      continue;
+    }
+    chunks.push(chunk);
+  }
+  if (chunks.length === 0) return null;
+
+  const files = Array.isArray(parsed.files)
+    ? parsed.files.filter((file) => !mediaPaths.has(file.path))
+    : parsed.files;
+  const lines = chunks.reduce((total, chunk) => total + (Array.isArray(chunk.content) ? chunk.content.length : 0), 0);
+  return {
+    ...parsed,
+    chunks,
+    files,
+    lines_emitted: lines,
+  };
+}
+
+function renderFreadTextResult(raw, parsed, opts = {}) {
+  const slim = slimStructuredContent(normalizeStructuredContent(parsed));
+  const renderer = RENDERERS["fread"];
+  if (renderer) {
+    const pretty = renderer(raw, { maxLines: opts.maxLines, full: opts.full });
+    if (pretty) return { content: [{ type: "text", text: pretty }] };
+    const result = { content: [{ type: "text", text: "(fread: renderer yielded no output)\n" }] };
+    if (slim !== undefined) result.structuredContent = slim;
+    return result;
+  }
+  const noRendererResult = { content: [{ type: "text", text: raw }] };
+  if (slim !== undefined) noRendererResult.structuredContent = slim;
+  return noRendererResult;
+}
+
+function buildFreadMcpContent(raw, parsed, opts = {}) {
+  const mediaBudget = opts.budget || mediaByteBudget(opts.maxBytes);
+  const mediaPayloads = parsed && Array.isArray(parsed.media_payloads) && parsed.media_payloads.length > 0
+    ? parsed.media_payloads
+    : (parsed && parsed.media_payload ? [parsed.media_payload] : []);
+  if (mediaPayloads.length === 0) {
+    return renderFreadTextResult(raw, parsed, opts);
+  }
+
+  const merged = [];
+  for (const payload of mediaPayloads) {
+    const built = buildMediaContent(payload, { ...opts, budget: mediaBudget });
+    if (built && Array.isArray(built.content)) merged.push(...built.content);
+  }
+
+  const textPayload = textOnlyFreadPayload(parsed);
+  if (textPayload) {
+    const renderedText = renderFreadTextResult(JSON.stringify(textPayload), textPayload, opts);
+    if (renderedText && Array.isArray(renderedText.content)) merged.push(...renderedText.content);
+  }
+
+  return { content: merged.length ? merged : [{ type: "text", text: "" }] };
+}
+
 // ─── Helper: run CLI tool, pretty-render if possible ─────────────
 function formatExecError(err, tool, renderAs, renderContext) {
   // Try to parse JSON from stdout first, then stderr, then fall back to plain text
@@ -1708,35 +1788,13 @@ server.registerTool(
         const { stdout, stderr } = await run(resolveTool("fread"), args, opts);
         const raw = stdout || stderr || "(no output)";
         const parsed = maybeParseJson(raw);
-        const mediaBudget = mediaByteBudget(max_bytes);
-        // Multi-file media: iterate media_payloads (array) and merge content blocks.
-        // Falls back to singular media_payload (legacy / single-file path).
-        if (parsed && Array.isArray(parsed.media_payloads) && parsed.media_payloads.length > 0) {
-          const merged = [];
-          for (const p of parsed.media_payloads) {
-            const built = buildMediaContent(p, { maxLines: max_lines, maxBytes: max_bytes, budget: mediaBudget });
-            if (built && Array.isArray(built.content)) merged.push(...built.content);
-          }
-          if (merged.length > 0) return { content: merged };
-        }
-        if (parsed && parsed.media_payload) {
-          const built = buildMediaContent(parsed.media_payload, { maxLines: max_lines, maxBytes: max_bytes, budget: mediaBudget });
-          if (built) return built;
-        }
-        // Non-media file: reuse already-captured raw output through the same
-        // render/slim chain that cli() uses — avoids spawning fread a second time.
-        const slim = slimStructuredContent(normalizeStructuredContent(parsed));
-        const renderer = RENDERERS["fread"];
-        if (renderer) {
-          const pretty = renderer(raw, { maxLines: max_lines, full: wantsFull });
-          if (pretty) return { content: [{ type: "text", text: pretty }] };
-          const result = { content: [{ type: "text", text: "(fread: renderer yielded no output)\n" }] };
-          if (slim !== undefined) result.structuredContent = slim;
-          return result;
-        }
-        const noRendererResult = { content: [{ type: "text", text: raw }] };
-        if (slim !== undefined) noRendererResult.structuredContent = slim;
-        return noRendererResult;
+        // Media and text chunks can coexist in stdin/multi-file batches. Build
+        // media blocks first, then append rendered non-media chunks if present.
+        return buildFreadMcpContent(raw, parsed, {
+          maxLines: max_lines,
+          maxBytes: max_bytes,
+          full: wantsFull,
+        });
       } catch (err) {
         return formatExecError(err, "fread", undefined, { maxLines: max_lines, full: wantsFull });
       }
@@ -2350,6 +2408,7 @@ server.registerTool(
 
 export const __test__ = {
   buildMediaContent,
+  buildFreadMcpContent,
   mediaByteBudget,
 };
 
