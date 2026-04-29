@@ -227,6 +227,40 @@ token_estimate_from_bytes() {
   echo $(( (bytes + 2) / 3 ))
 }
 
+emit_media_pretty_budgeted_text() {
+  local text="$1"
+  local line line_bytes remaining_bytes clipped clipped_bytes
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line_bytes=$(byte_len "${line}"$'\n')
+    if check_budget_preadd 1 "$line_bytes"; then
+      printf '%s\n' "$line"
+      TOTAL_LINES_READ=$((TOTAL_LINES_READ + 1))
+      TOTAL_BYTES_READ=$((TOTAL_BYTES_READ + line_bytes))
+      continue
+    fi
+
+    if [[ "$TRUNCATION_REASON" == "max_bytes" ]] && (( MAX_BYTES > 0 )); then
+      remaining_bytes=$((MAX_BYTES - TOTAL_BYTES_READ))
+      if (( remaining_bytes > 1 )) && (( MAX_LINES == 0 || TOTAL_LINES_READ + 1 <= MAX_LINES )); then
+        clipped="$(printf '%s' "$line" | truncate_utf8_bytes "$((remaining_bytes - 1))")"
+        if [[ -n "$clipped" ]]; then
+          clipped_bytes=$(byte_len "${clipped}"$'\n')
+          if (( TOTAL_BYTES_READ + clipped_bytes <= MAX_BYTES )); then
+            printf '%s\n' "$clipped"
+            TOTAL_LINES_READ=$((TOTAL_LINES_READ + 1))
+            TOTAL_BYTES_READ=$((TOTAL_BYTES_READ + clipped_bytes))
+          fi
+        fi
+      fi
+    fi
+
+    return 1
+  done <<< "$text"
+
+  return 0
+}
+
 file_bytes() {
   if stat -c %s "$1" 2>/dev/null; then
     return
@@ -862,7 +896,7 @@ fi
             h="$(printf '%s' "$engine_json" | python3 -c "import json,sys; d=json.load(sys.stdin)['file']; print(d.get('dimensions',{}).get('height','?'))" 2>/dev/null || echo "?")"
             orig_sz="$(printf '%s' "$engine_json" | python3 -c "import json,sys; d=json.load(sys.stdin)['file']; print(d.get('original_size','?'))" 2>/dev/null || echo "?")"
             tok_est="$(printf '%s' "$engine_json" | python3 -c "import json,sys; d=json.load(sys.stdin)['file']; print(d.get('tokens_estimate','?'))" 2>/dev/null || echo "?")"
-            echo "📷 ${fmt} ${w}×${h} — ${orig_sz} bytes (~${tok_est} tokens)"
+            emit_media_pretty_budgeted_text "📷 ${fmt} ${w}×${h} — ${orig_sz} bytes (~${tok_est} tokens)" || true
             ;;
         image)
             local fmt w h orig_sz tok_est
@@ -871,7 +905,7 @@ fi
             h="$(printf '%s' "$engine_json" | python3 -c "import json,sys; d=json.load(sys.stdin)['file']; print(d.get('dimensions',{}).get('height','?'))" 2>/dev/null || echo "?")"
             orig_sz="$(printf '%s' "$engine_json" | python3 -c "import json,sys; d=json.load(sys.stdin)['file']; print(d.get('original_size','?'))" 2>/dev/null || echo "?")"
             tok_est="$(printf '%s' "$engine_json" | python3 -c "import json,sys; d=json.load(sys.stdin)['file']; print(d.get('tokens_estimate','?'))" 2>/dev/null || echo "?")"
-            echo "📷 ${fmt} ${w}×${h} — ${orig_sz} bytes (~${tok_est} tokens) [base64 suppressed in pretty mode; use -o json]"
+            emit_media_pretty_budgeted_text "📷 ${fmt} ${w}×${h} — ${orig_sz} bytes (~${tok_est} tokens) [base64 suppressed in pretty mode; use -o json]" || true
             ;;
             pdf-text)
                 local pg_count tok_est text_body
@@ -881,25 +915,7 @@ fi
                 echo "--- file: $path ($pg_count pages, $tok_est tokens) ---"
                 if [[ -n "$text_body" ]]; then
                     local _media_pretty_truncated=0
-                    if (( MAX_LINES > 0 )); then
-                        local _line_count
-                        _line_count=$(printf '%s' "$text_body" | wc -l)
-                        if (( _line_count > MAX_LINES )); then
-                            text_body=$(printf '%s' "$text_body" | head -n "$MAX_LINES")
-                            _media_pretty_truncated=1
-                            mark_truncated "max_lines"
-                        fi
-                    fi
-                    if (( MAX_BYTES > 0 )); then
-                        local _text_bytes
-                        _text_bytes="$(byte_len "$text_body")"
-                        if (( _text_bytes > MAX_BYTES )); then
-                            text_body="$(printf '%s' "$text_body" | truncate_utf8_bytes "$MAX_BYTES")"
-                            _media_pretty_truncated=1
-                            mark_truncated "max_bytes"
-                        fi
-                    fi
-                    printf '%s\n' "$text_body"
+                    emit_media_pretty_budgeted_text "$text_body" || _media_pretty_truncated=1
                     (( _media_pretty_truncated )) && echo "... [truncated; raise --max-lines/--max-bytes for full body]"
                 fi
                 ;;
@@ -911,10 +927,10 @@ fi
             img_count="$(printf '%s' "$engine_json" | python3 -c "import json,sys; d=json.load(sys.stdin)['file']; print(d.get('embedded_image_count','?'))" 2>/dev/null || echo "?")"
             pw="$(printf '%s' "$engine_json" | python3 -c "import json,sys; d=json.load(sys.stdin)['file']; ps=d.get('page_size',{}); print(ps.get('width','?'))" 2>/dev/null || echo "?")"
             ph="$(printf '%s' "$engine_json" | python3 -c "import json,sys; d=json.load(sys.stdin)['file']; ps=d.get('page_size',{}); print(ps.get('height','?'))" 2>/dev/null || echo "?")"
-            echo "📄 PDF — $pg_count pages (${pw}×${ph}), encrypted: $enc, has_text: $has_text, $img_count embedded images"
+            emit_media_pretty_budgeted_text "📄 PDF — $pg_count pages (${pw}×${ph}), encrypted: $enc, has_text: $has_text, $img_count embedded images" || true
             ;;
         pdf-pages)
-            echo "📄 PDF rendered pages — JSON mode required to receive base64. Use -o json."
+            emit_media_pretty_budgeted_text "📄 PDF rendered pages — JSON mode required to receive base64. Use -o json." || true
             ;;
         *)
             echo "fread: media type '$media_type': $path" >&2
@@ -983,9 +999,16 @@ rm -f "$payload_file"
 return 0
 fi
 
-    # Spawn detached — never blocks fread exit
-    setsid bash -c 'node "$0" < "$1" >>"$HOME/.cache/fsuite/memory-ingest.log" 2>&1; status=$?; if (( status != 0 )); then echo "$(date -Iseconds) [memory-ingest] helper exit code $status" >>"$HOME/.cache/fsuite/memory-ingest.log"; fi; rm -f "$1"' \
-        "$ingest_helper" "$payload_file" </dev/null >/dev/null 2>&1 &
+    # Spawn detached — never blocks fread exit. If setsid is unavailable,
+    # still launch the helper so the child can clean up the payload file.
+    if command -v setsid >/dev/null 2>&1; then
+        setsid bash -c 'node "$0" < "$1" >>"$HOME/.cache/fsuite/memory-ingest.log" 2>&1; status=$?; if (( status != 0 )); then echo "$(date -Iseconds) [memory-ingest] helper exit code $status" >>"$HOME/.cache/fsuite/memory-ingest.log"; fi; rm -f "$1"' \
+            "$ingest_helper" "$payload_file" </dev/null >/dev/null 2>&1 &
+    else
+        echo "$(date -Iseconds) [memory-ingest] setsid not found; launching helper without new session" >> "$HOME/.cache/fsuite/memory-ingest.log" 2>/dev/null || true
+        bash -c 'node "$0" < "$1" >>"$HOME/.cache/fsuite/memory-ingest.log" 2>&1; status=$?; if (( status != 0 )); then echo "$(date -Iseconds) [memory-ingest] helper exit code $status" >>"$HOME/.cache/fsuite/memory-ingest.log"; fi; rm -f "$1"' \
+            "$ingest_helper" "$payload_file" </dev/null >/dev/null 2>&1 &
+    fi
 
     return 0
 }
@@ -1245,6 +1268,8 @@ compute_next_hint() {
       NEXT_HINT="git diff | fread --from-stdin --stdin-format=unified-diff -B $BEFORE -A $AFTER"
       ;;
   esac
+
+  return 0
 }
 
 render_pretty() {

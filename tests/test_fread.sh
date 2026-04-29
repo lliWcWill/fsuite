@@ -1903,6 +1903,86 @@ fail "Memory ingest helper failure log should preserve helper exit status" "Log:
 rm -rf "$test_home"
 }
 
+test_media_ingest_missing_setsid_still_cleans_payload() {
+local fake_dir fake_bin test_home payload_dir media_file log_file rc=0
+fake_dir="${TEST_DIR}/fake-no-setsid"
+fake_bin="${TEST_DIR}/fake-no-setsid-bin"
+test_home="$(mktemp -d)"
+payload_dir="${TEST_DIR}/payloads-no-setsid"
+log_file="${test_home}/.cache/fsuite/memory-ingest.log"
+mkdir -p "$fake_dir/mcp" "$fake_bin" "${test_home}/.cache/fsuite" "$payload_dir"
+cp "${FREAD}" "${fake_dir}/fread"
+chmod +x "${fake_dir}/fread"
+cat > "${fake_dir}/fread-media.py" <<'PY'
+#!/usr/bin/env python3
+import json
+import sys
+
+if sys.argv[1] == "probe":
+    print(json.dumps({"detected": "image"}))
+elif sys.argv[1] == "image":
+    print(json.dumps({
+        "type": "image",
+        "file": {
+            "base64": "AA==",
+            "mime_type": "image/png",
+            "format": "png",
+            "original_size": 8,
+            "dimensions": {"width": 1, "height": 1},
+            "resized": False,
+            "tokens_estimate": 1,
+        },
+        "backend": "test",
+        "ingest_payload": {"body": "test image", "metadata": {"format": "png"}},
+    }, separators=(",", ":")))
+else:
+    print(json.dumps({"type": "error", "code": "BAD_TEST", "error": "bad subcommand"}))
+    sys.exit(1)
+PY
+chmod +x "${fake_dir}/fread-media.py"
+cat > "${fake_dir}/mcp/memory-ingest.js" <<'JS'
+process.stdin.resume();
+process.stdin.on('end', () => process.exit(0));
+JS
+cat > "${fake_bin}/node" <<'SH'
+#!/usr/bin/env bash
+cat >/dev/null
+exit 0
+SH
+chmod +x "${fake_bin}/node"
+media_file="${TEST_DIR}/no-setsid.png"
+printf '\x89PNG\r\n\x1a\n' > "$media_file"
+
+(
+command() {
+  if [[ "${1:-}" == "-v" && "${2:-}" == "setsid" ]]; then
+    return 1
+  fi
+  builtin command "$@"
+}
+export -f command
+HOME="$test_home" TMPDIR="$payload_dir" PATH="${fake_bin}:$PATH" FSUITE_TELEMETRY=0 FSUITE_MEMORY_INGEST=1 \
+  "${fake_dir}/fread" "$media_file" -o json >/dev/null 2>&1
+) || rc=$?
+if (( rc != 0 )); then
+fail "Missing setsid fallback should not fail fread" "exit=$rc"
+rm -rf "$test_home"
+return
+fi
+
+for _ in $(seq 1 20); do
+  if [[ -f "$log_file" ]] && grep -q "setsid not found" "$log_file" && ! find "$payload_dir" -type f | grep -q .; then
+    pass "Missing setsid fallback logs warning and cleans ingest payload"
+    rm -rf "$test_home"
+    return
+  fi
+  sleep 0.1
+done
+
+fail "Missing setsid fallback should clean payload file" "Log: $(cat "$log_file" 2>/dev/null || true); payloads: $(find "$payload_dir" -type f -print | tr '\n' ' ')"
+rm -rf "$test_home"
+}
+
 # O. Missing ingest helper — exercised manually in Phase 7; skip here.
 # The _media_maybe_ingest function locates the helper via a hard path
 # (${_FSUITE_SCRIPT_DIR}/mcp/memory-ingest.js) with no env override,
@@ -1953,6 +2033,62 @@ test_media_pdf_pretty_max_lines() {
     return
   fi
   pass "PDF pretty --max-lines 3 truncates body and emits marker"
+}
+
+test_media_pdf_pretty_uses_remaining_line_budget() {
+local fake_dir text_file pdf_file output rc=0
+fake_dir="${TEST_DIR}/fake-pdf-remaining-lines"
+mkdir -p "$fake_dir"
+cp "${FREAD}" "${fake_dir}/fread"
+chmod +x "${fake_dir}/fread"
+cat > "${fake_dir}/fread-media.py" <<'PY'
+#!/usr/bin/env python3
+import json
+import sys
+
+if sys.argv[1] == "probe":
+    print(json.dumps({"detected": "pdf"}))
+elif sys.argv[1] == "pdf":
+    print(json.dumps({
+        "type": "pdf-text",
+        "file": {
+            "text": "pdf-one\npdf-two\npdf-three\npdf-four",
+            "page_count": 1,
+            "pages_returned": [1],
+            "truncated": False,
+            "tokens_estimate": 4,
+        },
+        "backend": "test",
+    }, separators=(",", ":")))
+else:
+    print(json.dumps({"type": "error", "code": "BAD_TEST", "error": "bad subcommand"}))
+    sys.exit(1)
+PY
+chmod +x "${fake_dir}/fread-media.py"
+text_file="${TEST_DIR}/budget-before-pdf.txt"
+pdf_file="${TEST_DIR}/budget-after-text.pdf"
+printf 'alpha\nbeta\n' > "$text_file"
+printf '%b' '%PDF-1.4\n\0' > "$pdf_file"
+
+output=$(printf '%s\n%s\n' "$text_file" "$pdf_file" | FSUITE_TELEMETRY=0 FSUITE_MEMORY_INGEST=0 \
+  "${fake_dir}/fread" --from-stdin --stdin-format=paths --max-lines 4 2>/dev/null) || rc=$?
+if (( rc != 0 )); then
+fail "PDF pretty remaining line budget should exit 0" "exit=$rc"
+return
+fi
+if [[ "$output" == *"pdf-three"* ]] || [[ "$output" == *"pdf-four"* ]]; then
+fail "PDF pretty should cap body against remaining global line budget" "$output"
+return
+fi
+if [[ "$output" != *"pdf-one"* ]] || [[ "$output" != *"pdf-two"* ]]; then
+fail "PDF pretty should use remaining line budget before truncating" "$output"
+return
+fi
+if [[ "$output" != *"truncated"* ]]; then
+fail "PDF pretty remaining line budget should mark truncation" "$output"
+return
+fi
+pass "PDF pretty uses remaining global line budget in stdin batches"
 }
 
 test_media_pdf_pretty_max_bytes_counts_utf8_bytes() {
@@ -2264,8 +2400,10 @@ run_test "Poppler pdftotext unexpected failure" test_media_poppler_extract_unexp
 run_test "PDF invalid backend" test_media_backend_force_invalid
 run_test "No-ingest flag" test_media_no_ingest_flag
 run_test "Ingest helper failure status log" test_media_ingest_logs_helper_failure_status
+run_test "Missing setsid ingest fallback" test_media_ingest_missing_setsid_still_cleans_payload
 run_test "PDF token budget truncation" test_media_pdf_token_budget_truncation
 run_test "PDF pretty --max-lines truncation" test_media_pdf_pretty_max_lines
+run_test "PDF pretty remaining line budget" test_media_pdf_pretty_uses_remaining_line_budget
 run_test "PDF pretty --max-bytes UTF-8 truncation" test_media_pdf_pretty_max_bytes_counts_utf8_bytes
 run_test "Engine standalone probe" test_media_python_engine_standalone
 
