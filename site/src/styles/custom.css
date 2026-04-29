@@ -95,8 +95,12 @@
 
 /* ---------- 3. BASE TYPOGRAPHY ---------- */
 html {
+  /* Default to dark for the CAVE theme; light theme override below. */
   color-scheme: dark;
   font-family: var(--sl-font);
+}
+[data-theme='light'] {
+  color-scheme: light;
 }
 body {
   font-family: var(--sl-font);
@@ -1608,7 +1612,8 @@ starlight-tabs [role="tab"][aria-selected="true"] {
   .fs-strip { grid-template-columns: repeat(2, 1fr); }
   .fs-strip-cell:nth-child(2n) { border-right: none; }
   .fs-strip-cell { border-bottom: 1px solid var(--sl-color-hairline); }
-  .fs-strip-cell:nth-last-child(-n+2) { border-bottom: none; }
+  .fs-strip-cell:nth-last-child(1) { border-bottom: none; }
+  .fs-strip-cell:nth-last-child(2):nth-child(odd) { border-bottom: none; }
 }
 
 /* ---------- 38. CHAIN DISPLAY (lightbulb page) ---------- */
@@ -1722,3 +1727,19 @@ starlight-tabs [role="tab"][aria-selected="true"] {
   background: var(--sl-color-gray-7);
 }
 .fs-stack-carrier b { color: var(--sl-color-gray-3); }
+
+/* ---------- 39. ACCESSIBILITY: REDUCED-MOTION FALLBACK ---------- */
+/* Honour the user's motion preference (System Settings → Accessibility →
+   Reduce Motion). Disables non-essential animations + transitions across the
+   site so motion-sensitive users don't get the page-actions menu fade-in,
+   strip pulse, or any future keyframe-driven decoration. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

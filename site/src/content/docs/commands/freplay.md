@@ -41,8 +41,8 @@ freplay record auth-seam \
 freplay show auth-seam
 freplay show auth-seam -o json
 
-# List cases that have a replay chain
-freplay list -o json
+# Show the recorded chain for a specific case
+freplay list auth-seam -o json
 ```
 
 ## Help output

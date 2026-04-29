@@ -31,9 +31,9 @@ sidebar:
 
 `fedit` has analogous functionality (`fedit --create`, `fedit --replace-file`) for CLI users without MCP — but if you're already on the MCP transport, `fwrite` is one call instead of two flags.
 
-## Help output
+## Usage notes
 
-The content below is the **live** `--help` output of `fwrite`, captured at build time from the tool binary itself. It cannot drift from the source — regenerating the docs regenerates this section.
+The block below is the script header from the `fwrite` source — usage, flags, and exit codes documented inline. (Unlike most fsuite tools, `fwrite`'s primary surface is the MCP tool definition, not a `--help` flag, so this section captures the script comments rather than runtime help text.)
 
 ```text
 # modifications. This is the "create" counterpart to fedit's "modify."

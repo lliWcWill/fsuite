@@ -101,7 +101,7 @@ Flag values aren't analytical signal; flag *presence* is. Sanitizing values prot
 
 ## Storage shape
 
-```
+```text
 ~/.fsuite/
 ├── telemetry.jsonl          ← append-only event log (raw)
 ├── telemetry.db             ← SQLite (built by fmetrics import)

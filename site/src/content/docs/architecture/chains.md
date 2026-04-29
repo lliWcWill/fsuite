@@ -30,9 +30,9 @@ The rule: **producers** output paths, **consumers** read paths from stdin.
 | `fread` | `--from-stdin --stdin-format=paths` | up to `--max-files` |
 | `fedit` | `--targets-file -` | batch patches |
 
-### Non-pipe tools (arg-based)
+### Arg-only endpoints (chain termini)
 
-`fread`, `fedit`, `ftree`, `fprobe`, `fcase`, `freplay`, `fmetrics` take arguments, not stdin pipe lists. They sit at chain endpoints, not in the middle.
+`ftree`, `fprobe`, `fcase`, `freplay`, `fmetrics` take arguments only — they don't accept piped path lists, so they sit at chain endpoints, not in the middle. The stdin-capable consumers above (`fcontent`, `fmap`, `fread`, `fedit`) can be in the middle of a chain *or* at an endpoint depending on whether you feed them stdin.
 
 <div class="fs-mcp-note">
   <h4>⚠ MCP CALLERS — SEQUENTIAL LIMIT</h4>

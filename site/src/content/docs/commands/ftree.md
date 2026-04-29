@@ -28,7 +28,7 @@ Use it once at the start of every investigation. Use `--snapshot` when you want 
 
 ## Canonical chains
 
-`ftree` doesn't pipe (its output is a tree, not a list of paths) — it sits at the start of a chain to give context, then you act on what it shows.
+`ftree` doesn't read from stdin — it's a chain start that gives context, not a middle filter. But it does emit machine-readable output via `-o paths` and `-o json` for downstream consumption.
 
 ```bash
 # Default scout — 3-level tree, sensible excludes

@@ -22,7 +22,7 @@ sidebar:
   </div>
 </div>
 
-`fsearch` finds files by name or glob. It's the pipe currency producer — `-o paths` gives you one file path per line, ready to feed `fmap`, `fcontent`, or `fread`. Auto-detects `fd` for speed and falls back to `find`.
+`fsearch` finds files by name or glob. It's the pipe currency producer — `-o paths` gives you one file path per line, ready to feed `fmap` or `fcontent` directly. To pipe into `fread`, use `fread --from-stdin --stdin-format=paths` since `fread` takes paths from stdin only when those flags are set. Auto-detects `fd` for speed and falls back to `find`.
 
 Bare words auto-expand: `fsearch log /var/log` becomes `*.log`. Use this when you know what file pattern you want; use `fcontent` when you know what's inside the file but not its name.
 

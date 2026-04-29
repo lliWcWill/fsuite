@@ -22,7 +22,7 @@ sidebar:
   </div>
 </div>
 
-`fbash` is `bash` with the same agent-aware budget discipline as the rest of fsuite. Output is capped, classified (stdout vs stderr vs status), and session state persists between calls so you can `cd`, set environment variables, and chain commands across invocations.
+`fbash` is `bash` with the same agent-aware budget discipline as the rest of fsuite. Output is capped, classified (stdout vs stderr vs status), and the working directory + fcase/session state persist between calls. Note: exported environment variables do **not** persist across `fbash` invocations — each call starts a fresh shell with `cd` restored.
 
 **The MCP escape hatch.** If you're calling fsuite tools through the MCP server, every call is sequential — MCP doesn't pipe. But `fbash` runs a real shell, which means real Unix pipes work inside it. Wrap your chain in one `fbash` call and get full pipeline speed back, even from MCP-only agents.
 
@@ -37,9 +37,9 @@ fbash "fsearch -o paths '*.py' src \
        | fcontent -o paths 'class' \
        | fmap -o json"
 
-# Stateful session — cd persists to the next call
-fbash "cd /project && export DEBUG=1"
-fbash "pwd && env | grep DEBUG"
+# Stateful session — cd persists to the next call (env vars do not)
+fbash "cd /project"
+fbash "pwd"   # → /project (cd was preserved)
 
 # Long-running with cap
 fbash "find / -name '*.log' 2>/dev/null"   # output capped automatically

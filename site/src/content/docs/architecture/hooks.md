@@ -35,21 +35,21 @@ The hook does not need to know anything about fsuite. It just needs to refuse th
 Add to `~/.claude/settings.json`:
 
 ```json
-\{
-  "hooks": \{
+{
+  "hooks": {
     "PreToolUse": [
-      \{
+      {
         "matcher": "Read",
         "hooks": [
-          \{
+          {
             "type": "command",
             "command": "echo 'Use fsuite fread instead of native Read. Use fsuite structured reads with symbol/range control. Example: fread --symbol NAME path' >&2; exit 2"
-          \}
+          }
         ]
-      \}
+      }
     ]
-  \}
-\}
+  }
+}
 ```
 
 Apply the same pattern to `Write`, `Edit`, `Grep`, and `Glob`:

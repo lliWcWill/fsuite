@@ -32,7 +32,7 @@ fsuite
 
 ```bash
 cd /path/to/any/project
-ftree --snapshot -o json . | head -50
+ftree --snapshot -o json .
 ```
 
 `ftree` returns the full tree AND recon data (sizes, types, flags) in one call. Note how it caps output automatically — no 10,000-line floods. The `--snapshot` mode is what you want for an agent's "first look" because it gets the recon inventory plus the tree excerpt in a single envelope.

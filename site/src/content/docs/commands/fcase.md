@@ -47,7 +47,7 @@ fcase target add auth-seam \
 fmap -o json /project | fcase target import auth-seam
 
 # Import evidence from fread
-fread -o json /project --around "def auth" -A 20 \
+fread -o json /project/src/auth.py --around "def auth" -A 20 \
   | fcase evidence import auth-seam
 
 # Track and reject hypotheses
