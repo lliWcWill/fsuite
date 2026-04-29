@@ -10,7 +10,7 @@
  */
 
 import { execSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -65,24 +65,17 @@ function captureHelp(toolName) {
 
 /**
  * Build a markdown page for one tool.
+ *
+ * Preserves any handcrafted preamble above the `## Help output` heading
+ * (e.g. the round-4 drone-profile cards + canonical chains + monokai
+ * terminal samples). The auto-generated `## Help output` section + `## See
+ * also` are regenerated on every build so the help text stays in sync with
+ * the binary; everything above is treated as durable hand-edited content.
  */
-function buildPage(tool) {
+function buildPage(tool, outPath) {
   const helpText = captureHelp(tool.name);
-  const frontmatter = [
-    '---',
-    `title: ${tool.emoji} ${tool.title}`,
-    `description: ${tool.tagline}`,
-    `sidebar:`,
-    `  order: ${tool.order}`,
-    '---',
-  ].join('\n');
 
-  const body = `
-## ${tool.tagline}
-
-\`${tool.name}\` is part of the fsuite toolkit — a set of fourteen CLI tools built for AI coding agents.
-
-## Help output
+  const helpSection = `## Help output
 
 The content below is the **live** \`--help\` output of \`${tool.name}\`, captured at build time from the tool binary itself. It cannot drift from the source — regenerating the docs regenerates this section.
 
@@ -97,7 +90,35 @@ ${helpText}
 - [View source on GitHub](https://github.com/lliWcWill/fsuite/blob/master/${tool.name})
 `;
 
-  return frontmatter + '\n' + body;
+  // If a page already exists, preserve everything above `## Help output`
+  // (frontmatter + tagline H2 + intro paragraph + any round-4 preamble) and
+  // splice the regenerated help + see-also onto the bottom.
+  if (existsSync(outPath)) {
+    const existing = readFileSync(outPath, 'utf8');
+    const helpIdx = existing.indexOf('## Help output');
+    if (helpIdx > 0) {
+      return existing.slice(0, helpIdx) + helpSection;
+    }
+  }
+
+  // First-time generation: build the default frontmatter + tagline H2 + intro
+  const frontmatter = [
+    '---',
+    `title: ${tool.emoji} ${tool.title}`,
+    `description: ${tool.tagline}`,
+    `sidebar:`,
+    `  order: ${tool.order}`,
+    '---',
+  ].join('\n');
+
+  const intro = `
+## ${tool.tagline}
+
+\`${tool.name}\` is part of the fsuite toolkit — a set of fourteen CLI tools built for AI coding agents.
+
+`;
+
+  return frontmatter + intro + helpSection;
 }
 
 /**
@@ -110,8 +131,8 @@ function main() {
 
   let written = 0;
   for (const tool of TOOLS) {
-    const page = buildPage(tool);
     const outPath = join(OUT_DIR, `${tool.name}.md`);
+    const page = buildPage(tool, outPath);
     writeFileSync(outPath, page, 'utf8');
     written++;
     console.log(`  ✓ ${tool.name.padEnd(10)} → src/content/docs/commands/${tool.name}.md`);
