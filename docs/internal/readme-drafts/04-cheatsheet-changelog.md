@@ -1,6 +1,10 @@
 <!-- README OVERHAUL — SECTION 04 -->
 <!-- Quick Reference / Cheat Sheet, Output Formats, Testing, Changelog -->
-<!-- Generated 2026-03-29 — v2.3.0 -->
+<!-- Generated 2026-03-29 — v2.3.0; updated 2026-04-29 for v2.4.0 (media reading) -->
+<!-- See ../../../README.md for the canonical published version -->
+<!-- This draft is the source of truth for internal review and PR body assembly. -->
+<!-- Note: PRs #27, #30, #33, #34, #37 (April 10–29) collapsed into the consolidated changelog under v2.3.x → v2.4.0 narrative. -->
+<!-- See also: docs/EPISODE-3.md for narrative project history. -->
 
 ---
 
@@ -345,32 +349,83 @@ The full test harness lives in `tests/`. Run via the master runner:
 ./tests/run_all_tests.sh --verbose        # per-test output
 ```
 
-### Test matrix (v2.3.0)
+### Test matrix (v2.4.0)
 
 | Suite | File | Tests | Notes |
 |-------|------|-------|-------|
 | `fsearch` | `test_fsearch.sh` | 35 | Pattern normalization, backend fallback, output modes |
 | `fcontent` | `test_fcontent.sh` | 30 | rg passthrough, pipeline, caps |
 | `ftree` | `test_ftree.sh` | 48 | Recon, snapshot, JSON schema, depth |
-| `fmap` | `test_fmap.sh` | 80 | 18 languages, dedup, imports, Markdown |
-| `fread` | `test_fread.sh` | 42 | Range, head/tail, around, symbol, stdin modes |
+| `fmap` | `test_fmap.sh` | 80 | 50 languages (v2.3.x expansion), dedup, imports, Markdown |
+| `fread` | `test_fread.sh` | 84 | Range, head/tail, around, symbol, stdin, image/PDF media, budget skip, error contract |
+| `memory-ingest` | `test_memory_ingest.sh` | 4 | ShieldCortex helper: empty/malformed payload, missing config, timeout |
 | `fcase` | `test_fcase.sh` | 25 | Lifecycle, SQLite, import, handoff, busy-timeout |
 | `fedit` | `test_fedit.sh` | 38 | Dry-run, apply, symbol scope, batch, line-range |
-| `fmetrics` | `test_fmetrics.sh` | 20 | Import, stats, predict, clean |
+| `fmetrics` | `test_fmetrics.sh` | 20 | Import, stats, predict, clean, learning loop |
 | `fprobe` | `test_fprobe.sh` | 25 | scan, strings, window, binary formats, self-check |
 | `freplay` | `test_freplay.sh` | 14 | record, show, list, JSON schema |
 | `fs` | `test_fs.sh` | 18 | Unified dispatch, ranking, scope, JSON output |
 | `pipelines` | `test_pipelines.sh` | 22 | End-to-end cross-tool pipeline tests |
 | `mcp_rendering` | `test_mcp_rendering.sh` | 16 | Pixel-perfect MCP display, dev mode, ANSI |
+| `mcp_parity` | `mcp/structured-parity.test.mjs` | 45 | MCP envelope shape, schema flags, error path, media content blocks |
 | `install` | `test_install.sh` | 12 | Installer, PATH, self-check, version |
 
-**Total: ~425 tests across 14 suites.** All suites must pass green before any release.
+**Total: ~516 tests across 16 suites.** All suites must pass green before any release.
 
 Exit codes: `0` = all pass, `1` = failures (count printed), `2` = suite not found.
 
 ---
 
 ## Changelog
+
+### v2.4.0 (2026-04-29)
+
+`fread` ships first-class image and PDF reading. Auto-detects PNG/JPEG/GIF/WEBP and PDF inputs, routes through a Python media engine, emits proper MCP image content blocks per the 2025-11-25 spec. Plus consolidated April PR work: `fmap` 50-language support, `fbash` structured MCP renderer + async background jobs, CLI header bloat stripped (-50% line count), `fmetrics` learning-loop telemetry, `fprobe` binary-param escape decoding.
+
+**`fread` media (PR #38):**
+- **Images**: PNG/JPEG/GIF/WEBP with auto-resize loop targeting a token budget. Pillow primary, stdlib fallback.
+- **PDFs**: Text extraction (default), page render mode (`--render --pages 1:5`, capped at 10 pages without `--max-pages`), metadata mode (`--meta-only`).
+- **Backends**: PyMuPDF primary, Poppler fallback. Engine probes both at import time.
+- **Memory ingest**: Successful media reads write a structured `ingest_payload` to ShieldCortex via a detached, best-effort spawn (3-second timeout, never blocks `fread`). Opt out via `FSUITE_MEMORY_INGEST=0` or `--no-ingest`.
+- **New flags**: `--render`, `--pages`, `--meta-only`, `--no-resize`, `--max-pages`, `--max-tokens`, `--no-ingest`.
+
+**MCP adapter:**
+- New `formatExecError` helper extracted from `cli()` — error paths no longer respawn `fread` on failure (PR #38 round-2 fix).
+- `fread` MCP schema exposes all 7 media flags. Agents drive image/PDF reading directly.
+- Media files emit MCP `{type:"image", data, mimeType}` content blocks (top-level, not nested in text).
+
+**Status contract fixes (`fread`):**
+- Budget-blocked media now records `files[].status="budget_skipped"` (was incorrectly `read`); skips memory ingest.
+- Engine errors (`BACKEND_MISSING`, `INVALID_PAGE_RANGE`, `PDF_ENCRYPTED`) now record `files[].status="media_error"` alongside `errors[]`.
+
+**`fmap` (PR #27, #30):**
+- Expanded from 18 → 50 languages. Test suite green across all.
+- Async MCP background-job support for fmap on large repos.
+
+**`fbash` (PR #27, #33):**
+- Structured colored MCP renderer (matches fbash CLI output exactly).
+- Background job support: `background:true`, `poll`, `list_jobs`. Token-budgeted output.
+
+**`fmetrics` (PR #37):**
+- Learning-loop telemetry. Combo recommendations, run-time prediction refinement, history queries by class/tool.
+
+**`fprobe` (PR #24):**
+- MCP layer now decodes escape sequences in binary `--pattern` and `--replacement` params. Lets agents target raw byte values without bash quoting headaches.
+
+**CLI rendering (PR #34):**
+- Header bloat stripped across all pretty renderers — ~50% line count reduction in MCP output, no semantic loss.
+
+**Optional dependencies (new):**
+- `python3-pil` (Pillow) — image read/resize
+- `pymupdf` — primary PDF backend
+- `poppler-utils` — PDF fallback (`pdftotext`, `pdftoppm`)
+
+**Tests:**
+- `test_fread.sh` expanded 42 → 84 (16 new media tests + budget skip + error contract regression test)
+- `test_memory_ingest.sh` (4 tests) added for ShieldCortex helper
+- `mcp/structured-parity.test.mjs` expanded to 45 (+ schema media flags + formatExecError envelope)
+
+---
 
 ### v2.3.0 (2026-03-29)
 

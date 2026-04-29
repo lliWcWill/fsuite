@@ -20,8 +20,8 @@ USAGE
   fsuite usage
 
 DESCRIPTION
-  fsuite is the suite-level guide for the twelve operational tools:
-    ftree, fsearch, fcontent, fmap, fread, fcase, fedit, fmetrics, freplay, fprobe, fs, fls
+fsuite is the suite-level guide for the fourteen operational tools:
+ftree, fls, fsearch, fcontent, fmap, fread, fcase, fedit, fwrite, fmetrics, freplay, fprobe, fbash, fs
 
   Use fsuite when you want the conceptual flow, tool roles, and headless
   operating pattern without digging through the README first.
@@ -36,25 +36,27 @@ print_help() {
   cat <<EOF
 fsuite ${VERSION}
 
-Twelve operational tools. One composable sensor suite.
+Fourteen operational tools. One composable sensor suite.
 
-  ftree     Scout the project once
-  fsearch   Find candidate files
-  fcontent  Confirm exact text across the narrowed set
-  fmap      Map symbols and structure
-  fread     Read the exact seam you care about
-  fcase     Preserve investigation state and hand off cleanly
-  fedit     Preview and apply surgical patches
-  fmetrics  Measure what happened and predict the next run
-  freplay   Record and replay derivation paths for investigations
-  fprobe    Reconn opaque files — binaries, bundles, packed assets
-  fs        One-call search: routes queries to fsearch/fcontent/fmap automatically
-  fls       Quick directory listing — thin ftree router (list, little tree, recon)
+ftree     Scout the project once
+fls       Quick directory listing — thin ftree router (list, little tree, recon)
+fsearch   Find candidate files by name / extension / glob
+fcontent  Confirm exact text across the narrowed set
+fmap      Map symbols and structure (50 languages)
+fread     Read the exact seam — text, image, or PDF (image/PDF via media engine)
+fcase     Preserve investigation state and hand off cleanly
+fedit     Preview and apply surgical patches
+fwrite    Create/overwrite files via fedit's mutation engine (MCP-only)
+fmetrics  Measure what happened, predict the next run, learning loop
+freplay   Record and replay derivation paths for investigations
+fprobe    Reconnoiter opaque files — binaries, bundles, packed assets
+fbash     Token-budgeted shell with classification + background jobs (MCP-native)
+fs        One-call search: routes queries to fsearch / fcontent / fmap automatically
 
 Canonical agent flow
 
-  ftree -> fsearch | fcontent -> fmap -> fread -> fcase -> fedit -> freplay -> fmetrics
-  Scout    Narrowing             Bridge   Read     Preserve  Change    Replay     Measure
+ftree -> fsearch | fcontent -> fmap -> fread -> fcase -> fedit -> freplay -> fmetrics
+Scout    Narrowing             Bridge   Read     Preserve  Change    Replay     Measure
 
 First-contact mindset
 
@@ -113,22 +115,50 @@ Tool roles
   fmap
     Structural map of symbols, imports, functions, types, and handoff seams.
 
-  fread
-    Bounded reads around lines, patterns, symbols, and diffs.
+fread
+Bounded reads around lines, patterns, symbols, and diffs. Auto-handles
+image (PNG/JPEG/GIF/WEBP) and PDF inputs via the media engine — text
+extraction, page render, or metadata-only modes.
 
-  fcase
-    Structured continuity for cases, evidence, hypotheses, and handoffs.
+fcase
+Structured continuity for cases, evidence, hypotheses, and handoffs.
 
-  fedit
-    Surgical patching with dry-run diffs, symbol shortcuts, preconditions, and batch mode.
+fedit
+Surgical patching with dry-run diffs, symbol shortcuts, preconditions,
+line-range mode, and batch targets-file support.
 
-  fmetrics
-    Telemetry import, stats, and prediction.
+fwrite
+MCP-only virtual tool. Routes through fedit's mutation engine for
+file creation and full-file replacement. No CLI surface.
 
-  freplay
-    Derivation replay ledger. Records exact fsuite command paths during
-    investigations so another agent can reproduce the derivation without
-    improvising. Shares fcase.db for case-linked provenance.
+fmetrics
+Telemetry import, stats, prediction, and learning-loop refinement
+(combo recommendations, run-time prediction, history queries).
+
+freplay
+Derivation replay ledger. Records exact fsuite command paths during
+investigations so another agent can reproduce the derivation without
+improvising. Shares fcase.db for case-linked provenance.
+
+fprobe
+Binary and opaque-file reconnaissance — strings extraction, byte
+pattern scan with offset context, raw byte-window reads. Python mmap
+engine, safe on multi-GB binaries.
+
+fbash
+MCP-only token-budgeted shell. Classifies commands (build, test,
+git, etc.), supports background jobs with poll/list, integrates with
+fcase event logging. No bare-shell CLI surface.
+
+fs
+Unified search orchestrator. Auto-classifies query intent (file, content,
+symbol, nav) and chains the right tools. Single entry point — agents
+should default to fs first for any search before reaching for the
+underlying primitives.
+
+fls
+Quick directory listing. Thin ftree router for list, little-tree, and
+recon modes. Use when you know the directory and want what's in it.
 EOF
 }
 
