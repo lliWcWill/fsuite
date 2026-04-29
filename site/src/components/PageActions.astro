@@ -26,11 +26,12 @@ const route = Astro.locals.starlightRoute;
 const entry = route?.entry;
 const slug = entry?.id?.replace(/\.(md|mdx)$/i, '') ?? '';
 const title = entry?.data?.title ?? '';
+const basePath = import.meta.env.BASE_URL;
 
 // Build URLs using the runtime origin so it works on lliwcwill.github.io,
 // localhost:4321, or any preview deployment.
-// We emit a relative `.md` URL so the script can resolve against window.location.
-const mdRelative = slug ? `/${slug}.md` : '';
+// Keep the path relative to Astro's configured base (for GitHub Pages /fsuite).
+const mdRelative = slug ? `${slug}.md` : 'index.md';
 
 // GitHub source URL — assumes master branch + the canonical path layout.
 // If the entry is `index.mdx`, the slug is empty; map back to the file.
@@ -43,6 +44,7 @@ const ghSourceUrl = `${ghBase}/${ghSourcePath}`;
   class="page-actions"
   data-page-actions
   data-md-relative={mdRelative}
+  data-base-path={basePath}
   data-page-title={title}
   data-gh-source={ghSourceUrl}
 >
@@ -149,6 +151,7 @@ const ghSourceUrl = `${ghBase}/${ghSourcePath}`;
 
   function init(root: HTMLElement) {
     const mdRelative = root.dataset.mdRelative ?? '';
+    const basePath = root.dataset.basePath ?? '/';
     const pageTitle = root.dataset.pageTitle ?? 'this page';
     const menu = root.querySelector<HTMLElement>('.page-actions__menu')!;
     const caret = root.querySelector<HTMLButtonElement>('[data-action="toggle-menu"]')!;
@@ -180,11 +183,9 @@ const ghSourceUrl = `${ghBase}/${ghSourcePath}`;
     };
 
     const buildMdUrl = (): string => {
-      // Resolve the relative .md path against the current origin + base path.
-      // window.location.pathname is e.g. /fsuite/architecture/mcp/ — strip
-      // trailing slash and append .md (or use the slug-based mdRelative).
       if (mdRelative) {
-        return new URL(mdRelative, window.location.origin + (window.location.pathname.split('/')[1] ? `/${window.location.pathname.split('/')[1]}` : '')).toString();
+        const normalizedBase = basePath.endsWith('/') ? basePath : `${basePath}/`;
+        return new URL(mdRelative.replace(/^\/+/, ''), new URL(normalizedBase, window.location.origin)).toString();
       }
       // Fallback: derive from current pathname.
       const path = window.location.pathname.replace(/\/$/, '');

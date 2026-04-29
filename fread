@@ -758,6 +758,8 @@ media_dispatch() {
         (( MEDIA_NO_RESIZE ))  && engine_args+=("--no-resize")
         if [[ -n "$MEDIA_MAX_TOKENS" ]]; then
             engine_args+=("--max-tokens" "$MEDIA_MAX_TOKENS")
+        elif (( NO_TRUNCATE == 1 )); then
+            engine_args+=("--max-tokens" "0")
         elif (( TOKEN_BUDGET > 0 )); then
             engine_args+=("--max-tokens" "$TOKEN_BUDGET")
         fi

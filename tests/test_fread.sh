@@ -1178,6 +1178,45 @@ fail "Image --token-budget should constrain media engine output" "$result"
 fi
 }
 
+test_media_image_no_truncate_disables_engine_cap() {
+local large_img="${TEST_DIR}/large-no-truncate.png"
+if ! python3 - "$large_img" <<'PY' >/dev/null 2>&1
+import sys
+from PIL import Image
+Image.new("RGB", (3000, 2000), color=(12, 34, 56)).save(sys.argv[1])
+PY
+then
+echo "  SKIP: Pillow not installed; cannot create large image fixture"
+return
+fi
+
+local output rc=0
+output=$(FSUITE_TELEMETRY=0 FSUITE_MEMORY_INGEST=0 "${FREAD}" "$large_img" --no-truncate -o json 2>/dev/null) || rc=$?
+if (( rc != 0 )); then
+fail "Image --no-truncate should exit 0" "exit=$rc"
+return
+fi
+local result
+result=$(printf '%s' "$output" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+f = d.get('media_payload', {}).get('file', {})
+ok = (
+    f.get('tokens_estimate') == 8000 and
+    f.get('dimensions') == {'width': 3000, 'height': 2000} and
+    f.get('resized') is False and
+    f.get('budget_exceeded') is False
+)
+print('OK' if ok else 'FAIL: tok=%s dims=%s resized=%s exceeded=%s' % (
+    f.get('tokens_estimate'), f.get('dimensions'), f.get('resized'), f.get('budget_exceeded')))
+" 2>/dev/null || echo "PARSE_ERROR")
+if [[ "$result" == "OK" ]]; then
+pass "Image --no-truncate forwards unlimited image budget"
+else
+fail "Image --no-truncate should not use engine default cap" "$result"
+fi
+}
+
 # C. Image meta-only
 test_media_image_meta_only() {
 local output rc=0
@@ -1859,6 +1898,7 @@ echo "== Media Reading (Phase 5) =="
 run_test "Image pretty no base64" test_media_image_pretty_no_base64
 run_test "Image JSON media_payload" test_media_image_json_has_media_payload
 run_test "Image global token budget" test_media_image_honors_global_token_budget
+run_test "Image no-truncate unlimited budget" test_media_image_no_truncate_disables_engine_cap
 run_test "Image meta-only" test_media_image_meta_only
 run_test "Image no-resize token refusal" test_media_image_no_resize_token_refusal
 run_test "PDF text default" test_media_pdf_text_default

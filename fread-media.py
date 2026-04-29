@@ -628,7 +628,7 @@ def cmd_image(args):
             with Image.open(path) as img:
                 orig_w, orig_h = img.size
             estimate = tokens_from_dimensions(orig_w, orig_h)
-            if estimate > args.max_tokens:
+            if args.max_tokens > 0 and estimate > args.max_tokens:
                 err(
                     f"Image dimensions {orig_w}x{orig_h} estimate to "
                     f"{estimate} tokens, exceeding budget ({args.max_tokens}). "
@@ -649,6 +649,33 @@ def cmd_image(args):
                     "dimensions": {"width": orig_w, "height": orig_h},
                     "resized": False,
                     "tokens_estimate": estimate,
+                },
+                "backend": BACKEND_IMAGE,
+                "ingest_payload": build_ingest_payload(
+                    path, fmt, "image", ingest_summary, {}
+                ),
+            })
+            return
+
+        if args.max_tokens <= 0:
+            with Image.open(path) as img:
+                orig_w, orig_h = img.size
+            with open(path, "rb") as f:
+                raw = f.read()
+            b64 = base64.b64encode(raw).decode("ascii")
+            estimate = tokens_from_dimensions(orig_w, orig_h)
+            ingest_summary = f"Image {fmt} {orig_w}x{orig_h}, {size} bytes"
+            emit({
+                "type": "image",
+                "file": {
+                    "base64": b64,
+                    "mime_type": mime_type,
+                    "format": fmt,
+                    "original_size": size,
+                    "dimensions": {"width": orig_w, "height": orig_h},
+                    "resized": False,
+                    "tokens_estimate": estimate,
+                    "budget_exceeded": False,
                 },
                 "backend": BACKEND_IMAGE,
                 "ingest_payload": build_ingest_payload(
@@ -690,7 +717,7 @@ def cmd_image(args):
     with open(path, "rb") as f:
         raw = f.read()
     estimate = tokens_from_b64_bytes_proxy(raw)
-    if estimate > args.max_tokens:
+    if args.max_tokens > 0 and estimate > args.max_tokens:
         err(
             f"Pillow not installed; cannot resize. "
             f"Token estimate {estimate} exceeds budget {args.max_tokens}. "
@@ -954,7 +981,7 @@ def main():
     )
     p_img.add_argument(
         "--max-tokens", type=int, default=6000, metavar="N",
-        help="Token budget for image output (default: 6000)",
+        help="Token budget for image output; 0 disables the cap (default: 6000)",
     )
 
     # pdf
