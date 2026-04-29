@@ -682,11 +682,11 @@ def cmd_image(args):
     with open(path, "rb") as f:
         raw = f.read()
     estimate = tokens_from_b64_bytes_proxy(raw)
-    if estimate > args.max_tokens and not args.no_resize:
+    if estimate > args.max_tokens:
         err(
             f"Pillow not installed; cannot resize. "
             f"Token estimate {estimate} exceeds budget {args.max_tokens}. "
-            "Install Pillow (pip install pillow) for resize support.",
+            "Install Pillow (pip install pillow) for resize support, or raise --max-tokens.",
             "BACKEND_MISSING",
         )
     w, h = _stdlib_dimensions(path, fmt)

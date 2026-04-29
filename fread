@@ -896,12 +896,12 @@ local payload_file
 payload_file="$(mktemp 2>/dev/null)" || return 0
 
 # Write ingest_payload to temp file
-printf '%s' "$engine_json" | python3 -c "
+    printf '%s' "$engine_json" | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
 ip = d.get('ingest_payload')
 if ip is not None:
-print(json.dumps(ip))
+    print(json.dumps(ip))
 " > "$payload_file" 2>/dev/null || { rm -f "$payload_file"; return 0; }
 
 if [[ -z "$ingest_helper" ]]; then
