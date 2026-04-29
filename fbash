@@ -97,6 +97,7 @@ QUIET=0
 TAG=""
 BACKGROUND=0
 TAIL_MODE=0
+NO_TRUNCATE=0
 OUTPUT="pretty"
 
 SESSION_CWD=""
@@ -219,6 +220,7 @@ OPTIONS
   --command <cmd>       Bash command to execute (or pass as positional arg)
   --max-lines <n>       Cap stdout to n lines (default: 200)
   --max-bytes <n>       Cap stdout to n bytes (default: 51200)
+  --no-truncate, --full Disable stdout line/byte caps
   --json                Parse command output as JSON
   --cwd <path>          Working directory (overrides session CWD)
   --timeout <secs>      Timeout in seconds (auto-tuned by class if omitted)
@@ -622,16 +624,35 @@ start_background_job() {
 
   # Build timeout command if available (respecting TIMEOUT)
   local timeout_cmd=""
-  if [[ -n "${TIMEOUT:-}" ]] && has timeout; then
+  if [[ "${TIMEOUT:-}" =~ ^[1-9][0-9]*$ ]] && has timeout; then
     timeout_cmd="timeout ${TIMEOUT}s "
   fi
 
-  # Spawn background process with env and timeout support
-  (
-    cd "$resolved_cwd" 2>/dev/null || true
-    ${timeout_cmd}bash -c "${env_prefix}${cmd}" > "$JOBS_DIR/${job_id}.out" 2> "$JOBS_DIR/${job_id}.err"
-    echo $? > "$JOBS_DIR/${job_id}.rc"
-  ) &
+  local runner="$JOBS_DIR/${job_id}.run"
+  local resolved_cwd_q out_q err_q rc_q pid_q bg_cmd_q
+  resolved_cwd_q=$(printf '%q' "$resolved_cwd")
+  out_q=$(printf '%q' "$JOBS_DIR/${job_id}.out")
+  err_q=$(printf '%q' "$JOBS_DIR/${job_id}.err")
+  rc_q=$(printf '%q' "$JOBS_DIR/${job_id}.rc")
+  pid_q=$(printf '%q' "$JOBS_DIR/${job_id}.pid")
+  bg_cmd_q=$(printf '%q' "${env_prefix}${cmd}")
+
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'printf "%%s\\n" "$$" > %s\n' "$pid_q"
+    printf 'cd %s 2>/dev/null || true\n' "$resolved_cwd_q"
+    printf '%sbash -c %s > %s 2> %s\n' "$timeout_cmd" "$bg_cmd_q" "$out_q" "$err_q"
+    printf 'printf "%%s\\n" "$?" > %s\n' "$rc_q"
+  } > "$runner"
+  chmod 700 "$runner" 2>/dev/null || true
+
+  # Spawn into a separate session when possible so long-running background jobs
+  # survive caller-side timeouts or SIGHUP from the launching shell.
+  if has setsid; then
+    setsid "$runner" </dev/null >/dev/null 2>&1 &
+  else
+    nohup "$runner" </dev/null >/dev/null 2>&1 &
+  fi
   echo $! > "$JOBS_DIR/${job_id}.pid"
 
   # Set permissions
@@ -754,9 +775,16 @@ else
         echo "fbash: job $job_id running (pid=$pid, elapsed=${elapsed_ms}ms)"
         echo "  Poll: fbash --command '__fbash_poll $job_id'"
       fi
-    else
-      if [[ "$OUTPUT" == "json" ]]; then
-        printf '{"tool":"fbash","version":"%s","command":"__fbash_poll %s","command_class":"internal","exit_code":1,"cwd":"%s","cwd_changed":false,"duration_ms":%d,"stdout":"","stderr":"process disappeared","stdout_lines":0,"stderr_lines":1,"truncated":false,"truncation_reason":null,"lines_total":0,"bytes_total":0,"token_estimate":0,"next_hint":null,"routing_suggestion":null,"metadata":{"files_modified":[],"background_job_id":"%s","background_status":"failed"},"warnings":[],"errors":["background process disappeared"]}\n' \
+      else
+        # Avoid a tiny race where the runner exits and writes the rc file just
+        # after kill -0 fails but before this poll renders the result.
+        sleep 0.05
+        if [[ -f "$rc_file" ]]; then
+          poll_background_job "$job_id"
+          return $?
+        fi
+        if [[ "$OUTPUT" == "json" ]]; then
+          printf '{"tool":"fbash","version":"%s","command":"__fbash_poll %s","command_class":"internal","exit_code":1,"cwd":"%s","cwd_changed":false,"duration_ms":%d,"stdout":"","stderr":"process disappeared","stdout_lines":0,"stderr_lines":1,"truncated":false,"truncation_reason":null,"lines_total":0,"bytes_total":0,"token_estimate":0,"next_hint":null,"routing_suggestion":null,"metadata":{"files_modified":[],"background_job_id":"%s","background_status":"failed"},"warnings":[],"errors":["background process disappeared"]}\n' \
           "$VERSION" "$job_id" "${RESOLVED_CWD:-$PWD}" "$elapsed_ms" "$job_id"
       else
         echo "fbash: job $job_id failed (process disappeared)"
@@ -847,7 +875,11 @@ ${cmd}
 "
 
   if has timeout; then
-    timeout "${resolved_timeout}s" bash -c "$shell_script" > "$stdout_file" 2> "$stderr_file" || exit_code=$?
+    if [[ "$resolved_timeout" =~ ^[1-9][0-9]*$ ]]; then
+      timeout "${resolved_timeout}s" bash -c "$shell_script" > "$stdout_file" 2> "$stderr_file" || exit_code=$?
+    else
+      bash -c "$shell_script" > "$stdout_file" 2> "$stderr_file" || exit_code=$?
+    fi
   else
     bash -c "$shell_script" > "$stdout_file" 2> "$stderr_file" || exit_code=$?
   fi
@@ -906,8 +938,11 @@ budget_output() {
   local truncated="false"
   local truncation_reason=""
 
+  [[ "$max_lines" =~ ^[0-9]+$ ]] || max_lines=0
+  [[ "$max_bytes" =~ ^[0-9]+$ ]] || max_bytes=0
+
   # Line budget
-  if (( total_lines > max_lines )); then
+  if (( max_lines > 0 && total_lines > max_lines )); then
     truncated="true"
     truncation_reason="max_lines"
     if (( use_tail )); then
@@ -920,7 +955,7 @@ budget_output() {
   fi
 
   # Byte budget
-  if (( total_bytes > max_bytes )); then
+  if (( max_bytes > 0 && total_bytes > max_bytes )); then
     truncated="true"
     truncation_reason="max_bytes"
     if (( use_tail )); then
@@ -1340,6 +1375,10 @@ while [[ $# -gt 0 ]]; do
       MAX_BYTES="$2"; shift 2
       _TELEM_FLAGS+=" --max-bytes $MAX_BYTES"
       ;;
+    --no-truncate|--full)
+      NO_TRUNCATE=1; shift
+      _TELEM_FLAGS+=" --no-truncate"
+      ;;
     --json)
       JSON_MODE=1; shift
       _TELEM_FLAGS+=" --json"
@@ -1437,6 +1476,23 @@ if (( JSON_MODE )); then
   WARNINGS+=("--json flag is reserved for future use; output format unchanged. Use -o json for JSON envelope.")
 fi
 
+if [[ -n "$TIMEOUT" && ! "$TIMEOUT" =~ ^[0-9]+$ ]]; then
+  die "Invalid --timeout: $TIMEOUT (expected non-negative integer seconds)"
+fi
+
+if [[ -n "$MAX_LINES" && ! "$MAX_LINES" =~ ^[0-9]+$ ]]; then
+  die "Invalid --max-lines: $MAX_LINES (expected non-negative integer)"
+fi
+
+if [[ -n "$MAX_BYTES" && ! "$MAX_BYTES" =~ ^[0-9]+$ ]]; then
+  die "Invalid --max-bytes: $MAX_BYTES (expected non-negative integer)"
+fi
+
+if (( NO_TRUNCATE == 1 )); then
+  MAX_LINES=0
+  MAX_BYTES=0
+fi
+
 # ── Main ─────────────────────────────────────────────────────────
 
 ensure_session_dir
@@ -1474,13 +1530,11 @@ fi
 # --- External command path (skipped for internal commands) ---
 
 if (( ! IS_INTERNAL )); then
-  # Auto-tune timeout from command class if not set
-  if [[ -z "$TIMEOUT" ]]; then
+  # Auto-tune timeout from command class for foreground calls only. Background
+  # jobs run until completion unless the caller explicitly passes --timeout.
+  if [[ -z "$TIMEOUT" && "$BACKGROUND" -eq 0 ]]; then
     TIMEOUT=$(default_timeout_for_class "$CMD_CLASS")
   fi
-
-  # Cap timeout at 300s
-  (( TIMEOUT > 300 )) && TIMEOUT=300
 
   # Auto-tail for build/test/install/lint if not explicitly set
   if (( ! TAIL_MODE )) && auto_tail_class "$CMD_CLASS"; then

@@ -191,6 +191,28 @@ test_max_lines_truncation() {
   fi
 }
 
+test_no_truncate_overrides_output_budgets() {
+  local bigfile="${TEST_DIR}/big-full.txt"
+  for i in $(seq 1 500); do
+    echo "line $i of 500"
+  done > "$bigfile"
+
+  fbash_json --command "cat ${bigfile}" --max-lines 10 --max-bytes 100 --no-truncate
+
+  local truncated stdout stdout_lines lines_total
+  truncated=$(jraw truncated)
+  stdout=$(jfield stdout)
+  stdout_lines=$(jraw stdout_lines)
+  lines_total=$(jraw lines_total)
+
+  if [[ "$truncated" == "false" ]] && [[ "$lines_total" == "500" ]] && (( stdout_lines >= 499 )) && [[ "$stdout" == *"line 500 of 500"* ]]; then
+    pass "no_truncate: output budgets disabled and full stdout returned"
+  else
+    fail "no_truncate: expected full untruncated stdout" \
+         "Got truncated=$truncated, stdout_lines=$stdout_lines, lines_total=$lines_total, stdout_tail='${stdout: -80}'"
+  fi
+}
+
 # ============================================================================
 # 8. Tail Mode
 # ============================================================================
@@ -492,6 +514,108 @@ test_background_metadata() {
   fi
 }
 
+test_zero_timeout_disables_foreground_timeout() {
+  fbash_json --command 'sleep 0.2; echo zero_timeout_ok' --timeout 0
+
+  local exit_code stdout
+  exit_code=$(jraw exit_code)
+  stdout=$(jfield stdout)
+
+  if [[ "$exit_code" == "0" && "$stdout" == "zero_timeout_ok" ]]; then
+    pass "zero_timeout: --timeout 0 disables foreground timeout wrapper"
+  else
+    fail "zero_timeout: expected command to complete without timeout" \
+      "exit_code=${exit_code:-<empty>} stdout=${stdout:-<empty>} out=$FBASH_OUT"
+  fi
+}
+
+test_background_has_no_default_timeout_but_respects_explicit_timeout() {
+  fbash_json --background --command 'sleep 0.2; echo bg_no_default_timeout'
+
+  local job_id
+  job_id=$(echo "$FBASH_OUT" | jq -r '.metadata.background_job_id // empty' 2>/dev/null)
+  if [[ -z "$job_id" ]]; then
+    fail "background_no_default_timeout: background job did not start" "out=$FBASH_OUT"
+    return
+  fi
+
+  sleep 0.3
+  fbash_json --command "__fbash_poll $job_id"
+
+  local exit_code stdout
+  exit_code=$(jraw exit_code)
+  stdout=$(jfield stdout)
+  if [[ "$exit_code" == "0" && "$stdout" == "bg_no_default_timeout" ]]; then
+    pass "background_no_default_timeout: background job completed without implicit timeout"
+  else
+    fail "background_no_default_timeout: expected completed background job" \
+      "exit_code=${exit_code:-<empty>} stdout=${stdout:-<empty>} out=$FBASH_OUT"
+    return
+  fi
+
+  fbash_json --background --timeout 1 --command 'sleep 2'
+  job_id=$(echo "$FBASH_OUT" | jq -r '.metadata.background_job_id // empty' 2>/dev/null)
+  if [[ -z "$job_id" ]]; then
+    fail "background_explicit_timeout: background job did not start" "out=$FBASH_OUT"
+    return
+  fi
+
+  sleep 1.3
+  fbash_json --command "__fbash_poll $job_id"
+  exit_code=$(jraw exit_code)
+  if [[ "$exit_code" == "124" ]]; then
+    pass "background_explicit_timeout: explicit --timeout is still enforced"
+  else
+    fail "background_explicit_timeout: expected timeout exit 124" \
+      "exit_code=${exit_code:-<empty>} out=$FBASH_OUT"
+  fi
+}
+
+test_background_survives_launcher_timeout() {
+  command -v timeout >/dev/null 2>&1 || {
+    skip "background_survives_launcher_timeout: timeout unavailable"
+    return
+  }
+
+  local detach_dir="${TEST_DIR}/detach-session"
+  mkdir -p "$detach_dir"
+
+  timeout 1s bash -c "FBASH_SESSION_DIR='${detach_dir}' '${FBASH}' --command 'sleep 2; echo detached_done' --background -o json >/dev/null; sleep 5" >/dev/null 2>&1 || true
+
+  local job_id=""
+  for _ in $(seq 1 20); do
+    job_id=$(find "$detach_dir/jobs" -maxdepth 1 -name '*.meta' -printf '%f\n' 2>/dev/null | sed 's/\.meta$//' | head -n 1)
+    [[ -n "$job_id" ]] && break
+    sleep 0.1
+  done
+
+  if [[ -z "$job_id" ]]; then
+    fail "background_survives_launcher_timeout: expected background job metadata" \
+      "files=$(find "$detach_dir" -maxdepth 3 -type f -printf '%p ' 2>/dev/null)"
+    return
+  fi
+
+  for _ in $(seq 1 40); do
+    FBASH_OUT=$(FBASH_SESSION_DIR="$detach_dir" "${FBASH}" --command "__fbash_poll $job_id" --no-truncate -o json 2>/dev/null) || true
+    local exit_code
+    exit_code=$(jraw exit_code)
+    [[ "$exit_code" != "null" && -n "$exit_code" ]] && break
+    sleep 0.1
+  done
+
+  local exit_code stdout status
+  exit_code=$(jraw exit_code)
+  stdout=$(jfield stdout)
+  status=$(echo "$FBASH_OUT" | jq -r '.metadata.background_status // empty' 2>/dev/null)
+
+  if [[ "$exit_code" == "0" ]] && [[ "$status" == "completed" ]] && [[ "$stdout" == *"detached_done"* ]]; then
+    pass "background_survives_launcher_timeout: detached job completed after launcher died"
+  else
+    fail "background_survives_launcher_timeout: expected detached completion" \
+      "exit_code=${exit_code:-<empty>} status=${status:-<empty>} out=$FBASH_OUT"
+  fi
+}
+
 test_exec_temp_cleanup() {
   local isolated_tmp="${TEST_DIR}/tmp-isolated"
   rm -rf "$isolated_tmp"
@@ -685,6 +809,7 @@ main() {
   echo ""
   echo "== Output Budgeting =="
   run_test "Max lines truncation" test_max_lines_truncation
+  run_test "No truncate overrides output budgets" test_no_truncate_overrides_output_budgets
   run_test "Tail mode" test_tail_mode
   run_test "Filter" test_filter
   run_test "Quiet mode" test_quiet_mode
@@ -705,8 +830,11 @@ echo "== Session State & Internal Commands =="
 run_test "Session state" test_session_state
 run_test "Internal history" test_internal_history
 run_test "Internal reset" test_internal_reset
-run_test "Background metadata" test_background_metadata
-run_test "Exec temp cleanup" test_exec_temp_cleanup
+  run_test "Background metadata" test_background_metadata
+  run_test "Zero timeout disables foreground timeout" test_zero_timeout_disables_foreground_timeout
+  run_test "Background timeout behavior" test_background_has_no_default_timeout_but_respects_explicit_timeout
+  run_test "Background survives launcher timeout" test_background_survives_launcher_timeout
+  run_test "Exec temp cleanup" test_exec_temp_cleanup
 
 echo ""
 echo "== JSON Output Contract =="

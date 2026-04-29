@@ -971,6 +971,50 @@ EOF
   fi
 }
 
+test_old_unique_schema_migrates_without_optional_columns() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "Old unique migration test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+  sqlite3 "$HOME/.fsuite/telemetry.db" <<'SQL'
+CREATE TABLE telemetry (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp TEXT NOT NULL,
+  tool TEXT NOT NULL,
+  version TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  path_hash TEXT NOT NULL,
+  project_name TEXT NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  exit_code INTEGER NOT NULL,
+  depth INTEGER NOT NULL DEFAULT -1,
+  items_scanned INTEGER NOT NULL DEFAULT -1,
+  bytes_scanned INTEGER NOT NULL DEFAULT -1,
+  flags TEXT NOT NULL DEFAULT '',
+  backend TEXT NOT NULL DEFAULT '',
+  UNIQUE(timestamp, tool, path_hash)
+);
+INSERT INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend)
+  VALUES ('2026-01-01T00:00:00Z','ftree','1.6.0','tree','aabbccdd','legacyproj',100,0,1,3,2048,'-o json','tree');
+SQL
+
+  run_fmetrics stats >/dev/null 2>&1 || {
+    fail "Old unique telemetry schema should migrate without optional columns"
+    return
+  }
+
+  local row schema_sql
+  row=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) || '|' || COALESCE(MIN(run_id),'') || '|' || COALESCE(MIN(model_id),'') || '|' || COALESCE(MIN(agent_id),'') || '|' || COALESCE(MIN(session_id),'') FROM telemetry;" 2>/dev/null) || row=""
+  schema_sql=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT sql FROM sqlite_master WHERE type='table' AND name='telemetry';" 2>/dev/null) || schema_sql=""
+
+  if [[ "$row" == 1\|2026-01-01T00:00:00Z_0000000001\|unknown\|unknown\| ]] && [[ "$schema_sql" == *"UNIQUE(run_id, tool, path_hash)"* ]]; then
+    pass "Old unique telemetry schema migrates with defaulted optional columns"
+  else
+    fail "Old unique telemetry schema migration should preserve row and default missing columns" "row=$row schema=$schema_sql"
+  fi
+}
+
 test_migration_atomicity() {
   if ! command -v sqlite3 >/dev/null 2>&1; then
     pass "Migration atomicity test skipped (sqlite3 not available)"
@@ -1653,6 +1697,7 @@ main() {
   run_test "Burst runs are not dropped" test_burst_runs_not_dropped
   run_test "Legacy import backfills run_id" test_legacy_import_backfill_run_id
   run_test "Legacy import backfills caller attribution" test_legacy_import_backfills_attribution_defaults
+  run_test "Old unique schema migrates without optional columns" test_old_unique_schema_migrates_without_optional_columns
   run_test "Migration rollback on failure preserves data" test_migration_atomicity
   run_test "Import marks analytics dirty without rebuild" test_import_marks_analytics_dirty_without_rebuild
   run_test "Rebuild populates run_facts_v1 analytics" test_rebuild_populates_run_facts_after_import

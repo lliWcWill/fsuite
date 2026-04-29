@@ -459,6 +459,22 @@ ensure_column() {
   return 0
 }
 
+column_exists() {
+  local table="$1" column="$2" exists
+  exists=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM pragma_table_info('$table') WHERE name='$column';" 2>/dev/null) || exists=0
+  [[ "$exists" =~ ^[0-9]+$ ]] || exists=0
+  (( exists > 0 ))
+}
+
+legacy_column_expr() {
+  local column="$1" when_present="$2" when_missing="$3"
+  if column_exists telemetry "$column"; then
+    printf '%s' "$when_present"
+  else
+    printf '%s' "$when_missing"
+  fi
+}
+
 ensure_db() {
   has sqlite3 || die 3 "sqlite3 is required. Run: fmetrics --install-hints"
   mkdir -p "$FSUITE_DIR" 2>/dev/null || die "Cannot create $FSUITE_DIR"
@@ -494,9 +510,6 @@ CREATE TABLE IF NOT EXISTS telemetry (
 CREATE INDEX IF NOT EXISTS idx_tool ON telemetry(tool);
 CREATE INDEX IF NOT EXISTS idx_project ON telemetry(project_name);
 CREATE INDEX IF NOT EXISTS idx_timestamp ON telemetry(timestamp);
-CREATE INDEX IF NOT EXISTS idx_model ON telemetry(model_id);
-CREATE INDEX IF NOT EXISTS idx_agent ON telemetry(agent_id);
-CREATE INDEX IF NOT EXISTS idx_session ON telemetry(session_id);
 CREATE TABLE IF NOT EXISTS analytics_meta (
 key TEXT PRIMARY KEY,
 value TEXT NOT NULL
@@ -558,7 +571,19 @@ SQL
   _has_old_unique=$(sqlite3 "$DB_FILE" "SELECT CASE WHEN lower(replace(replace(sql,' ',''),char(10),'')) LIKE '%unique(timestamp,tool,path_hash)%' THEN 1 ELSE 0 END FROM sqlite_master WHERE type='table' AND name='telemetry';" 2>/dev/null) || _has_old_unique="0"
   [[ -z "$_has_old_unique" ]] && _has_old_unique="0"
   if [[ "$_has_old_unique" == "1" ]]; then
-    sqlite3 "$DB_FILE" <<'SQL' >/dev/null 2>&1 || die "telemetry schema migration failed"
+    local _cpu_expr _disk_expr _ram_total_expr _ram_available_expr _load_expr
+    local _filesystem_expr _storage_expr _model_expr _agent_expr _session_expr
+    _cpu_expr=$(legacy_column_expr cpu_temp_mc "COALESCE(cpu_temp_mc,-1)" "-1")
+    _disk_expr=$(legacy_column_expr disk_temp_mc "COALESCE(disk_temp_mc,-1)" "-1")
+    _ram_total_expr=$(legacy_column_expr ram_total_kb "COALESCE(ram_total_kb,-1)" "-1")
+    _ram_available_expr=$(legacy_column_expr ram_available_kb "COALESCE(ram_available_kb,-1)" "-1")
+    _load_expr=$(legacy_column_expr load_avg_1m "COALESCE(load_avg_1m,'-1')" "'-1'")
+    _filesystem_expr=$(legacy_column_expr filesystem_type "COALESCE(filesystem_type,'unknown')" "'unknown'")
+    _storage_expr=$(legacy_column_expr storage_type "COALESCE(storage_type,'unknown')" "'unknown'")
+    _model_expr=$(legacy_column_expr model_id "COALESCE(model_id,'unknown')" "'unknown'")
+    _agent_expr=$(legacy_column_expr agent_id "COALESCE(agent_id,'unknown')" "'unknown'")
+    _session_expr=$(legacy_column_expr session_id "COALESCE(session_id,'')" "''")
+    sqlite3 "$DB_FILE" <<SQL >/dev/null 2>&1 || die "telemetry schema migration failed"
 .bail on
 BEGIN IMMEDIATE;
 ALTER TABLE telemetry RENAME TO telemetry_old;
@@ -592,10 +617,10 @@ CREATE TABLE telemetry (
 );
 INSERT INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend,cpu_temp_mc,disk_temp_mc,ram_total_kb,ram_available_kb,load_avg_1m,filesystem_type,storage_type,run_id,model_id,agent_id,session_id)
   SELECT timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend,
-    COALESCE(cpu_temp_mc,-1),COALESCE(disk_temp_mc,-1),COALESCE(ram_total_kb,-1),COALESCE(ram_available_kb,-1),
-    COALESCE(load_avg_1m,'-1'),COALESCE(filesystem_type,'unknown'),COALESCE(storage_type,'unknown'),
+    ${_cpu_expr},${_disk_expr},${_ram_total_expr},${_ram_available_expr},
+    ${_load_expr},${_filesystem_expr},${_storage_expr},
     timestamp || '_' || printf('%010d', id),
-    COALESCE(model_id,'unknown'),COALESCE(agent_id,'unknown'),COALESCE(session_id,'')
+    ${_model_expr},${_agent_expr},${_session_expr}
   FROM telemetry_old;
 DROP TABLE telemetry_old;
 CREATE INDEX IF NOT EXISTS idx_tool ON telemetry(tool);

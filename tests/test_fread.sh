@@ -24,6 +24,11 @@ setup() {
     echo "Line $i: this is content for testing fread line range functionality" >> "${TEST_DIR}/sample.txt"
   done
 
+  # Larger file that exceeds fread's default display budget
+  for i in $(seq 1 260); do
+    echo "Large line $i: no truncate regression fixture" >> "${TEST_DIR}/large.txt"
+  done
+
   # Python file with functions
   cat > "${TEST_DIR}/auth.py" <<'PYEOF'
 import os
@@ -875,6 +880,29 @@ test_token_estimate_present() {
   fi
 }
 
+test_no_truncate_overrides_all_budgets() {
+  local output tmp_json
+  output=$(FSUITE_TELEMETRY=0 "${FREAD}" "${TEST_DIR}/large.txt" --max-lines 10 --max-bytes 100 --token-budget 1 --no-truncate -o json 2>/dev/null)
+  tmp_json="$(mktemp)"
+  printf '%s\n' "$output" > "$tmp_json"
+
+  if python3 - "$tmp_json" <<'PY' 2>/dev/null
+import json, sys
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    d = json.load(fh)
+assert d["truncated"] is False
+assert d["truncation_reason"] == "none"
+assert d["lines_emitted"] == 260
+assert any("Large line 260" in line for chunk in d["chunks"] for line in chunk["content"])
+PY
+  then
+    pass "--no-truncate overrides line, byte, and token budgets"
+  else
+    fail "--no-truncate should emit the full requested file" "Got: $output"
+  fi
+  rm -f "$tmp_json"
+}
+
 # ============================================================================
 # Mode Conflict Tests
 # ============================================================================
@@ -1099,6 +1127,7 @@ main() {
   run_test "Token budget truncation" test_token_budget_truncation
   run_test "Next hint on truncation" test_next_hint_on_truncation
   run_test "Token estimate present" test_token_estimate_present
+  run_test "No truncate override" test_no_truncate_overrides_all_budgets
 
   echo ""
   echo "== Mode Conflicts =="

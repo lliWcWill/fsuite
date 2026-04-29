@@ -91,6 +91,7 @@ BEFORE=$DEFAULT_BEFORE
 AFTER=$DEFAULT_AFTER
 QUIET=0
 FORCE_TEXT=0
+NO_TRUNCATE=0
 FROM_STDIN=0
 STDIN_FORMAT=""
 
@@ -1173,6 +1174,7 @@ OPTIONS
   --max-lines N               Cap total emitted lines (default 200)
   --max-bytes N               Cap total emitted bytes (default 50000)
   --token-budget N            Cap by estimated tokens (conservative bytes/3)
+  --no-truncate, --full       Disable line, byte, and token caps
   --max-files N               Cap files from stdin paths mode (default 10)
   --from-stdin                Read input from stdin
   --stdin-format FMT          Required with --from-stdin: paths|unified-diff
@@ -1359,6 +1361,11 @@ while [[ $# -gt 0 ]]; do
       _TELEM_FLAGS+=" --token-budget $2"
       shift 2
       ;;
+    --no-truncate|--full)
+      NO_TRUNCATE=1
+      _TELEM_FLAGS+=" --no-truncate"
+      shift
+      ;;
     --max-files)
       [[ -n "${2:-}" ]] || die "Missing value for --max-files"
       [[ "$2" =~ ^[0-9]+$ ]] || die "--max-files must be an integer"
@@ -1420,6 +1427,12 @@ done
 while [[ $# -gt 0 ]]; do POSITIONAL+=("$1"); shift; done
 
 _TELEM_FLAGS+=" -o ${OUTPUT}"
+
+if (( NO_TRUNCATE == 1 )); then
+  MAX_LINES=0
+  MAX_BYTES=0
+  TOKEN_BUDGET=0
+fi
 
 case "$OUTPUT" in
   pretty|json|paths) ;;

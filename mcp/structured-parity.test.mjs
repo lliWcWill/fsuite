@@ -507,6 +507,32 @@ test("fread MCP preserves paths entries that contain commas", async () => {
   }
 });
 
+test("fread MCP full mode does not truncate requested content", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "fsuite-mcp-fread-full-"));
+  const filePath = join(dir, "full.txt");
+  writeFileSync(
+    filePath,
+    Array.from({ length: 12 }, (_, i) => `full line ${i + 1}`).join("\n") + "\n",
+    "utf8",
+  );
+
+  try {
+    const result = await callTool("fread", {
+      path: filePath,
+      full: true,
+      max_lines: 3,
+    });
+    const plain = stripAnsi(textContent(result));
+
+    assert.ok(!result.isError, plain);
+    assert.ok(plain.includes("full line 1"), `expected first line in output, got: ${plain}`);
+    assert.ok(plain.includes("full line 12"), `expected final line in output, got: ${plain}`);
+    assert.ok(!plain.includes("more lines"), `full mode should not render preview truncation, got: ${plain}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("fbash pretty output does not color exit=null as an error", async () => {
   const result = await callTool("fbash", {
     command: "sleep 0.2",
@@ -534,6 +560,36 @@ test("fbash pretty output does not color exit=null as an error", async () => {
     !raw.includes("\x1b[38;2;220;90;90mexit=null"),
     `exit=null should not be rendered in red, got: ${JSON.stringify(raw)}`,
   );
+});
+
+test("fbash MCP wrapper does not impose its own exec timeout when disabled", async () => {
+  const result = await callToolWithEnv("fbash", {
+    command: "sleep 0.2; printf mcp-fbash-timeout-ok",
+    timeout: 0,
+  }, { ...process.env, FSUITE_MCP_FBASH_TIMEOUT_MS: "0" });
+
+  const plain = stripAnsi(textContent(result));
+  assert.ok(!result.isError, plain);
+  assert.ok(
+    plain.includes("mcp-fbash-timeout-ok"),
+    `expected fbash command to outlive MCP wrapper timeout setting, got: ${plain}`,
+  );
+});
+
+test("fbash MCP full mode disables shell output and preview truncation", async () => {
+  const result = await callTool("fbash", {
+    command: "for i in $(seq 1 50); do echo \"mcp full line $i\"; done",
+    max_lines: 3,
+    max_bytes: 40,
+    full: true,
+  });
+
+  const plain = stripAnsi(textContent(result));
+  assert.ok(!result.isError, plain);
+  assert.ok(plain.includes("mcp full line 1"), `expected first line in output, got: ${plain}`);
+  assert.ok(plain.includes("mcp full line 50"), `expected final line in output, got: ${plain}`);
+  assert.ok(!plain.includes("more line"), `full mode should not render preview truncation, got: ${plain}`);
+  assert.ok(!plain.includes("truncated"), `full mode should not report output truncation, got: ${plain}`);
 });
 
 test("fbash MCP error path falls back to parsed stderr when errors are empty", async () => {
