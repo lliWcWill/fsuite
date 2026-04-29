@@ -66,8 +66,8 @@ _TELEM_PATH_HINT=""
 # Defaults
 # -------------------------
 DEFAULT_OUTPUT="pretty"
-DEFAULT_MAX_LINES=200
-DEFAULT_MAX_BYTES=50000
+DEFAULT_MAX_LINES=0
+DEFAULT_MAX_BYTES=0
 DEFAULT_BEFORE=5
 DEFAULT_AFTER=10
 DEFAULT_MAX_FILES=10
@@ -1148,7 +1148,7 @@ usage() {
 fread — budgeted file reading with line numbers, token estimates, and pipeline integration.
 
 USAGE
-  fread <file>                                   Read file (capped)
+  fread <file>                                   Read file (uncapped by default)
   fread <file> --symbol authenticate             Read one exact symbol block
   fread <dir> --symbol authenticate              Resolve one exact symbol within a directory scope
   fread <file> -r 120:220                        Line range
@@ -1171,8 +1171,8 @@ OPTIONS
   --symbol NAME               Read exactly one exact symbol match within file or directory scope
   -B, --before N              Lines before (default 5)
   -A, --after N               Lines after (default 10)
-  --max-lines N               Cap total emitted lines (default 200)
-  --max-bytes N               Cap total emitted bytes (default 50000)
+  --max-lines N               Cap total emitted lines (0/default = uncapped)
+  --max-bytes N               Cap total emitted bytes (0/default = uncapped)
   --token-budget N            Cap by estimated tokens (conservative bytes/3)
   --no-truncate, --full       Disable line, byte, and token caps
   --max-files N               Cap files from stdin paths mode (default 10)

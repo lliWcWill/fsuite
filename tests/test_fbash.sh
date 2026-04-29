@@ -213,6 +213,32 @@ test_no_truncate_overrides_output_budgets() {
   fi
 }
 
+test_fread_command_is_uncapped_by_default() {
+  local bigfile="${TEST_DIR}/fbash-fread-full.txt"
+  local payload stdout truncated
+  payload=$(printf '%240s' '' | tr ' ' 'x')
+  for i in $(seq 1 260); do
+    echo "fbash fread line $i: ${payload}"
+  done > "$bigfile"
+
+  fbash_json --command "\"${SCRIPT_DIR}/../fread\" \"${bigfile}\" -o json"
+
+  truncated=$(jraw truncated)
+  stdout=$(jfield stdout)
+
+  if [[ "$truncated" == "false" ]] && printf '%s\n' "$stdout" | jq -e '
+    .tool == "fread" and
+    .truncated == false and
+    .lines_emitted == 260 and
+    any(.chunks[]?.content[]; contains("fbash fread line 260:"))
+  ' >/dev/null 2>&1; then
+    pass "fbash fread command is uncapped by default"
+  else
+    fail "fbash should not truncate fread command output by default" \
+         "Got fbash truncated=$truncated, stdout_tail='${stdout: -120}'"
+  fi
+}
+
 # ============================================================================
 # 8. Tail Mode
 # ============================================================================
@@ -878,6 +904,7 @@ main() {
   echo "== Output Budgeting =="
   run_test "Max lines truncation" test_max_lines_truncation
   run_test "No truncate overrides output budgets" test_no_truncate_overrides_output_budgets
+  run_test "Fread command uncapped by default" test_fread_command_is_uncapped_by_default
   run_test "Tail mode" test_tail_mode
   run_test "Filter" test_filter
   run_test "Quiet mode" test_quiet_mode

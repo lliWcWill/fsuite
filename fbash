@@ -89,6 +89,8 @@ FBASH_RAW_OUTPUT=0
 COMMAND=""
 MAX_LINES=200
 MAX_BYTES=51200
+MAX_LINES_EXPLICIT=0
+MAX_BYTES_EXPLICIT=0
 JSON_MODE=0
 EXPLICIT_CWD=""
 TIMEOUT=""
@@ -404,6 +406,16 @@ command_contains_fsuite_tool() {
   tool_re="fsuite|ftree|fsearch|fcontent|fmap|fread|fcase|fedit|fwrite|fmetrics|freplay|fprobe|fbash|fpatch-claude-mcp|fls|fs"
 
   [[ "$normalized" =~ (^|[[:space:]\|&\;\(\)<>/])(${tool_re})($|[[:space:]\|&\;\(\)<>/]) ]]
+}
+
+command_contains_fread() {
+  local cmd="$1"
+  local normalized="$cmd"
+
+  normalized="${normalized//\"/ }"
+  normalized="${normalized//\'/ }"
+
+  [[ "$normalized" =~ (^|[[:space:]\|&\;\(\)<>/])fread($|[[:space:]\|&\;\(\)<>/]) ]]
 }
 
 default_timeout_for_class() {
@@ -1378,11 +1390,13 @@ while [[ $# -gt 0 ]]; do
     --max-lines)
       [[ -n "${2:-}" ]] || die "Missing value for --max-lines"
       MAX_LINES="$2"; shift 2
+      MAX_LINES_EXPLICIT=1
       _TELEM_FLAGS+=" --max-lines $MAX_LINES"
       ;;
     --max-bytes)
       [[ -n "${2:-}" ]] || die "Missing value for --max-bytes"
       MAX_BYTES="$2"; shift 2
+      MAX_BYTES_EXPLICIT=1
       _TELEM_FLAGS+=" --max-bytes $MAX_BYTES"
       ;;
     --no-truncate|--full)
@@ -1501,6 +1515,9 @@ fi
 if (( NO_TRUNCATE == 1 )); then
   MAX_LINES=0
   MAX_BYTES=0
+elif command_contains_fread "$COMMAND"; then
+  (( MAX_LINES_EXPLICIT == 0 )) && MAX_LINES=0
+  (( MAX_BYTES_EXPLICIT == 0 )) && MAX_BYTES=0
 fi
 
 # ── Main ─────────────────────────────────────────────────────────

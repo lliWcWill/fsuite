@@ -610,7 +610,7 @@ _fsuite_detect_agent_id() {
     return 0
   }
 
-  if env | grep -qE '^(CODEX_|OPENAI_CODEX_)' 2>/dev/null; then
+  if _fsuite_first_env_value CODEX_SESSION_ID OPENAI_CODEX_SESSION_ID >/dev/null; then
     printf 'codex'
     return 0
   fi

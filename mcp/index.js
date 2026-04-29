@@ -180,6 +180,11 @@ function detectLang(filePath) {
   return map[ext] || ext || "";
 }
 
+function commandMentionsTool(command, tool) {
+  const normalized = String(command || "").replace(/["']/g, " ");
+  return new RegExp(`(^|[\\s|&;()<>/])${tool}($|[\\s|&;()<>/])`).test(normalized);
+}
+
 const run = promisify(execFile);
 function readTimeoutMs(name, defaultMs) {
   const raw = process.env[name];
@@ -423,19 +428,21 @@ function renderFreadResult(jsonStr, ctx = {}) {
 
     const lang = detectLang(d.symbol_resolution?.path || d.files?.[0]?.path || "");
 
-  // Cap normal pretty output at 8 lines, but honor explicit full reads.
-  const MAX_PRETTY_LINES = ctx.full ? Number.POSITIVE_INFINITY : (ctx.maxLines ?? 8);
-let lineCount = 0;
-let totalLines = 0;
-for (const chunk of (d.chunks || [])) {
-totalLines += chunk.content?.length || 0;
-}
+    // MCP fread should mirror CLI fread: uncapped unless the caller asks for a cap.
+    const MAX_PRETTY_LINES = (ctx.full || ctx.maxLines === undefined || ctx.maxLines === 0)
+      ? Number.POSITIVE_INFINITY
+      : ctx.maxLines;
+    let lineCount = 0;
+    let totalLines = 0;
+    for (const chunk of (d.chunks || [])) {
+      totalLines += chunk.content?.length || 0;
+    }
 
-for (const chunk of (d.chunks || [])) {
-for (const rawLine of chunk.content) {
-if (lineCount >= MAX_PRETTY_LINES) {
-const remaining = totalLines - MAX_PRETTY_LINES;
-out += `${DIM}  ... ${remaining} more lines${RESET}` + "\n";
+    for (const chunk of (d.chunks || [])) {
+      for (const rawLine of chunk.content) {
+        if (lineCount >= MAX_PRETTY_LINES) {
+          const remaining = totalLines - MAX_PRETTY_LINES;
+          out += `${DIM}  ... ${remaining} more lines${RESET}` + "\n";
           lineCount = -1; // sentinel to break outer loop
           break;
         }
@@ -1241,8 +1248,8 @@ server.registerTool(
       after: z.number().optional().describe("Lines of context after match (default 10)"),
       head: z.number().optional().describe("Read first N lines"),
       tail: z.number().optional().describe("Read last N lines"),
-        max_lines: z.number().int().nonnegative().optional().describe("Cap total lines emitted (default 200)"),
-        max_bytes: z.number().int().nonnegative().optional().describe("Cap total bytes emitted (default 50000)"),
+        max_lines: z.number().int().nonnegative().optional().describe("Cap total lines emitted (0/default = uncapped)"),
+        max_bytes: z.number().int().nonnegative().optional().describe("Cap total bytes emitted (0/default = uncapped)"),
         token_budget: z.number().int().nonnegative().optional().describe("Cap by estimated tokens"),
         full: z.boolean().optional().describe("Disable fread budgets and MCP preview truncation"),
         no_truncate: z.boolean().optional().describe("Alias for full; disable fread budgets and MCP preview truncation"),
@@ -1836,22 +1843,28 @@ server.registerTool(
         .describe("Keep tail instead of head when truncating"),
     }),
   },
-  async (params) => {
-    const wantsFull = Boolean(params.full || params.no_truncate);
-    // Poll and list_jobs route to internal commands, bypassing normal execution
-    if (params.poll) {
-      const pollArgs = ["--command", `__fbash_poll ${params.poll}`];
-      if (wantsFull) pollArgs.push("--no-truncate");
-      pollArgs.push("-o", "json");
+    async (params) => {
+      // Poll and list_jobs route to internal commands, bypassing normal execution
+      if (params.poll) {
+        const wantsFull = Boolean(params.full || params.no_truncate);
+        const pollArgs = ["--command", `__fbash_poll ${params.poll}`];
+        if (wantsFull) pollArgs.push("--no-truncate");
+        pollArgs.push("-o", "json");
       return cli("fbash", pollArgs, undefined, { full: wantsFull });
     }
     if (params.list_jobs) {
       return cli("fbash", ["--command", "__fbash_jobs", "-o", "json"]);
     }
-    if (!params.command) {
-      throw new Error("command is required unless using poll or list_jobs");
-    }
-    const args = [];
+      if (!params.command) {
+        throw new Error("command is required unless using poll or list_jobs");
+      }
+      const hasExplicitOutputCap = params.max_lines !== undefined || params.max_bytes !== undefined;
+      const wantsFull = Boolean(
+        params.full ||
+        params.no_truncate ||
+        (!hasExplicitOutputCap && commandMentionsTool(params.command, "fread")),
+      );
+      const args = [];
     args.push("--command", params.command);
     if (params.max_lines !== undefined) args.push("--max-lines", String(params.max_lines));
     if (params.max_bytes !== undefined) args.push("--max-bytes", String(params.max_bytes));

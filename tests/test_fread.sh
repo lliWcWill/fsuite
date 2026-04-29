@@ -24,9 +24,16 @@ setup() {
     echo "Line $i: this is content for testing fread line range functionality" >> "${TEST_DIR}/sample.txt"
   done
 
-  # Larger file that exceeds fread's default display budget
+  # Larger line-count fixture for default uncapped reads
   for i in $(seq 1 260); do
     echo "Large line $i: no truncate regression fixture" >> "${TEST_DIR}/large.txt"
+  done
+
+  # Larger byte-count fixture that would exceed the old 50 KB default cap
+  local huge_payload
+  huge_payload=$(printf '%240s' '' | tr ' ' 'x')
+  for i in $(seq 1 260); do
+    echo "Huge line $i: ${huge_payload}" >> "${TEST_DIR}/huge.txt"
   done
 
   # Python file with functions
@@ -275,6 +282,34 @@ test_read_whole_file() {
   else
     fail "Should read all 50 lines" "Got $line_count lines"
   fi
+}
+
+test_default_read_is_uncapped() {
+  local output tmp_json
+  output=$(FSUITE_TELEMETRY=0 "${FREAD}" "${TEST_DIR}/huge.txt" -o json 2>/dev/null)
+  tmp_json="$(mktemp)"
+  printf '%s\n' "$output" > "$tmp_json"
+
+  if python3 - "$tmp_json" <<'PY' 2>/dev/null
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as fh:
+    d = json.load(fh)
+
+assert d["truncated"] is False
+assert d["truncation_reason"] == "none"
+assert d["max_lines"] == 0
+assert d["max_bytes"] == 0
+assert d["lines_emitted"] == 260
+assert any("Huge line 260:" in line for chunk in d["chunks"] for line in chunk["content"])
+PY
+  then
+    pass "Default read is uncapped for lines and bytes"
+  else
+    fail "Default fread should not truncate requested content" "Got: $output"
+  fi
+  rm -f "$tmp_json"
 }
 
 test_read_with_max_lines() {
@@ -1081,6 +1116,7 @@ main() {
   echo ""
   echo "== Single File Read =="
   run_test "Read whole file" test_read_whole_file
+  run_test "Default read uncapped" test_default_read_is_uncapped
   run_test "Max lines limit" test_read_with_max_lines
   run_test "Line numbers present" test_line_numbers_present
   run_test "Empty file" test_empty_file

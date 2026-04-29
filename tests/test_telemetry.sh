@@ -737,6 +737,30 @@ PY
   fi
 }
 
+test_codex_home_does_not_imply_codex_agent() {
+  local detected
+  detected=$(env -i PATH="$PATH" HOME="$HOME" CODEX_HOME="$HOME/.codex" \
+    bash -c 'source "$1"; _fsuite_detect_agent_id' _ "${FSUITE_DIR}/_fsuite_common.sh" 2>/dev/null) || detected=""
+
+  if [[ "$detected" == "unknown" ]]; then
+    pass "Generic CODEX_HOME does not imply codex agent attribution"
+  else
+    fail "CODEX_HOME alone should not be treated as active Codex runtime" "Got: ${detected:-<empty>}"
+  fi
+}
+
+test_codex_session_implies_codex_agent() {
+  local detected
+  detected=$(env -i PATH="$PATH" HOME="$HOME" CODEX_SESSION_ID="session-123" \
+    bash -c 'source "$1"; _fsuite_detect_agent_id' _ "${FSUITE_DIR}/_fsuite_common.sh" 2>/dev/null) || detected=""
+
+  if [[ "$detected" == "codex" ]]; then
+    pass "Runtime session key implies codex agent attribution"
+  else
+    fail "CODEX_SESSION_ID should be treated as active Codex runtime" "Got: ${detected:-<empty>}"
+  fi
+}
+
 test_attribution_import_persists_env_fields() {
   if ! command -v sqlite3 >/dev/null 2>&1; then
     pass "Attribution import test skipped (sqlite3 not available)"
@@ -1728,6 +1752,8 @@ main() {
   run_test "Schema migration is idempotent" test_schema_migration_idempotent
   run_test "Telemetry JSONL includes run_id" test_run_id_in_jsonl
   run_test "Telemetry JSONL includes caller attribution" test_attribution_env_in_jsonl
+  run_test "CODEX_HOME does not imply Codex attribution" test_codex_home_does_not_imply_codex_agent
+  run_test "Codex session implies Codex attribution" test_codex_session_implies_codex_agent
   run_test "fmetrics import persists caller attribution" test_attribution_import_persists_env_fields
     run_test "fmetrics surfaces caller attribution dimensions" test_fmetrics_surfaces_attribution_dimensions
     run_test "fbash child tools share run_id for combo edges" test_fbash_child_tools_share_run_id_for_combo_edges
