@@ -71,10 +71,21 @@ test_malformed_json() {
 # Valid payload but no ShieldCortex config: should exit 0 with "unreachable" warning
 test_no_config() {
     local err rc=0
-    # Strip PATH of ~/.local/bin (where shieldcortex-mcp lives) and use a
-    # non-existent HOME so ~/.claude.json and ~/.codex/config.toml can't be found.
+    # Build an isolated PATH dir that contains node only (no shieldcortex-mcp).
+    # Using $PATH directly can pull in shieldcortex-mcp from ~/.local/bin where
+    # node may also live; using a fixed list (/usr/local/bin etc.) breaks on
+    # toolcache/nvm/asdf setups where node is elsewhere.
+    local node_bin path_stub
+    node_bin="$(command -v node 2>/dev/null)"
+    if [[ -z "$node_bin" ]]; then
+        echo "  SKIP: node not found"
+        return
+    fi
+    path_stub="$(mktemp -d)"
+    ln -s "$node_bin" "$path_stub/node"
     err=$(printf '{"title":"t","category":"c","content":"x","tags":["a"]}' \
-        | env PATH="$(dirname "$(command -v node)"):/usr/local/bin:/usr/bin:/bin" HOME=/nonexistent node "$INGEST_HELPER" 2>&1 >/dev/null) || rc=$?
+        | env -i PATH="$path_stub" HOME=/nonexistent FSUITE_SHIELDCORTEX_CMD= "$node_bin" "$INGEST_HELPER" 2>&1 >/dev/null) || rc=$?
+    rm -rf "$path_stub"
     if (( rc != 0 )); then
         fail "no-config: should exit 0 when no command configured" "exit=$rc stderr=$err"
         return
