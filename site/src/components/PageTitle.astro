@@ -1,0 +1,26 @@
+---
+/**
+ * PageTitle.astro — Starlight component override.
+ *
+ * Renders the page H1 and the PageActions dropdown side-by-side on a single
+ * row. The H1 keeps Starlight's `id="_top"` so anchor links to the top of
+ * the page still work.
+ *
+ * Suppressed on the splash hero (Starlight handles its own title rendering
+ * for splash pages — checking entry.data.template avoids double titles).
+ */
+import PageActions from './PageActions.astro';
+
+const route = Astro.locals.starlightRoute;
+const title = route.entry.data.title;
+const isSplash = route.entry.data.template === 'splash';
+---
+
+{isSplash ? (
+  <h1 id="_top">{title}</h1>
+) : (
+  <div class="page-title-row">
+    <h1 id="_top">{title}</h1>
+    <PageActions />
+  </div>
+)}

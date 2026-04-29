@@ -1,0 +1,324 @@
+---
+/**
+ * PageActions.astro — page-level action dropdown (Copy / View / Open in LLM).
+ *
+ * Sits inline with the page H1 in the right-aligned position, mirroring
+ * Mintlify/Anthropic's `Copy page` widget. CAVE-themed pill design.
+ *
+ * Props are pulled from Starlight's route data — no caller plumbing needed.
+ *
+ * Behaviour:
+ *   - Main button:      Copy page as Markdown (fetches <url>.md, writes clipboard)
+ *   - Caret dropdown:
+ *       · Copy as Markdown
+ *       · Copy as plain text
+ *       · View as Markdown (opens .md URL)
+ *       · Open in Claude     (claude.ai/new?q=...)
+ *       · Open in ChatGPT    (chatgpt.com/?q=...)
+ *       · View source on GitHub
+ *
+ * Accessibility:
+ *   - Real <button> elements + ARIA roles (menu, menuitem)
+ *   - Keyboard: Enter/Space toggles, Escape closes, click-outside closes
+ */
+
+const route = Astro.locals.starlightRoute;
+const entry = route?.entry;
+const slug = entry?.id?.replace(/\.(md|mdx)$/i, '') ?? '';
+const title = entry?.data?.title ?? '';
+
+// Build URLs using the runtime origin so it works on lliwcwill.github.io,
+// localhost:4321, or any preview deployment.
+// We emit a relative `.md` URL so the script can resolve against window.location.
+const mdRelative = slug ? `/${slug}.md` : '';
+
+// GitHub source URL — assumes master branch + the canonical path layout.
+// If the entry is `index.mdx`, the slug is empty; map back to the file.
+const ghBase = 'https://github.com/lliWcWill/fsuite/blob/master/site/src/content/docs';
+const ghSourcePath = slug ? `${slug}.mdx` : 'index.mdx';
+const ghSourceUrl = `${ghBase}/${ghSourcePath}`;
+---
+
+<div
+  class="page-actions"
+  data-page-actions
+  data-md-relative={mdRelative}
+  data-page-title={title}
+  data-gh-source={ghSourceUrl}
+>
+  <button
+    type="button"
+    class="page-actions__primary"
+    data-action="copy-md"
+    aria-label="Copy page as Markdown"
+  >
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M14.25 5.25H7.25C6.14543 5.25 5.25 6.14543 5.25 7.25V14.25C5.25 15.3546 6.14543 16.25 7.25 16.25H14.25C15.3546 16.25 16.25 15.3546 16.25 14.25V7.25C16.25 6.14543 15.3546 5.25 14.25 5.25Z" />
+      <path d="M2.80103 11.998L1.77203 5.07397C1.61003 3.98097 2.36403 2.96397 3.45603 2.80197L10.38 1.77297C11.313 1.63397 12.19 2.16297 12.528 3.00097" />
+    </svg>
+    <span class="page-actions__label">Copy page</span>
+  </button>
+
+  <button
+    type="button"
+    class="page-actions__caret"
+    data-action="toggle-menu"
+    aria-haspopup="menu"
+    aria-expanded="false"
+    aria-label="More page actions"
+  >
+    <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M3 4.5L6 7.5L9 4.5" />
+    </svg>
+  </button>
+
+  <div class="page-actions__menu" role="menu" hidden>
+    <button type="button" role="menuitem" data-action="copy-md">
+      <span class="page-actions__menu-icon">📄</span>
+      <span class="page-actions__menu-text">
+        <span class="page-actions__menu-title">Copy as Markdown</span>
+        <span class="page-actions__menu-sub">Page source for LLMs</span>
+      </span>
+    </button>
+
+    <button type="button" role="menuitem" data-action="copy-plain">
+      <span class="page-actions__menu-icon">¶</span>
+      <span class="page-actions__menu-text">
+        <span class="page-actions__menu-title">Copy as plain text</span>
+        <span class="page-actions__menu-sub">Rendered body, no markup</span>
+      </span>
+    </button>
+
+    <button type="button" role="menuitem" data-action="view-md">
+      <span class="page-actions__menu-icon">⤴</span>
+      <span class="page-actions__menu-text">
+        <span class="page-actions__menu-title">View as Markdown</span>
+        <span class="page-actions__menu-sub">Open .md in new tab</span>
+      </span>
+    </button>
+
+    <hr class="page-actions__divider" />
+
+    <button type="button" role="menuitem" data-action="open-claude">
+      <span class="page-actions__menu-icon">◈</span>
+      <span class="page-actions__menu-text">
+        <span class="page-actions__menu-title">Open in Claude</span>
+        <span class="page-actions__menu-sub">Pre-loaded with this page</span>
+      </span>
+    </button>
+
+    <button type="button" role="menuitem" data-action="open-chatgpt">
+      <span class="page-actions__menu-icon">◇</span>
+      <span class="page-actions__menu-text">
+        <span class="page-actions__menu-title">Open in ChatGPT</span>
+        <span class="page-actions__menu-sub">Pre-loaded with this page</span>
+      </span>
+    </button>
+
+    <hr class="page-actions__divider" />
+
+    <a
+      role="menuitem"
+      href={ghSourceUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      data-action="view-source"
+    >
+      <span class="page-actions__menu-icon">⌥</span>
+      <span class="page-actions__menu-text">
+        <span class="page-actions__menu-title">View source on GitHub</span>
+        <span class="page-actions__menu-sub">Edit + raise a PR</span>
+      </span>
+    </a>
+  </div>
+
+  <div class="page-actions__toast" role="status" aria-live="polite" hidden></div>
+</div>
+
+<script>
+  // Self-contained controller — runs once per page load.
+  // No frameworks; vanilla DOM + clipboard API + simple state machine.
+
+  type Action =
+    | 'copy-md'
+    | 'copy-plain'
+    | 'view-md'
+    | 'open-claude'
+    | 'open-chatgpt'
+    | 'toggle-menu';
+
+  function init(root: HTMLElement) {
+    const mdRelative = root.dataset.mdRelative ?? '';
+    const pageTitle = root.dataset.pageTitle ?? 'this page';
+    const menu = root.querySelector<HTMLElement>('.page-actions__menu')!;
+    const caret = root.querySelector<HTMLButtonElement>('[data-action="toggle-menu"]')!;
+    const toast = root.querySelector<HTMLElement>('.page-actions__toast')!;
+
+    const showToast = (msg: string, ok = true) => {
+      toast.textContent = msg;
+      toast.dataset.tone = ok ? 'ok' : 'err';
+      toast.hidden = false;
+      window.setTimeout(() => {
+        toast.hidden = true;
+      }, 1800);
+    };
+
+    const closeMenu = () => {
+      menu.hidden = true;
+      caret.setAttribute('aria-expanded', 'false');
+      root.dataset.menuOpen = 'false';
+    };
+
+    const openMenu = () => {
+      menu.hidden = false;
+      caret.setAttribute('aria-expanded', 'true');
+      root.dataset.menuOpen = 'true';
+    };
+
+    const toggleMenu = () => {
+      menu.hidden ? openMenu() : closeMenu();
+    };
+
+    const buildMdUrl = (): string => {
+      // Resolve the relative .md path against the current origin + base path.
+      // window.location.pathname is e.g. /fsuite/architecture/mcp/ — strip
+      // trailing slash and append .md (or use the slug-based mdRelative).
+      if (mdRelative) {
+        return new URL(mdRelative, window.location.origin + (window.location.pathname.split('/')[1] ? `/${window.location.pathname.split('/')[1]}` : '')).toString();
+      }
+      // Fallback: derive from current pathname.
+      const path = window.location.pathname.replace(/\/$/, '');
+      return `${window.location.origin}${path}.md`;
+    };
+
+    const fetchMarkdown = async (): Promise<string> => {
+      const url = buildMdUrl();
+      const res = await fetch(url, { headers: { Accept: 'text/markdown, text/plain' } });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.text();
+    };
+
+    const copyToClipboard = async (text: string): Promise<void> => {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return;
+      }
+      // Fallback for non-secure contexts.
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    };
+
+    const promptForLLM = (md: string): string => {
+      const trimmed = md.length > 4000 ? md.slice(0, 4000) + '\n\n...[truncated]' : md;
+      return `Please read this fsuite documentation page and help me understand it.\n\nPage: ${pageTitle}\nSource: ${buildMdUrl()}\n\n---\n\n${trimmed}`;
+    };
+
+    const handleAction = async (action: Action, ev?: Event) => {
+      switch (action) {
+        case 'toggle-menu':
+          toggleMenu();
+          return;
+
+        case 'copy-md': {
+          try {
+            const md = await fetchMarkdown();
+            await copyToClipboard(md);
+            showToast('Markdown copied');
+          } catch (err) {
+            showToast('Copy failed', false);
+            console.error('[page-actions] copy-md', err);
+          } finally {
+            closeMenu();
+          }
+          return;
+        }
+
+        case 'copy-plain': {
+          try {
+            // Walk the rendered article and grab text. Astro/Starlight wraps
+            // the body in a <main> with the article inside; we grab from
+            // the closest H1 down so user sees what they'd read.
+            const article = document.querySelector('main .sl-markdown-content, main article, main') as HTMLElement | null;
+            const text = (article?.innerText ?? document.body.innerText ?? '').trim();
+            await copyToClipboard(text);
+            showToast('Plain text copied');
+          } catch (err) {
+            showToast('Copy failed', false);
+            console.error('[page-actions] copy-plain', err);
+          } finally {
+            closeMenu();
+          }
+          return;
+        }
+
+        case 'view-md': {
+          window.open(buildMdUrl(), '_blank', 'noopener,noreferrer');
+          closeMenu();
+          return;
+        }
+
+        case 'open-claude': {
+          try {
+            const md = await fetchMarkdown();
+            const q = encodeURIComponent(promptForLLM(md));
+            window.open(`https://claude.ai/new?q=${q}`, '_blank', 'noopener,noreferrer');
+          } catch {
+            // Fallback: just hand Claude the URL.
+            const q = encodeURIComponent(`Please read ${buildMdUrl()} and help me understand it.`);
+            window.open(`https://claude.ai/new?q=${q}`, '_blank', 'noopener,noreferrer');
+          } finally {
+            closeMenu();
+          }
+          return;
+        }
+
+        case 'open-chatgpt': {
+          try {
+            const md = await fetchMarkdown();
+            const q = encodeURIComponent(promptForLLM(md));
+            window.open(`https://chatgpt.com/?hints=search&q=${q}`, '_blank', 'noopener,noreferrer');
+          } catch {
+            const q = encodeURIComponent(`Please read ${buildMdUrl()} and help me understand it.`);
+            window.open(`https://chatgpt.com/?hints=search&q=${q}`, '_blank', 'noopener,noreferrer');
+          } finally {
+            closeMenu();
+          }
+          return;
+        }
+      }
+    };
+
+    // Wire up: any element with data-action inside this root.
+    root.addEventListener('click', (ev) => {
+      const target = (ev.target as HTMLElement).closest<HTMLElement>('[data-action]');
+      if (!target) return;
+      const action = target.dataset.action as Action | undefined;
+      if (!action) return;
+      // <a data-action="view-source"> is a real link — let the browser handle it.
+      if (action === ('view-source' as Action)) return;
+      ev.preventDefault();
+      handleAction(action, ev);
+    });
+
+    // Click-outside closes menu.
+    document.addEventListener('click', (ev) => {
+      if (!menu.hidden && !root.contains(ev.target as Node)) closeMenu();
+    });
+
+    // Escape closes menu.
+    document.addEventListener('keydown', (ev) => {
+      if (ev.key === 'Escape' && !menu.hidden) {
+        closeMenu();
+        caret.focus();
+      }
+    });
+  }
+
+  document.querySelectorAll<HTMLElement>('[data-page-actions]').forEach(init);
+</script>

@@ -1,0 +1,38 @@
+/* fsuite docs — custom theme tweaks to match the Monokai vibe of the MCP output */
+
+:root {
+  /* Dark theme override — Monokai-ish accent */
+  --sl-color-accent-low: #3b2a1a;
+  --sl-color-accent: #fd971f;
+  --sl-color-accent-high: #ffd866;
+
+  --sl-color-white: #f8f8f2;
+  --sl-color-gray-1: #e1e1db;
+  --sl-color-gray-2: #c5c5c0;
+  --sl-color-gray-3: #75715e;
+  --sl-color-gray-4: #49483e;
+  --sl-color-gray-5: #383830;
+  --sl-color-gray-6: #272822;
+  --sl-color-black: #1e1f1c;
+}
+
+:root[data-theme='light'] {
+  --sl-color-accent-low: #fef3c7;
+  --sl-color-accent: #d97706;
+  --sl-color-accent-high: #92400e;
+}
+
+/* Make the inline code stand out like terminal output */
+code {
+  font-weight: 500;
+}
+
+/* Terminal-y feel for block quotes (callouts) */
+blockquote {
+  border-left-color: var(--sl-color-accent);
+}
+
+/* Tighten the command-reference tables */
+table {
+  font-size: 0.92em;
+}

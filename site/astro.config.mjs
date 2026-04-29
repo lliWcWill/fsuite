@@ -14,6 +14,11 @@ export default defineConfig({
         src: './src/assets/fsuite-hero.jpeg',
         replacesTitle: false,
       },
+      components: {
+        // Override the page H1 so we can render the page-actions dropdown
+        // (Copy / View / Open in LLM) inline with the title.
+        PageTitle: './src/components/PageTitle.astro',
+      },
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/lliWcWill/fsuite' },
       ],

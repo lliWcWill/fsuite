@@ -1,38 +1,715 @@
-/* fsuite docs — custom theme tweaks to match the Monokai vibe of the MCP output */
+/* ============================================================
+   fsuite — CAVE theme
+   Drop-in replacement for site/src/styles/custom.css
+   Bioluminescent green · void-black · drone POV
+   ============================================================
+   Compatible with: Astro Starlight 0.38+
+   Code theme: keep ExpressiveCode 'monokai' (already set in
+   astro.config.mjs) — these tokens harmonize with it.
+   ============================================================ */
 
+/* ---------- 1. FONTS ---------- */
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
+
+/* ---------- 2. STARLIGHT TOKEN OVERRIDES (DARK) ---------- */
 :root {
-  /* Dark theme override — Monokai-ish accent */
-  --sl-color-accent-low: #3b2a1a;
-  --sl-color-accent: #fd971f;
-  --sl-color-accent-high: #ffd866;
+  /* Accent — bioluminescent green that matches the hero tree */
+  --sl-color-accent-low:  #0d3a26;
+  --sl-color-accent:      #3aff9d;
+  --sl-color-accent-high: #a8ffd4;
 
-  --sl-color-white: #f8f8f2;
-  --sl-color-gray-1: #e1e1db;
-  --sl-color-gray-2: #c5c5c0;
-  --sl-color-gray-3: #75715e;
-  --sl-color-gray-4: #49483e;
-  --sl-color-gray-5: #383830;
-  --sl-color-gray-6: #272822;
-  --sl-color-black: #1e1f1c;
+  /* Surface — deep cave void */
+  --sl-color-white:   #e8f4ee;
+  --sl-color-gray-1:  #c9dad2;
+  --sl-color-gray-2:  #9eb1a8;
+  --sl-color-gray-3:  #6b8079;
+  --sl-color-gray-4:  #44544e;
+  --sl-color-gray-5:  #1c2a25;
+  --sl-color-gray-6:  #0f171c;
+  --sl-color-gray-7:  #0a1014;
+  --sl-color-black:   #05080a;
+
+  /* Background layers */
+  --sl-color-bg:           #0a1014;
+  --sl-color-bg-nav:       #0a1014;
+  --sl-color-bg-sidebar:   #0a1014;
+  --sl-color-bg-inline-code: #0a1418;
+
+  /* Text */
+  --sl-color-text:         #e8f4ee;
+  --sl-color-text-accent:  #3aff9d;
+  --sl-color-text-invert:  #051a10;
+
+  /* Hairlines / borders */
+  --sl-color-hairline:        rgba(120, 200, 170, 0.10);
+  --sl-color-hairline-light:  rgba(120, 200, 170, 0.18);
+  --sl-color-hairline-shade:  rgba(120, 200, 170, 0.30);
+
+  /* Type */
+  --sl-font: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --sl-font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Custom fsuite tokens */
+  --fs-accent:       #3aff9d;
+  --fs-accent-soft:  #1f9a63;
+  --fs-accent-deep:  #0d3a26;
+  --fs-accent-glow:  rgba(58, 255, 180, 0.18);
+  --fs-warn:         #ffc857;
+  --fs-crit:         #ff5d5d;
+  --fs-info:         #7cd0ff;
+
+  --fs-bg-card:    #0f171c;
+  --fs-bg-card-hi: #131e24;
+  --fs-bg-card-on: #1a2830;
+
+  --fs-shadow-glow:
+    0 0 0 1px rgba(58, 255, 180, 0.20),
+    0 0 24px -4px rgba(58, 255, 180, 0.25);
+
+  --fs-scanline: repeating-linear-gradient(
+    0deg,
+    rgba(58, 255, 180, 0.018) 0px,
+    rgba(58, 255, 180, 0.018) 1px,
+    transparent 1px,
+    transparent 3px
+  );
 }
 
+/* Light mode — keep it sane and on-brand */
 :root[data-theme='light'] {
-  --sl-color-accent-low: #fef3c7;
-  --sl-color-accent: #d97706;
-  --sl-color-accent-high: #92400e;
+  --sl-color-accent-low:  #d6f7e6;
+  --sl-color-accent:      #0a8c52;
+  --sl-color-accent-high: #064a2c;
+  --sl-color-text-invert: #ffffff;
+
+  --fs-accent:       #0a8c52;
+  --fs-accent-soft:  #0a8c52;
+  --fs-accent-deep:  #d6f7e6;
+  --fs-accent-glow:  rgba(10, 140, 82, 0.15);
+
+  --fs-bg-card:    #ffffff;
+  --fs-bg-card-hi: #f7faf8;
+  --fs-bg-card-on: #eef5f1;
+  --fs-scanline: none;
 }
 
-/* Make the inline code stand out like terminal output */
-code {
+/* ---------- 3. BASE TYPOGRAPHY ---------- */
+html {
+  color-scheme: dark;
+  font-family: var(--sl-font);
+}
+body {
+  font-family: var(--sl-font);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Subtle volumetric glow + scanline over the page */
+body::before {
+  content: "";
+  position: fixed; inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(1200px 600px at 50% -10%, rgba(58, 255, 180, 0.06), transparent 60%),
+    radial-gradient(900px 500px at 85% 30%, rgba(0, 140, 90, 0.04), transparent 60%),
+    var(--fs-scanline);
+}
+:root[data-theme='light'] body::before { display: none; }
+
+/* Headings — display-y, tight tracking */
+h1, h2, h3, h4 {
+  font-family: var(--sl-font);
+  letter-spacing: -0.02em;
+  font-weight: 700;
+  color: var(--sl-color-white);
+}
+h1 { letter-spacing: -0.035em; font-weight: 800; }
+
+/* ---------- 4. STARLIGHT NAV / HEADER ---------- */
+header.header {
+  background: color-mix(in oklab, var(--sl-color-bg) 85%, transparent) !important;
+  backdrop-filter: blur(10px) saturate(1.1);
+  -webkit-backdrop-filter: blur(10px) saturate(1.1);
+  border-bottom: 1px solid var(--sl-color-hairline);
+}
+
+/* Site title */
+.site-title {
+  font-family: var(--sl-font-mono) !important;
+  font-weight: 700 !important;
+  font-size: 14px !important;
+  letter-spacing: 0.02em !important;
+}
+
+/* Search input */
+site-search button[data-open-modal] {
+  background: var(--fs-bg-card) !important;
+  border: 1px solid var(--sl-color-hairline) !important;
+  border-radius: 8px !important;
+  transition: border-color 160ms, box-shadow 160ms;
+}
+site-search button[data-open-modal]:hover {
+  border-color: var(--sl-color-hairline-light) !important;
+}
+site-search button[data-open-modal]:focus-visible {
+  border-color: var(--sl-color-hairline-shade) !important;
+  box-shadow: var(--fs-shadow-glow) !important;
+}
+
+/* ---------- 5. SIDEBAR ---------- */
+.sidebar-pane {
+  border-right: 1px solid var(--sl-color-hairline);
+}
+.sidebar-content ul li a {
+  border-radius: 4px;
+  border-left: 2px solid transparent;
+  transition: background 160ms, color 160ms, border-color 160ms;
+}
+.sidebar-content ul li a:hover {
+  background: var(--fs-bg-card-hi);
+  color: var(--sl-color-white);
+}
+.sidebar-content ul li a[aria-current='page'] {
+  background: var(--fs-bg-card-on);
+  color: var(--fs-accent) !important;
+  border-left-color: var(--fs-accent);
   font-weight: 500;
 }
 
-/* Terminal-y feel for block quotes (callouts) */
-blockquote {
-  border-left-color: var(--sl-color-accent);
+/* Sidebar group titles — small caps mono with arrow bullet */
+.sidebar-content details > summary,
+.sidebar-content .group-label,
+.sidebar-content h2 {
+  font-family: var(--sl-font-mono) !important;
+  font-size: 10.5px !important;
+  letter-spacing: 0.16em !important;
+  text-transform: uppercase !important;
+  color: var(--sl-color-gray-2) !important;
 }
 
-/* Tighten the command-reference tables */
-table {
+/* ---------- 6. RIGHT TOC ---------- */
+.right-sidebar starlight-toc nav a {
+  border-left: 2px solid transparent;
+  padding-left: 10px;
+  margin-left: -2px;
+  transition: color 160ms, border-color 160ms;
+  color: var(--sl-color-gray-2);
+}
+.right-sidebar starlight-toc nav a:hover { color: var(--sl-color-white); }
+.right-sidebar starlight-toc nav a[aria-current='true'] {
+  color: var(--fs-accent);
+  border-left-color: var(--fs-accent);
+}
+.right-sidebar h2 {
+  font-family: var(--sl-font-mono) !important;
+  font-size: 10.5px !important;
+  letter-spacing: 0.16em !important;
+  text-transform: uppercase !important;
+  color: var(--sl-color-gray-2) !important;
+}
+
+/* ---------- 7. CONTENT — links, code, callouts ---------- */
+.sl-markdown-content a:not(:where(.not-content *)) {
+  color: var(--fs-accent);
+  text-decoration-color: rgba(58, 255, 180, 0.4);
+  text-underline-offset: 3px;
+  transition: text-decoration-color 160ms;
+}
+.sl-markdown-content a:hover { text-decoration-color: var(--fs-accent); }
+
+/* Inline code — terminal token feel */
+.sl-markdown-content :not(pre) > code {
+  font-family: var(--sl-font-mono);
+  font-size: 0.88em;
+  font-weight: 500;
+  background: var(--sl-color-bg-inline-code);
+  color: #c9e8d8;
+  border: 1px solid var(--sl-color-hairline);
+  border-radius: 3px;
+  padding: 1px 6px;
+}
+
+/* Code blocks (ExpressiveCode wrapper) */
+.expressive-code {
+  margin: 1.2em 0;
+}
+.expressive-code .frame {
+  border-radius: 8px !important;
+  border: 1px solid var(--sl-color-hairline-light) !important;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.02),
+    0 10px 30px -10px rgba(0, 0, 0, 0.6) !important;
+}
+
+/* Blockquote / callout — terminal-y left edge */
+.sl-markdown-content blockquote {
+  border-left: 3px solid var(--fs-accent);
+  background: linear-gradient(90deg, rgba(58, 255, 180, 0.05), transparent 60%);
+  padding: 12px 16px;
+  margin: 1.2em 0;
+  border-radius: 0 6px 6px 0;
+  color: var(--sl-color-gray-1);
+}
+.sl-markdown-content blockquote p { margin: 0; }
+.sl-markdown-content blockquote em { color: var(--sl-color-white); font-style: normal; }
+
+/* Tables — tighter, technical */
+.sl-markdown-content table {
   font-size: 0.92em;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--sl-color-hairline);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.sl-markdown-content thead {
+  background: var(--fs-bg-card-hi);
+}
+.sl-markdown-content th {
+  font-family: var(--sl-font-mono);
+  font-size: 11px !important;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--sl-color-gray-2) !important;
+  font-weight: 500 !important;
+  text-align: left;
+  padding: 12px 14px !important;
+  border-bottom: 1px solid var(--sl-color-hairline) !important;
+}
+.sl-markdown-content td {
+  padding: 12px 14px !important;
+  border-bottom: 1px solid var(--sl-color-hairline) !important;
+}
+.sl-markdown-content tbody tr:last-child td { border-bottom: 0 !important; }
+.sl-markdown-content tbody tr:hover { background: var(--fs-bg-card-hi); }
+.sl-markdown-content td code {
+  color: var(--fs-accent) !important;
+  font-weight: 600;
+}
+
+/* Horizontal rules */
+.sl-markdown-content hr {
+  border: 0;
+  height: 1px;
+  background: var(--sl-color-hairline);
+  margin: 2em 0;
+}
+
+/* ---------- 8. STARLIGHT <Card> + <CardGrid> ---------- */
+.sl-markdown-content .card {
+  background: var(--fs-bg-card) !important;
+  border: 1px solid var(--sl-color-hairline) !important;
+  border-radius: 8px !important;
+  padding: 22px !important;
+  transition: transform 200ms cubic-bezier(.2,.7,.3,1),
+              border-color 200ms, background 200ms;
+  position: relative;
+  overflow: hidden;
+}
+.sl-markdown-content .card::before {
+  content: "";
+  position: absolute; top: 0; left: 0;
+  width: 28px; height: 1px;
+  background: var(--fs-accent);
+  opacity: 0.6;
+}
+.sl-markdown-content .card:hover {
+  transform: translateY(-2px);
+  border-color: var(--sl-color-hairline-shade) !important;
+  background: var(--fs-bg-card-hi) !important;
+}
+.sl-markdown-content .card .icon {
+  color: var(--fs-accent) !important;
+  background: var(--fs-accent-deep) !important;
+  border: 1px solid color-mix(in oklab, var(--fs-accent) 35%, transparent) !important;
+  border-radius: 4px !important;
+  padding: 8px !important;
+}
+.sl-markdown-content .card .title {
+  font-size: 16px !important;
+  font-weight: 600 !important;
+  letter-spacing: -0.01em !important;
+  color: var(--sl-color-white) !important;
+}
+
+/* ---------- 9. HERO (splash template) ---------- */
+.hero {
+  padding: 56px 0 !important;
+  position: relative;
+}
+.hero h1 {
+  font-size: clamp(56px, 6.4vw, 88px) !important;
+  line-height: 0.95 !important;
+  letter-spacing: -0.035em !important;
+  font-weight: 800 !important;
+}
+.hero .tagline {
+  font-size: 19px !important;
+  color: var(--sl-color-gray-1) !important;
+  max-width: 52ch;
+  line-height: 1.5 !important;
+}
+.hero img {
+  border-radius: 12px;
+  border: 1px solid var(--sl-color-hairline-light);
+  box-shadow:
+    0 10px 30px -10px rgba(0, 0, 0, 0.7),
+    0 0 0 1px rgba(58, 255, 180, 0.08);
+}
+
+/* Hero buttons */
+.hero .actions a {
+  font-family: var(--sl-font-mono) !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.01em !important;
+  border-radius: 8px !important;
+  height: 42px;
+  padding: 0 18px !important;
+  transition: all 160ms cubic-bezier(.2,.7,.3,1);
+}
+.hero .actions a[data-variant="primary"] {
+  background: var(--fs-accent) !important;
+  color: #051a10 !important;
+  border: 1px solid var(--fs-accent) !important;
+  box-shadow: var(--fs-shadow-glow);
+}
+.hero .actions a[data-variant="primary"]:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.08);
+}
+.hero .actions a[data-variant="secondary"],
+.hero .actions a:not([data-variant]) {
+  background: var(--fs-bg-card) !important;
+  color: var(--sl-color-white) !important;
+  border: 1px solid var(--sl-color-hairline-light) !important;
+}
+.hero .actions a[data-variant="secondary"]:hover {
+  background: var(--fs-bg-card-hi) !important;
+  border-color: var(--sl-color-hairline-shade) !important;
+}
+.hero .actions a[data-variant="minimal"] {
+  background: transparent !important;
+  color: var(--sl-color-gray-1) !important;
+  border: 1px solid transparent !important;
+}
+.hero .actions a[data-variant="minimal"]:hover {
+  color: var(--sl-color-white) !important;
+  background: var(--fs-bg-card) !important;
+}
+
+/* ---------- 10. PAGE TITLE / FRONTMATTER HEADER ---------- */
+.content-panel h1#_top,
+.content-panel h1:first-child {
+  letter-spacing: -0.03em;
+}
+
+/* ---------- 11. SCROLLBARS ---------- */
+* { scrollbar-width: thin; scrollbar-color: var(--sl-color-hairline-light) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb {
+  background: var(--sl-color-hairline-light);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--sl-color-hairline-shade); }
+
+/* ---------- 12. SELECTION ---------- */
+::selection {
+  background: var(--fs-accent);
+  color: #051a10;
+}
+
+/* ---------- 13. PAGINATION (next/prev links at page bottom) ---------- */
+.pagination-links a {
+  background: var(--fs-bg-card) !important;
+  border: 1px solid var(--sl-color-hairline) !important;
+  border-radius: 8px !important;
+  transition: border-color 160ms, background 160ms;
+}
+.pagination-links a:hover {
+  border-color: var(--sl-color-hairline-shade) !important;
+  background: var(--fs-bg-card-hi) !important;
+}
+.pagination-links a span:first-child {
+  font-family: var(--sl-font-mono) !important;
+  font-size: 10.5px !important;
+  letter-spacing: 0.14em !important;
+  text-transform: uppercase !important;
+  color: var(--fs-accent) !important;
+}
+
+/* ---------- 14. STARLIGHT KBD ---------- */
+kbd {
+  font-family: var(--sl-font-mono);
+  font-size: 11px;
+  padding: 2px 6px;
+  background: var(--fs-bg-card);
+  border: 1px solid var(--sl-color-hairline-light);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  color: var(--sl-color-gray-1);
+}
+
+/* ---------- 15. TABS COMPONENT (Starlight <Tabs>) ---------- */
+starlight-tabs [role="tablist"] {
+  border-bottom: 1px solid var(--sl-color-hairline) !important;
+}
+starlight-tabs [role="tab"][aria-selected="true"] {
+  color: var(--fs-accent) !important;
+  border-bottom-color: var(--fs-accent) !important;
+}
+
+/* ---------- 16. ASIDE / NOTE / TIP / CAUTION ---------- */
+.starlight-aside {
+  border-radius: 8px !important;
+  border-left-width: 3px !important;
+}
+.starlight-aside--note     { border-left-color: var(--fs-info) !important; }
+.starlight-aside--tip      { border-left-color: var(--fs-accent) !important; }
+.starlight-aside--caution  { border-left-color: var(--fs-warn) !important; }
+.starlight-aside--danger   { border-left-color: var(--fs-crit) !important; }
+
+/* ---------- 17. STEPS COMPONENT ---------- */
+.sl-steps > li::before {
+  background: var(--fs-accent-deep) !important;
+  color: var(--fs-accent) !important;
+  border: 1px solid color-mix(in oklab, var(--fs-accent) 40%, transparent) !important;
+  font-family: var(--sl-font-mono) !important;
+  font-weight: 600 !important;
+}
+
+/* ---------- 18. BADGE / PILL ---------- */
+.sl-badge {
+  font-family: var(--sl-font-mono) !important;
+  font-size: 10.5px !important;
+  letter-spacing: 0.08em !important;
+  text-transform: uppercase !important;
+  border-radius: 999px !important;
+  padding: 2px 8px !important;
+  border: 1px solid var(--sl-color-hairline-light) !important;
+}
+
+/* ---------- 19. RESPONSIVE NICETIES ---------- */
+@media (max-width: 50rem) {
+  .hero h1 { font-size: clamp(40px, 10vw, 60px) !important; }
+}
+
+/* ---------- 20. PAGE ACTIONS DROPDOWN (Copy / View / Open in LLM) ---------- */
+/* Mirrors Mintlify/Anthropic's per-page Copy widget. CAVE-themed pill. */
+
+.page-title-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0;
+}
+.page-title-row > h1 {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+.page-title-row > .page-actions {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.page-actions {
+  position: relative;
+  display: inline-flex;
+  align-items: stretch;
+  font-family: var(--sl-font-system, system-ui, sans-serif);
+  font-size: 13px;
+  line-height: 1;
+  isolation: isolate;
+}
+
+.page-actions__primary,
+.page-actions__caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--sl-color-bg, #050807);
+  color: var(--sl-color-text, #d4f5e5);
+  border: 1px solid var(--sl-color-hairline-light, rgba(58, 255, 157, 0.18));
+  cursor: pointer;
+  font: inherit;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  padding: 0.45rem 0.7rem;
+}
+
+.page-actions__primary {
+  gap: 0.45rem;
+  border-top-left-radius: 999px;
+  border-bottom-left-radius: 999px;
+  border-right: 0;
+  padding-left: 0.85rem;
+}
+
+.page-actions__caret {
+  border-top-right-radius: 999px;
+  border-bottom-right-radius: 999px;
+  padding: 0.45rem 0.55rem;
+}
+
+.page-actions__primary:hover,
+.page-actions__caret:hover {
+  background: rgba(58, 255, 157, 0.07);
+  color: var(--sl-color-accent-high, #a8ffd4);
+  border-color: rgba(58, 255, 157, 0.4);
+}
+
+.page-actions__primary:focus-visible,
+.page-actions__caret:focus-visible {
+  outline: 2px solid var(--sl-color-accent, #3aff9d);
+  outline-offset: 2px;
+  z-index: 1;
+}
+
+.page-actions__primary svg {
+  flex: 0 0 auto;
+  opacity: 0.85;
+}
+
+.page-actions__label {
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.page-actions__caret svg {
+  transition: transform 140ms ease;
+}
+
+.page-actions[data-menu-open="true"] .page-actions__caret svg {
+  transform: rotate(180deg);
+}
+
+/* ---------- DROPDOWN MENU ---------- */
+.page-actions__menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 280px;
+  background: var(--sl-color-bg, #050807);
+  border: 1px solid var(--sl-color-hairline-light, rgba(58, 255, 157, 0.18));
+  border-radius: 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(58, 255, 157, 0.06);
+  padding: 0.4rem;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  animation: page-actions-menu-in 120ms ease-out;
+}
+
+@keyframes page-actions-menu-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.page-actions__menu[hidden] {
+  display: none;
+}
+
+.page-actions__menu > [role="menuitem"] {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  padding: 0.55rem 0.65rem;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  color: var(--sl-color-text, #d4f5e5);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 100ms ease, color 100ms ease;
+}
+
+.page-actions__menu > [role="menuitem"]:hover,
+.page-actions__menu > [role="menuitem"]:focus-visible {
+  background: rgba(58, 255, 157, 0.08);
+  color: var(--sl-color-accent-high, #a8ffd4);
+  outline: none;
+}
+
+.page-actions__menu-icon {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 13px;
+  color: var(--sl-color-accent, #3aff9d);
+  background: rgba(58, 255, 157, 0.08);
+  border-radius: 5px;
+  margin-top: 1px;
+}
+
+.page-actions__menu-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.page-actions__menu-title {
+  font-weight: 500;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.page-actions__menu-sub {
+  font-size: 11px;
+  color: var(--sl-color-gray-3, rgba(212, 245, 229, 0.55));
+  white-space: nowrap;
+}
+
+.page-actions__divider {
+  border: 0;
+  border-top: 1px solid var(--sl-color-hairline-light, rgba(58, 255, 157, 0.1));
+  margin: 0.3rem 0.4rem;
+}
+
+/* ---------- TOAST (clipboard feedback) ---------- */
+.page-actions__toast {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  background: var(--sl-color-accent, #3aff9d);
+  color: #050807;
+  font-weight: 600;
+  font-size: 12px;
+  padding: 0.4rem 0.75rem;
+  border-radius: 999px;
+  box-shadow: 0 6px 20px rgba(58, 255, 157, 0.25);
+  z-index: 60;
+  pointer-events: none;
+  animation: page-actions-toast-in 140ms ease-out;
+}
+
+.page-actions__toast[data-tone="err"] {
+  background: #ff5e5e;
+  color: #fff;
+  box-shadow: 0 6px 20px rgba(255, 94, 94, 0.3);
+}
+
+@keyframes page-actions-toast-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ---------- RESPONSIVE: stack title + actions on narrow screens ---------- */
+@media (max-width: 30rem) {
+  .page-actions__label {
+    display: none; /* icon-only on mobile */
+  }
+  .page-actions__menu {
+    min-width: 240px;
+    right: -0.5rem;
+  }
 }
