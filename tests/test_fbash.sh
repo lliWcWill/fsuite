@@ -239,6 +239,27 @@ test_fread_command_is_uncapped_by_default() {
   fi
 }
 
+test_fread_word_in_argument_does_not_disable_output_budgets() {
+  local bigfile="${TEST_DIR}/fbash-fread-argument.txt"
+  local stdout truncated stdout_lines
+  for i in $(seq 1 260); do
+    echo "argument budget line $i"
+  done > "$bigfile"
+
+  fbash_json --command "printf 'fread\n' >/dev/null; cat \"${bigfile}\""
+
+  truncated=$(jraw truncated)
+  stdout=$(jfield stdout)
+  stdout_lines=$(jraw stdout_lines)
+
+  if [[ "$truncated" == "true" ]] && [[ "$stdout_lines" == "200" ]] && [[ "$stdout" != *"argument budget line 260"* ]]; then
+    pass "fbash only uncaps real fread invocations"
+  else
+    fail "fbash should keep output budgets when fread is only an argument" \
+         "Got truncated=$truncated, stdout_lines=$stdout_lines, stdout_tail='${stdout: -120}'"
+  fi
+}
+
 # ============================================================================
 # 8. Tail Mode
 # ============================================================================
@@ -905,6 +926,7 @@ main() {
   run_test "Max lines truncation" test_max_lines_truncation
   run_test "No truncate overrides output budgets" test_no_truncate_overrides_output_budgets
   run_test "Fread command uncapped by default" test_fread_command_is_uncapped_by_default
+  run_test "Fread argument keeps output budgets" test_fread_word_in_argument_does_not_disable_output_budgets
   run_test "Tail mode" test_tail_mode
   run_test "Filter" test_filter
   run_test "Quiet mode" test_quiet_mode

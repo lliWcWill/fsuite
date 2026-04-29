@@ -651,6 +651,29 @@ test("fbash MCP does not truncate fread commands by default", async () => {
   }
 });
 
+test("fbash MCP keeps budgets when fread is only an argument", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "fsuite-mcp-fbash-fread-argument-"));
+  const filePath = join(dir, "fbash-fread-argument.txt");
+  writeFileSync(
+    filePath,
+    Array.from({ length: 260 }, (_, i) => `mcp argument budget line ${i + 1}`).join("\n") + "\n",
+    "utf8",
+  );
+
+  try {
+    const result = await callTool("fbash", {
+      command: `printf 'fread\\n' >/dev/null; cat "${filePath}"`,
+    });
+    const plain = stripAnsi(textContent(result));
+
+    assert.ok(!result.isError, plain);
+    assert.ok(!plain.includes("mcp argument budget line 260"), `expected default fbash cap to hide final line, got: ${plain}`);
+    assert.ok(plain.includes("more line"), `expected default fbash cap to render more-lines marker, got: ${plain}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("fbash MCP error path falls back to parsed stderr when errors are empty", async () => {
   const result = await callTool("fbash", {
     command: "printf 'mcp-fbash-stderr\\n' >&2; exit 7",

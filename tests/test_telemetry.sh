@@ -686,7 +686,7 @@ test_schema_migration_idempotent() {
   local cols
   cols=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT sql FROM sqlite_master WHERE name='telemetry';" 2>/dev/null || true)
 
-  if [[ "$cols" == *"cpu_temp_mc"* ]] && [[ "$cols" == *"load_avg_1m"* ]] && [[ "$cols" == *"run_id"* ]] && [[ "$cols" == *"model_id"* ]] && [[ "$cols" == *"agent_id"* ]] && [[ "$cols" == *"session_id"* ]] && ([[ "$cols" == *"UNIQUE(run_id, tool, path_hash)"* ]] || [[ "$cols" == *"UNIQUE(run_id,tool,path_hash)"* ]]); then
+  if [[ "$cols" == *"cpu_temp_mc"* ]] && [[ "$cols" == *"load_avg_1m"* ]] && [[ "$cols" == *"source_offset"* ]] && [[ "$cols" == *"run_id"* ]] && [[ "$cols" == *"model_id"* ]] && [[ "$cols" == *"agent_id"* ]] && [[ "$cols" == *"session_id"* ]] && ([[ "$cols" == *"UNIQUE(run_id, tool, path_hash, source_offset)"* ]] || [[ "$cols" == *"UNIQUE(run_id,tool,path_hash,source_offset)"* ]]); then
     pass "Schema migration is idempotent"
   else
     fail "Schema should have hardware and attribution columns after migration" "Got: $cols"
@@ -996,6 +996,36 @@ test_burst_runs_not_dropped() {
   fi
 }
 
+test_fbash_repeated_child_steps_same_path_survive_import() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "Repeated child-step import test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+
+  FSUITE_TELEMETRY=1 "${FBASH}" \
+    --command "\"${FSEARCH}\" -o paths '*.txt' \"${TEST_DIR}\" >/dev/null; \"${FSEARCH}\" -o paths '*.txt' \"${TEST_DIR}\" >/dev/null" \
+    --cwd "${TEST_DIR}" \
+    --max-lines 20 \
+    --max-bytes 10000 \
+    >/dev/null 2>&1 || true
+
+  run_fmetrics import >/dev/null 2>&1 || {
+    fail "Import after repeated fbash child steps should succeed"
+    return
+  }
+
+  local count distinct_offsets run_ids
+  count=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) FROM telemetry WHERE tool='fsearch';" 2>/dev/null) || count=0
+  distinct_offsets=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(DISTINCT source_offset) FROM telemetry WHERE tool='fsearch';" 2>/dev/null) || distinct_offsets=0
+  run_ids=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(DISTINCT run_id) FROM telemetry WHERE tool='fsearch';" 2>/dev/null) || run_ids=0
+  if [[ "$count" == "2" && "$distinct_offsets" == "2" && "$run_ids" == "1" ]]; then
+    pass "Repeated same-path fbash child steps are not dropped by import dedupe"
+  else
+    fail "Repeated same-path child steps should survive import" "count=$count distinct_offsets=$distinct_offsets run_ids=$run_ids"
+  fi
+}
+
 test_legacy_import_backfill_run_id() {
   if ! command -v sqlite3 >/dev/null 2>&1; then
     pass "Legacy backfill test skipped (sqlite3 not available)"
@@ -1068,13 +1098,68 @@ SQL
   }
 
   local row schema_sql
-  row=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) || '|' || COALESCE(MIN(run_id),'') || '|' || COALESCE(MIN(model_id),'') || '|' || COALESCE(MIN(agent_id),'') || '|' || COALESCE(MIN(session_id),'') FROM telemetry;" 2>/dev/null) || row=""
+  row=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) || '|' || COALESCE(MIN(run_id),'') || '|' || COALESCE(MIN(source_offset),'') || '|' || COALESCE(MIN(model_id),'') || '|' || COALESCE(MIN(agent_id),'') || '|' || COALESCE(MIN(session_id),'') FROM telemetry;" 2>/dev/null) || row=""
   schema_sql=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT sql FROM sqlite_master WHERE type='table' AND name='telemetry';" 2>/dev/null) || schema_sql=""
 
-  if [[ "$row" == 1\|2026-01-01T00:00:00Z_0000000001\|unknown\|unknown\| ]] && [[ "$schema_sql" == *"UNIQUE(run_id, tool, path_hash)"* ]]; then
+  if [[ "$row" == 1\|2026-01-01T00:00:00Z_0000000001\|1\|unknown\|unknown\| ]] && [[ "$schema_sql" == *"UNIQUE(run_id, tool, path_hash, source_offset)"* ]]; then
     pass "Old unique telemetry schema migrates with defaulted optional columns"
   else
     fail "Old unique telemetry schema migration should preserve row and default missing columns" "row=$row schema=$schema_sql"
+  fi
+}
+
+test_run_id_unique_schema_migrates_to_source_offset_key() {
+  if ! command -v sqlite3 >/dev/null 2>&1; then
+    pass "Run-id schema migration test skipped (sqlite3 not available)"
+    return 0
+  fi
+  rm -f "$HOME/.fsuite/telemetry.jsonl" "$HOME/.fsuite/telemetry.db"
+  sqlite3 "$HOME/.fsuite/telemetry.db" <<'SQL'
+CREATE TABLE telemetry (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  timestamp TEXT NOT NULL,
+  tool TEXT NOT NULL,
+  version TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  path_hash TEXT NOT NULL,
+  project_name TEXT NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  exit_code INTEGER NOT NULL,
+  depth INTEGER NOT NULL DEFAULT -1,
+  items_scanned INTEGER NOT NULL DEFAULT -1,
+  bytes_scanned INTEGER NOT NULL DEFAULT -1,
+  flags TEXT NOT NULL DEFAULT '',
+  backend TEXT NOT NULL DEFAULT '',
+  cpu_temp_mc INTEGER DEFAULT -1,
+  disk_temp_mc INTEGER DEFAULT -1,
+  ram_total_kb INTEGER DEFAULT -1,
+  ram_available_kb INTEGER DEFAULT -1,
+  load_avg_1m TEXT DEFAULT '-1',
+  filesystem_type TEXT DEFAULT 'unknown',
+  storage_type TEXT DEFAULT 'unknown',
+  run_id TEXT NOT NULL DEFAULT '',
+  model_id TEXT NOT NULL DEFAULT 'unknown',
+  agent_id TEXT NOT NULL DEFAULT 'unknown',
+  session_id TEXT NOT NULL DEFAULT '',
+  UNIQUE(run_id, tool, path_hash)
+);
+INSERT INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend,run_id,model_id,agent_id,session_id)
+  VALUES ('2026-01-01T00:00:00Z','fsearch','2.3.0','name','samepath','schema-current',11,0,1,1,128,'-o paths','fd','current-run','codex','codex','session-1');
+SQL
+
+  run_fmetrics stats >/dev/null 2>&1 || {
+    fail "Run-id unique telemetry schema should migrate to source-offset key"
+    return
+  }
+
+  local row schema_sql
+  row=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT COUNT(*) || '|' || COALESCE(MIN(run_id),'') || '|' || COALESCE(MIN(source_offset),'') FROM telemetry;" 2>/dev/null) || row=""
+  schema_sql=$(sqlite3 "$HOME/.fsuite/telemetry.db" "SELECT sql FROM sqlite_master WHERE type='table' AND name='telemetry';" 2>/dev/null) || schema_sql=""
+
+  if [[ "$row" == 1\|current-run\|1 ]] && [[ "$schema_sql" == *"source_offset INTEGER NOT NULL DEFAULT -1"* ]] && [[ "$schema_sql" == *"UNIQUE(run_id, tool, path_hash, source_offset)"* ]]; then
+    pass "Run-id unique telemetry schema migrates to source-offset dedupe"
+  else
+    fail "Run-id unique schema migration should preserve row and widen unique key" "row=$row schema=$schema_sql"
   fi
 }
 
@@ -1760,9 +1845,11 @@ main() {
     run_test "Rebuild timestamps ignore fbash wrapper rows" test_rebuild_timestamps_ignore_fbash_wrapper_when_child_steps_exist
     run_test "fbash child tools inherit caller attribution" test_fbash_child_tools_inherit_attribution
   run_test "Burst runs are not dropped" test_burst_runs_not_dropped
+  run_test "Repeated fbash child steps survive import dedupe" test_fbash_repeated_child_steps_same_path_survive_import
   run_test "Legacy import backfills run_id" test_legacy_import_backfill_run_id
   run_test "Legacy import backfills caller attribution" test_legacy_import_backfills_attribution_defaults
   run_test "Old unique schema migrates without optional columns" test_old_unique_schema_migrates_without_optional_columns
+  run_test "Run-id schema migrates to source-offset key" test_run_id_unique_schema_migrates_to_source_offset_key
   run_test "Migration rollback on failure preserves data" test_migration_atomicity
   run_test "Import marks analytics dirty without rebuild" test_import_marks_analytics_dirty_without_rebuild
   run_test "Rebuild populates run_facts_v1 analytics" test_rebuild_populates_run_facts_after_import

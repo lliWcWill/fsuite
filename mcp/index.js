@@ -180,9 +180,137 @@ function detectLang(filePath) {
   return map[ext] || ext || "";
 }
 
-function commandMentionsTool(command, tool) {
-  const normalized = String(command || "").replace(/["']/g, " ");
-  return new RegExp(`(^|[\\s|&;()<>/])${tool}($|[\\s|&;()<>/])`).test(normalized);
+function shellSegments(command) {
+  const input = String(command || "");
+  const segments = [];
+  let segment = "";
+  let quote = "";
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+    if (quote) {
+      segment += ch;
+      if (quote === "'" && ch === "'") {
+        quote = "";
+      } else if (quote === '"') {
+        if (ch === "\\" && i + 1 < input.length) {
+          i += 1;
+          segment += input[i];
+        } else if (ch === '"') {
+          quote = "";
+        }
+      }
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      segment += ch;
+    } else if (ch === "\\") {
+      segment += ch;
+      if (i + 1 < input.length) {
+        i += 1;
+        segment += input[i];
+      }
+    } else if (ch === "\n" || ch === ";" || ch === "|" || ch === "&" || ch === "(" || ch === ")") {
+      segments.push(segment);
+      segment = "";
+    } else {
+      segment += ch;
+    }
+  }
+
+  segments.push(segment);
+  return segments;
+}
+
+function shellSegmentTokens(segment) {
+  const input = String(segment || "");
+  const tokens = [];
+  let token = "";
+  let quote = "";
+
+  const pushToken = () => {
+    if (token) {
+      tokens.push(token);
+      token = "";
+    }
+  };
+
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+    if (quote) {
+      if (quote === "'" && ch === "'") {
+        quote = "";
+        continue;
+      }
+      if (quote === '"') {
+        if (ch === '"') {
+          quote = "";
+          continue;
+        }
+        if (ch === "\\" && i + 1 < input.length) {
+          i += 1;
+          token += input[i];
+          continue;
+        }
+      }
+      token += ch;
+      continue;
+    }
+
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+    } else if (ch === "\\") {
+      if (i + 1 < input.length) {
+        i += 1;
+        token += input[i];
+      }
+    } else if (/\s/.test(ch)) {
+      pushToken();
+    } else if (ch === "<" || ch === ">") {
+      pushToken();
+      tokens.push(ch);
+    } else {
+      token += ch;
+    }
+  }
+
+  pushToken();
+  return tokens;
+}
+
+function commandInvokesTool(command, tool) {
+  for (const segment of shellSegments(command)) {
+    let skipRedirectionTarget = false;
+    let skipTimeoutArg = false;
+    for (const token of shellSegmentTokens(segment)) {
+      if (!token) continue;
+      if (skipRedirectionTarget) {
+        skipRedirectionTarget = false;
+        continue;
+      }
+      if (token === "<" || token === ">") {
+        skipRedirectionTarget = true;
+        continue;
+      }
+      if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(token)) continue;
+      const base = token.split("/").pop();
+      if (["env", "command", "builtin", "exec", "time"].includes(base)) continue;
+      if (base === "timeout") {
+        skipTimeoutArg = true;
+        continue;
+      }
+      if (skipTimeoutArg) {
+        if (token.startsWith("-")) continue;
+        skipTimeoutArg = false;
+        continue;
+      }
+      if (base === tool) return true;
+      break;
+    }
+  }
+  return false;
 }
 
 const run = promisify(execFile);
@@ -1843,28 +1971,28 @@ server.registerTool(
         .describe("Keep tail instead of head when truncating"),
     }),
   },
-    async (params) => {
-      // Poll and list_jobs route to internal commands, bypassing normal execution
-      if (params.poll) {
-        const wantsFull = Boolean(params.full || params.no_truncate);
-        const pollArgs = ["--command", `__fbash_poll ${params.poll}`];
-        if (wantsFull) pollArgs.push("--no-truncate");
-        pollArgs.push("-o", "json");
+  async (params) => {
+    // Poll and list_jobs route to internal commands, bypassing normal execution
+    if (params.poll) {
+      const wantsFull = Boolean(params.full || params.no_truncate);
+      const pollArgs = ["--command", `__fbash_poll ${params.poll}`];
+      if (wantsFull) pollArgs.push("--no-truncate");
+      pollArgs.push("-o", "json");
       return cli("fbash", pollArgs, undefined, { full: wantsFull });
     }
     if (params.list_jobs) {
       return cli("fbash", ["--command", "__fbash_jobs", "-o", "json"]);
     }
-      if (!params.command) {
-        throw new Error("command is required unless using poll or list_jobs");
-      }
-      const hasExplicitOutputCap = params.max_lines !== undefined || params.max_bytes !== undefined;
-      const wantsFull = Boolean(
-        params.full ||
-        params.no_truncate ||
-        (!hasExplicitOutputCap && commandMentionsTool(params.command, "fread")),
-      );
-      const args = [];
+    if (!params.command) {
+      throw new Error("command is required unless using poll or list_jobs");
+    }
+    const hasExplicitOutputCap = params.max_lines !== undefined || params.max_bytes !== undefined;
+    const wantsFull = Boolean(
+      params.full ||
+      params.no_truncate ||
+      (!hasExplicitOutputCap && commandInvokesTool(params.command, "fread")),
+    );
+    const args = [];
     args.push("--command", params.command);
     if (params.max_lines !== undefined) args.push("--max-lines", String(params.max_lines));
     if (params.max_bytes !== undefined) args.push("--max-bytes", String(params.max_bytes));

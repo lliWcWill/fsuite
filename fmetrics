@@ -501,11 +501,12 @@ CREATE TABLE IF NOT EXISTS telemetry (
   load_avg_1m TEXT DEFAULT '-1',
   filesystem_type TEXT DEFAULT 'unknown',
   storage_type TEXT DEFAULT 'unknown',
+  source_offset INTEGER NOT NULL DEFAULT -1,
   run_id TEXT NOT NULL DEFAULT '',
   model_id TEXT NOT NULL DEFAULT 'unknown',
   agent_id TEXT NOT NULL DEFAULT 'unknown',
   session_id TEXT NOT NULL DEFAULT '',
-  UNIQUE(run_id, tool, path_hash)
+  UNIQUE(run_id, tool, path_hash, source_offset)
 );
 CREATE INDEX IF NOT EXISTS idx_tool ON telemetry(tool);
 CREATE INDEX IF NOT EXISTS idx_project ON telemetry(project_name);
@@ -566,13 +567,25 @@ CREATE INDEX IF NOT EXISTS idx_combo_next_project ON combo_next_stats_v1(project
 SQL
   sqlite3 "$DB_FILE" "PRAGMA journal_mode=WAL;" >/dev/null 2>&1 || true
 
-  # Migrate legacy UNIQUE(timestamp,tool,path_hash) schema to run_id-based dedupe.
-  local _has_old_unique
-  _has_old_unique=$(sqlite3 "$DB_FILE" "SELECT CASE WHEN lower(replace(replace(sql,' ',''),char(10),'')) LIKE '%unique(timestamp,tool,path_hash)%' THEN 1 ELSE 0 END FROM sqlite_master WHERE type='table' AND name='telemetry';" 2>/dev/null) || _has_old_unique="0"
-  [[ -z "$_has_old_unique" ]] && _has_old_unique="0"
-  if [[ "$_has_old_unique" == "1" ]]; then
+  # Migrate legacy telemetry schemas to source-offset-aware dedupe.
+  # Earlier schemas keyed on (timestamp,tool,path_hash), then on
+  # (run_id,tool,path_hash). The latter collapsed repeated child-tool steps
+  # inside one fbash run, so import now keeps the JSONL line offset in the key.
+  local _telemetry_sql _has_source_offset _needs_telemetry_key_migration
+  _telemetry_sql=$(sqlite3 "$DB_FILE" "SELECT lower(replace(replace(replace(sql,' ',''),char(10),''),char(9),'')) FROM sqlite_master WHERE type='table' AND name='telemetry';" 2>/dev/null) || _telemetry_sql=""
+  _has_source_offset=$(sqlite3 "$DB_FILE" "SELECT COUNT(*) FROM pragma_table_info('telemetry') WHERE name='source_offset';" 2>/dev/null) || _has_source_offset="0"
+  [[ "$_has_source_offset" =~ ^[0-9]+$ ]] || _has_source_offset="0"
+  _needs_telemetry_key_migration=0
+  if [[ "$_telemetry_sql" == *"unique(timestamp,tool,path_hash)"* ]] ||
+     [[ "$_telemetry_sql" == *"unique(run_id,tool,path_hash)"* ]] ||
+     (( _has_source_offset == 0 )); then
+    _needs_telemetry_key_migration=1
+  fi
+
+  if [[ "$_needs_telemetry_key_migration" == "1" ]]; then
     local _cpu_expr _disk_expr _ram_total_expr _ram_available_expr _load_expr
-    local _filesystem_expr _storage_expr _model_expr _agent_expr _session_expr
+    local _filesystem_expr _storage_expr _source_offset_expr _run_expr
+    local _model_expr _agent_expr _session_expr
     _cpu_expr=$(legacy_column_expr cpu_temp_mc "COALESCE(cpu_temp_mc,-1)" "-1")
     _disk_expr=$(legacy_column_expr disk_temp_mc "COALESCE(disk_temp_mc,-1)" "-1")
     _ram_total_expr=$(legacy_column_expr ram_total_kb "COALESCE(ram_total_kb,-1)" "-1")
@@ -580,6 +593,8 @@ SQL
     _load_expr=$(legacy_column_expr load_avg_1m "COALESCE(load_avg_1m,'-1')" "'-1'")
     _filesystem_expr=$(legacy_column_expr filesystem_type "COALESCE(filesystem_type,'unknown')" "'unknown'")
     _storage_expr=$(legacy_column_expr storage_type "COALESCE(storage_type,'unknown')" "'unknown'")
+    _source_offset_expr=$(legacy_column_expr source_offset "COALESCE(source_offset, id, -1)" "COALESCE(id, -1)")
+    _run_expr=$(legacy_column_expr run_id "CASE WHEN COALESCE(run_id,'') != '' THEN run_id ELSE timestamp || '_' || printf('%010d', id) END" "timestamp || '_' || printf('%010d', id)")
     _model_expr=$(legacy_column_expr model_id "COALESCE(model_id,'unknown')" "'unknown'")
     _agent_expr=$(legacy_column_expr agent_id "COALESCE(agent_id,'unknown')" "'unknown'")
     _session_expr=$(legacy_column_expr session_id "COALESCE(session_id,'')" "''")
@@ -609,17 +624,19 @@ CREATE TABLE telemetry (
   load_avg_1m TEXT DEFAULT '-1',
   filesystem_type TEXT DEFAULT 'unknown',
   storage_type TEXT DEFAULT 'unknown',
+  source_offset INTEGER NOT NULL DEFAULT -1,
   run_id TEXT NOT NULL DEFAULT '',
   model_id TEXT NOT NULL DEFAULT 'unknown',
   agent_id TEXT NOT NULL DEFAULT 'unknown',
   session_id TEXT NOT NULL DEFAULT '',
-  UNIQUE(run_id, tool, path_hash)
+  UNIQUE(run_id, tool, path_hash, source_offset)
 );
-INSERT INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend,cpu_temp_mc,disk_temp_mc,ram_total_kb,ram_available_kb,load_avg_1m,filesystem_type,storage_type,run_id,model_id,agent_id,session_id)
+INSERT OR IGNORE INTO telemetry (timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend,cpu_temp_mc,disk_temp_mc,ram_total_kb,ram_available_kb,load_avg_1m,filesystem_type,storage_type,source_offset,run_id,model_id,agent_id,session_id)
   SELECT timestamp,tool,version,mode,path_hash,project_name,duration_ms,exit_code,depth,items_scanned,bytes_scanned,flags,backend,
     ${_cpu_expr},${_disk_expr},${_ram_total_expr},${_ram_available_expr},
     ${_load_expr},${_filesystem_expr},${_storage_expr},
-    timestamp || '_' || printf('%010d', id),
+    ${_source_offset_expr},
+    ${_run_expr},
     ${_model_expr},${_agent_expr},${_session_expr}
   FROM telemetry_old;
 DROP TABLE telemetry_old;
@@ -640,6 +657,7 @@ SQL
     ensure_column telemetry load_avg_1m "ALTER TABLE telemetry ADD COLUMN load_avg_1m TEXT DEFAULT '-1';" || true
     ensure_column telemetry filesystem_type "ALTER TABLE telemetry ADD COLUMN filesystem_type TEXT DEFAULT 'unknown';" || true
     ensure_column telemetry storage_type "ALTER TABLE telemetry ADD COLUMN storage_type TEXT DEFAULT 'unknown';" || true
+    ensure_column telemetry source_offset "ALTER TABLE telemetry ADD COLUMN source_offset INTEGER NOT NULL DEFAULT -1;" || true
     ensure_column telemetry run_id "ALTER TABLE telemetry ADD COLUMN run_id TEXT DEFAULT '';" || true
     ensure_column telemetry model_id "ALTER TABLE telemetry ADD COLUMN model_id TEXT NOT NULL DEFAULT 'unknown';" || true
     ensure_column telemetry agent_id "ALTER TABLE telemetry ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'unknown';" || true

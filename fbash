@@ -396,26 +396,161 @@ classify_command() {
     esac
 }
 
-command_contains_fsuite_tool() {
-  local cmd="$1"
-  local normalized="$cmd"
-  local tool_re
+command_segment_invokes_tool() {
+  local segment="$1" tool="$2"
+  local len=${#segment} i ch quote="" token=""
+  local -a tokens=()
 
-  normalized="${normalized//\"/ }"
-  normalized="${normalized//\'/ }"
-  tool_re="fsuite|ftree|fsearch|fcontent|fmap|fread|fcase|fedit|fwrite|fmetrics|freplay|fprobe|fbash|fpatch-claude-mcp|fls|fs"
+  for (( i=0; i<len; i++ )); do
+    ch="${segment:i:1}"
+    if [[ -n "$quote" ]]; then
+      if [[ "$quote" == "'" && "$ch" == "'" ]]; then
+        quote=""
+        continue
+      fi
+      if [[ "$quote" == '"' ]]; then
+        if [[ "$ch" == '"' ]]; then
+          quote=""
+          continue
+        fi
+        if [[ "$ch" == "\\" && $(( i + 1 )) -lt $len ]]; then
+          i=$(( i + 1 ))
+          token+="${segment:i:1}"
+          continue
+        fi
+      fi
+      token+="$ch"
+      continue
+    fi
 
-  [[ "$normalized" =~ (^|[[:space:]\|&\;\(\)<>/])(${tool_re})($|[[:space:]\|&\;\(\)<>/]) ]]
+    case "$ch" in
+      "'")
+        quote="'"
+        ;;
+      '"')
+        quote='"'
+        ;;
+      "\\")
+        if (( i + 1 < len )); then
+          i=$(( i + 1 ))
+          token+="${segment:i:1}"
+        fi
+        ;;
+      [[:space:]])
+        if [[ -n "$token" ]]; then
+          tokens+=("$token")
+          token=""
+        fi
+        ;;
+      "<"|">")
+        if [[ -n "$token" ]]; then
+          tokens+=("$token")
+          token=""
+        fi
+        tokens+=("$ch")
+        ;;
+      *)
+        token+="$ch"
+        ;;
+    esac
+  done
+  [[ -n "$token" ]] && tokens+=("$token")
+
+  local skip_redir_target=0 skip_timeout_arg=0 base
+  for token in "${tokens[@]}"; do
+    [[ -n "$token" ]] || continue
+    if (( skip_redir_target )); then
+      skip_redir_target=0
+      continue
+    fi
+    if [[ "$token" == "<" || "$token" == ">" ]]; then
+      skip_redir_target=1
+      continue
+    fi
+    if [[ "$token" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+      continue
+    fi
+    base="${token##*/}"
+    case "$base" in
+      env|command|builtin|exec|time)
+        continue
+        ;;
+      timeout)
+        skip_timeout_arg=1
+        continue
+        ;;
+    esac
+    if (( skip_timeout_arg )); then
+      if [[ "$token" == -* ]]; then
+        continue
+      fi
+      skip_timeout_arg=0
+      continue
+    fi
+
+    [[ "$base" == "$tool" ]]
+    return $?
+  done
+
+  return 1
 }
 
-command_contains_fread() {
-  local cmd="$1"
-  local normalized="$cmd"
+command_invokes_tool() {
+  local cmd="$1" tool="$2"
+  local len=${#cmd} i ch quote="" segment=""
 
-  normalized="${normalized//\"/ }"
-  normalized="${normalized//\'/ }"
+  for (( i=0; i<len; i++ )); do
+    ch="${cmd:i:1}"
+    if [[ -n "$quote" ]]; then
+      segment+="$ch"
+      if [[ "$quote" == "'" && "$ch" == "'" ]]; then
+        quote=""
+      elif [[ "$quote" == '"' ]]; then
+        if [[ "$ch" == "\\" && $(( i + 1 )) -lt $len ]]; then
+          i=$(( i + 1 ))
+          segment+="${cmd:i:1}"
+        elif [[ "$ch" == '"' ]]; then
+          quote=""
+        fi
+      fi
+      continue
+    fi
 
-  [[ "$normalized" =~ (^|[[:space:]\|&\;\(\)<>/])fread($|[[:space:]\|&\;\(\)<>/]) ]]
+    case "$ch" in
+      "'"|'"')
+        quote="$ch"
+        segment+="$ch"
+        ;;
+      "\\" )
+        segment+="$ch"
+        if (( i + 1 < len )); then
+          i=$(( i + 1 ))
+          segment+="${cmd:i:1}"
+        fi
+        ;;
+      $'\n'|";"|"|"|"&"|"("|")")
+        if command_segment_invokes_tool "$segment" "$tool"; then
+          return 0
+        fi
+        segment=""
+        ;;
+      *)
+        segment+="$ch"
+        ;;
+    esac
+  done
+
+  command_segment_invokes_tool "$segment" "$tool"
+}
+
+command_invokes_fsuite_tool() {
+  local cmd="$1" tool
+  for tool in fsuite ftree fsearch fcontent fmap fread fcase fedit fwrite fmetrics freplay fprobe fbash fpatch-claude-mcp fls fs; do
+    if command_invokes_tool "$cmd" "$tool"; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 default_timeout_for_class() {
@@ -633,7 +768,7 @@ start_background_job() {
       env_prefix+="export $(printf '%q' "$override"); "
     fi
   done
-  if [[ -n "$_TELEM_PARENT_RUN_ID" ]] || command_contains_fsuite_tool "$cmd"; then
+  if [[ -n "$_TELEM_PARENT_RUN_ID" ]] || command_invokes_fsuite_tool "$cmd"; then
     env_prefix+="export FSUITE_TELEMETRY_RUN_ID=$(printf '%q' "$_TELEM_RUN_ID"); "
   fi
 
@@ -879,7 +1014,7 @@ execute_command() {
       env_prefix+="export $(printf '%q' "$override"); "
     fi
   done
-  if [[ -n "$_TELEM_PARENT_RUN_ID" ]] || command_contains_fsuite_tool "$cmd"; then
+  if [[ -n "$_TELEM_PARENT_RUN_ID" ]] || command_invokes_fsuite_tool "$cmd"; then
     env_prefix+="export FSUITE_TELEMETRY_RUN_ID=$(printf '%q' "$_TELEM_RUN_ID"); "
   fi
 
@@ -1515,7 +1650,7 @@ fi
 if (( NO_TRUNCATE == 1 )); then
   MAX_LINES=0
   MAX_BYTES=0
-elif command_contains_fread "$COMMAND"; then
+elif command_invokes_tool "$COMMAND" "fread"; then
   (( MAX_LINES_EXPLICIT == 0 )) && MAX_LINES=0
   (( MAX_BYTES_EXPLICIT == 0 )) && MAX_BYTES=0
 fi
