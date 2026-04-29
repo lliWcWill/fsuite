@@ -162,6 +162,7 @@ MEDIA_TOKEN_BUDGET_ENGINE=""
 MEDIA_MAX_TOKENS=""
 MEDIA_NO_INGEST=0
 _MEDIA_ENGINE_WARNED=0
+MEDIA_PAYLOAD_JSON=""
 
 # -------------------------
 # Helpers
@@ -784,7 +785,7 @@ media_dispatch() {
     if [[ "$media_type" == "error" ]] || (( engine_exit != 0 )); then
         local err_code err_msg
         err_code="$(printf '%s' "$engine_json" | python3 -c "import json,sys; print(json.load(sys.stdin).get('code','INTERNAL_ERROR'))" 2>/dev/null || echo "INTERNAL_ERROR")"
-        err_msg="$(printf '%s' "$engine_json" | python3 -c "import json,sys; print(json.load(sys.stdin).get('message','unknown error'))" 2>/dev/null || echo "unknown error")"
+        err_msg="$(printf '%s' "$engine_json" | python3 -c "import json,sys; print(json.load(sys.stdin).get('error','unknown error'))" 2>/dev/null || echo "unknown error")"
         add_error "$path" "$err_code" "$err_msg"
         return 0
     fi
@@ -794,12 +795,13 @@ media_dispatch() {
     size_bytes="$(file_bytes "$path" 2>/dev/null || echo 0)"
     size_bytes="${size_bytes//[[:space:]]/}"
     [[ "$size_bytes" =~ ^[0-9]+$ ]] || size_bytes=0
-
-    if [[ "$OUTPUT" == "json" ]]; then
-        # In JSON mode: store the raw engine JSON as a single chunk so the
-        # standard render_json envelope picks it up.  We use a sentinel
-        # content string that render_json will emit as-is in the content array.
-        # Simpler: emit a synthetic chunk whose content is the JSON text.
+if [[ "$OUTPUT" == "json" ]]; then
+        # In JSON mode: surface the engine JSON at the top level via
+        # MEDIA_PAYLOAD_JSON so render_json picks it up as `"media_payload": {...}`.
+        # Phase 3 (MCP integration) reads this top-level field directly to emit
+        # MCP image content blocks without re-parsing chunk strings.
+        MEDIA_PAYLOAD_JSON="$engine_json"
+        # Also keep a chunk so file metadata stays consistent with text reads.
         local chunk_content="$engine_json"
         local chunk_bytes="${#chunk_content}"
         add_chunk "$path" 0 0 "" "$chunk_content" "$chunk_bytes" 1
@@ -814,7 +816,7 @@ media_dispatch() {
             w="$(printf '%s' "$engine_json" | python3 -c "import json,sys; d=json.load(sys.stdin)['file']; print(d.get('dimensions',{}).get('width','?'))" 2>/dev/null || echo "?")"
             h="$(printf '%s' "$engine_json" | python3 -c "import json,sys; d=json.load(sys.stdin)['file']; print(d.get('dimensions',{}).get('height','?'))" 2>/dev/null || echo "?")"
             orig_sz="$(printf '%s' "$engine_json" | python3 -c "import json,sys; d=json.load(sys.stdin)['file']; print(d.get('original_size','?'))" 2>/dev/null || echo "?")"
-            tok_est="$(token_estimate_from_bytes "${orig_sz:-0}" 2>/dev/null || echo "?")"
+            tok_est="$(printf '%s' "$engine_json" | python3 -c "import json,sys; d=json.load(sys.stdin)['file']; print(d.get('tokens_estimate','?'))" 2>/dev/null || echo "?")"
             echo "📷 ${fmt} ${w}×${h} — ${orig_sz} bytes (~${tok_est} tokens)"
             ;;
         image)
@@ -823,7 +825,7 @@ media_dispatch() {
             w="$(printf '%s' "$engine_json" | python3 -c "import json,sys; d=json.load(sys.stdin)['file']; print(d.get('dimensions',{}).get('width','?'))" 2>/dev/null || echo "?")"
             h="$(printf '%s' "$engine_json" | python3 -c "import json,sys; d=json.load(sys.stdin)['file']; print(d.get('dimensions',{}).get('height','?'))" 2>/dev/null || echo "?")"
             orig_sz="$(printf '%s' "$engine_json" | python3 -c "import json,sys; d=json.load(sys.stdin)['file']; print(d.get('original_size','?'))" 2>/dev/null || echo "?")"
-            tok_est="$(token_estimate_from_bytes "${orig_sz:-0}" 2>/dev/null || echo "?")"
+            tok_est="$(printf '%s' "$engine_json" | python3 -c "import json,sys; d=json.load(sys.stdin)['file']; print(d.get('tokens_estimate','?'))" 2>/dev/null || echo "?")"
             echo "📷 ${fmt} ${w}×${h} — ${orig_sz} bytes (~${tok_est} tokens) [base64 suppressed in pretty mode; use -o json]"
             ;;
         pdf-text)
@@ -1235,6 +1237,10 @@ render_json() {
     echo -n "\"next_hint\":null,"
   fi
 
+    # Top-level media_payload — verbatim engine JSON for Phase 3 MCP integration
+    if [[ -n "$MEDIA_PAYLOAD_JSON" ]]; then
+        echo -n "\"media_payload\":${MEDIA_PAYLOAD_JSON},"
+    fi
   echo -n "\"chunks\":["
   for (( i=0; i<CHUNK_COUNT; i++ )); do
     (( i > 0 )) && echo -n ","
