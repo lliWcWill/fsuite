@@ -1912,6 +1912,7 @@ payload_dir="${TEST_DIR}/payloads-no-setsid"
 log_file="${test_home}/.cache/fsuite/memory-ingest.log"
 mkdir -p "$fake_dir/mcp" "$fake_bin" "${test_home}/.cache/fsuite" "$payload_dir"
 cp "${FREAD}" "${fake_dir}/fread"
+cp "${SCRIPT_DIR}/../_fsuite_common.sh" "${fake_dir}/_fsuite_common.sh"
 chmod +x "${fake_dir}/fread"
 cat > "${fake_dir}/fread-media.py" <<'PY'
 #!/usr/bin/env python3
@@ -2040,6 +2041,7 @@ local fake_dir text_file pdf_file output rc=0
 fake_dir="${TEST_DIR}/fake-pdf-remaining-lines"
 mkdir -p "$fake_dir"
 cp "${FREAD}" "${fake_dir}/fread"
+cp "${SCRIPT_DIR}/../_fsuite_common.sh" "${fake_dir}/_fsuite_common.sh"
 chmod +x "${fake_dir}/fread"
 cat > "${fake_dir}/fread-media.py" <<'PY'
 #!/usr/bin/env python3
@@ -2095,6 +2097,7 @@ test_media_pdf_pretty_max_bytes_counts_utf8_bytes() {
 local fake_dir="${TEST_DIR}/fake-pdf-pretty-bytes"
 mkdir -p "$fake_dir"
 cp "${FREAD}" "${fake_dir}/fread"
+cp "${SCRIPT_DIR}/../_fsuite_common.sh" "${fake_dir}/_fsuite_common.sh"
 chmod +x "${fake_dir}/fread"
 cat > "${fake_dir}/fread-media.py" <<'PY'
 #!/usr/bin/env python3

@@ -217,7 +217,17 @@ import sys
 
 limit = max(int(sys.argv[1]), 0)
 data = sys.stdin.buffer.read()
-sys.stdout.write(data[:limit].decode("utf-8", "ignore"))
+if len(data) <= limit:
+  sys.stdout.write(data.decode("utf-8", "strict"))
+else:
+  # Find the largest prefix <= limit that successfully decodes as UTF-8
+  end = limit
+  while end > 0:
+    try:
+      sys.stdout.write(data[:end].decode("utf-8", "strict"))
+      break
+    except UnicodeDecodeError:
+      end -= 1
 ' "$max"
 }
 

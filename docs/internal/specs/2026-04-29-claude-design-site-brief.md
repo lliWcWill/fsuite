@@ -123,7 +123,7 @@ Plus `fsuite` — the suite-level guide command itself.
 Surface these on the landing page and/or in dedicated callouts. Each one is a real fact you can verify in the repo:
 
 - **14 tools**, 1 unified entry point (`fs`)
-- **~516 tests across 16 suites**, all green per release
+- **~22 test suites**, all green per release
 - **MCP-native** — drops into Claude Code, Codex, OpenCode as first-class tool calls
 - **fmap supports 50 programming languages**
 - **fread reads PDFs and images** as first-class inputs (PNG/JPEG/GIF/WEBP via Pillow, PDFs via PyMuPDF or Poppler)

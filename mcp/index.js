@@ -1593,7 +1593,17 @@ function buildFreadMcpContent(raw, parsed, opts = {}) {
     if (renderedText && Array.isArray(renderedText.content)) merged.push(...renderedText.content);
   }
 
-  return { content: merged.length ? merged : [{ type: "text", text: "" }] };
+  const result = { content: merged.length ? merged : [{ type: "text", text: "" }] };
+
+  // Preserve diagnostic/meta fields from the original parsed result
+  if (parsed) {
+    if (parsed.warnings) result.warnings = parsed.warnings;
+    if (parsed.errors) result.errors = parsed.errors;
+    if (parsed.next_hint) result.next_hint = parsed.next_hint;
+    if (parsed.files) result.files = parsed.files;
+  }
+
+  return result;
 }
 
 // ─── Helper: run CLI tool, pretty-render if possible ─────────────

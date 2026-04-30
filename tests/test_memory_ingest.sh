@@ -33,7 +33,12 @@ TESTS_RUN=$((TESTS_RUN + 1))
 local name="$1"
 shift
 echo "Running: $name"
-"$@" || true
+local rc=0
+"$@" || rc=$?
+if [[ $rc -ne 0 ]]; then
+  TESTS_FAILED=$((TESTS_FAILED + 1))
+  echo -e "${RED}✗${NC} Test '$name' failed with exit code $rc"
+fi
 }
 
 # ── Tests ─────────────────────────────────────────────────────────────────────
@@ -157,7 +162,7 @@ test_timeout() {
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 main() {
-    trap 'true' EXIT INT TERM
+    trap 'true' EXIT
     echo "======================================"
     echo "  memory-ingest helper Test Suite"
     echo "======================================"

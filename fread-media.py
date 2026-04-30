@@ -20,6 +20,7 @@ import shutil
 import struct
 import subprocess
 import sys
+from typing import Tuple
 
 # ── Backend probe ─────────────────────────────────────────────────────────────
 
@@ -188,7 +189,7 @@ class PyMuPDFBackend:
         finally:
             doc.close()
 
-    def render_page(self, path: str, page: int, dpi: int = 100):
+    def render_page(self, path: str, page: int, dpi: int = 100) -> Tuple[bytes, int, int]:
         doc = fitz.open(path)
         try:
             if doc.is_encrypted and doc.needs_pass:
@@ -329,7 +330,7 @@ class PopplerBackend:
                 raise RuntimeError(f"pdftotext failed unexpectedly on page {p}: {e}") from e
         return results
 
-    def render_page(self, path: str, page: int, dpi: int = 100) -> bytes:
+    def render_page(self, path: str, page: int, dpi: int = 100) -> Tuple[bytes, int, int]:
         import tempfile
         self._check_encrypted(path)
         p = page + 1  # pdftoppm is 1-indexed
@@ -971,6 +972,10 @@ def main():
     parser = argparse.ArgumentParser(
         description="fread-media — image and PDF reading engine"
     )
+    parser.add_argument(
+        "--debug", action="store_true",
+        help="Include full traceback in error output"
+    )
     sub = parser.add_subparsers(dest="command")
 
     # probe
@@ -1033,15 +1038,15 @@ def main():
         raise
     except Exception as exc:
         import traceback as _tb
-        json.dump(
-            {
-                "type": "error",
-                "error": str(exc),
-                "code": "INTERNAL_ERROR",
-                "traceback": _tb.format_exc(),
-            },
-            sys.stdout,
-        )
+        debug_mode = args.debug if hasattr(args, 'debug') else bool(os.environ.get("FREAD_DEBUG"))
+        error_dict = {
+            "type": "error",
+            "error": str(exc),
+            "code": "INTERNAL_ERROR",
+        }
+        if debug_mode:
+            error_dict["traceback"] = _tb.format_exc()
+        json.dump(error_dict, sys.stdout)
         sys.stdout.write("\n")
         sys.exit(1)
 

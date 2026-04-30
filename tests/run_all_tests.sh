@@ -25,7 +25,6 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-TOTAL_TESTS=0
 TOTAL_PASSED=0
 TOTAL_FAILED=0
 
@@ -274,7 +273,8 @@ main() {
     failed_suites+=("memory-ingest")
   fi
 
-TOTAL_TESTS=$((TOTAL_PASSED + TOTAL_FAILED))
+  # Calculate total after all suites have run
+  TOTAL_TESTS=$((TOTAL_PASSED + TOTAL_FAILED))
 
   # Final summary
   echo ""

@@ -93,7 +93,35 @@ if (cmdMatch) {
   const am = block.match(argsRegex);
   let args = [];
   if (am) {
-    args = am[1].split(',').map(s => s.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
+    // Parse args with quote-awareness instead of naive split
+    const argsStr = am[1];
+    const tokens = [];
+    let current = '';
+    let inQuote = false;
+    let quoteChar = '';
+    let escaped = false;
+    for (let i = 0; i < argsStr.length; i++) {
+      const c = argsStr[i];
+      if (escaped) {
+        current += c;
+        escaped = false;
+      } else if (c === '\\') {
+        escaped = true;
+      } else if (!inQuote && (c === '"' || c === "'")) {
+        inQuote = true;
+        quoteChar = c;
+      } else if (inQuote && c === quoteChar) {
+        inQuote = false;
+        quoteChar = '';
+      } else if (!inQuote && c === ',') {
+        if (current.trim()) tokens.push(current.trim());
+        current = '';
+      } else {
+        current += c;
+      }
+    }
+    if (current.trim()) tokens.push(current.trim());
+    args = tokens.map(s => s.replace(/^["']|["']$/g, '')).filter(Boolean);
   }
   return { cmd: cmdMatch[1], args };
 }

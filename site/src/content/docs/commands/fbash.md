@@ -24,6 +24,7 @@ OPTIONS
   --command <cmd>       Bash command to execute (or pass as positional arg)
   --max-lines <n>       Cap stdout to n lines (default: 200)
   --max-bytes <n>       Cap stdout to n bytes (default: 51200)
+  --no-truncate, --full Disable stdout line/byte caps
   --json                Parse command output as JSON
   --cwd <path>          Working directory (overrides session CWD)
   --timeout <secs>      Timeout in seconds (auto-tuned by class if omitted)
