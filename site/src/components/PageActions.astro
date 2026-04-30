@@ -72,7 +72,6 @@ const ghSourceUrl = `${ghBase}/${ghSourcePath}`;
     type="button"
     class="page-actions__caret"
     data-action="toggle-menu"
-    aria-haspopup="menu"
     aria-expanded="false"
     aria-label="More page actions"
   >
@@ -81,8 +80,8 @@ const ghSourceUrl = `${ghBase}/${ghSourcePath}`;
     </svg>
   </button>
 
-  <div class="page-actions__menu" role="menu" hidden>
-    <button type="button" role="menuitem" data-action="copy-md">
+  <div class="page-actions__menu" hidden>
+    <button type="button" data-action="copy-md">
       <span class="page-actions__menu-icon">📄</span>
       <span class="page-actions__menu-text">
         <span class="page-actions__menu-title">Copy as Markdown</span>
@@ -90,7 +89,7 @@ const ghSourceUrl = `${ghBase}/${ghSourcePath}`;
       </span>
     </button>
 
-    <button type="button" role="menuitem" data-action="copy-plain">
+    <button type="button" data-action="copy-plain">
       <span class="page-actions__menu-icon">¶</span>
       <span class="page-actions__menu-text">
         <span class="page-actions__menu-title">Copy as plain text</span>
@@ -98,7 +97,7 @@ const ghSourceUrl = `${ghBase}/${ghSourcePath}`;
       </span>
     </button>
 
-    <button type="button" role="menuitem" data-action="view-md">
+    <button type="button" data-action="view-md">
       <span class="page-actions__menu-icon">⤴</span>
       <span class="page-actions__menu-text">
         <span class="page-actions__menu-title">View as Markdown</span>
@@ -108,7 +107,7 @@ const ghSourceUrl = `${ghBase}/${ghSourcePath}`;
 
     <hr class="page-actions__divider" />
 
-    <button type="button" role="menuitem" data-action="open-claude">
+    <button type="button" data-action="open-claude">
       <span class="page-actions__menu-icon">◈</span>
       <span class="page-actions__menu-text">
         <span class="page-actions__menu-title">Open in Claude</span>
@@ -116,7 +115,7 @@ const ghSourceUrl = `${ghBase}/${ghSourcePath}`;
       </span>
     </button>
 
-    <button type="button" role="menuitem" data-action="open-chatgpt">
+    <button type="button" data-action="open-chatgpt">
       <span class="page-actions__menu-icon">◇</span>
       <span class="page-actions__menu-text">
         <span class="page-actions__menu-title">Open in ChatGPT</span>
@@ -127,7 +126,6 @@ const ghSourceUrl = `${ghBase}/${ghSourcePath}`;
     <hr class="page-actions__divider" />
 
     <a
-      role="menuitem"
       href={ghSourceUrl}
       target="_blank"
       rel="noopener noreferrer"
